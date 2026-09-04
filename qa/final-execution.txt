@@ -1,0 +1,94 @@
+npm notice run test
+npm notice run node --test test/*.test.mjs
+TAP version 13
+# Subtest: bounded step loop stops at the configured budget
+ok 1 - bounded step loop stops at the configured budget
+  ---
+  duration_ms: 6.163599
+  type: 'test'
+  ...
+# Subtest: replay recovers state from append-only events
+ok 2 - replay recovers state from append-only events
+  ---
+  duration_ms: 2.788945
+  type: 'test'
+  ...
+# Subtest: reopened event log continues a run sequence
+ok 3 - reopened event log continues a run sequence
+  ---
+  duration_ms: 1.271268
+  type: 'test'
+  ...
+# Subtest: reopened event log continues each run after a multi-line log
+ok 4 - reopened event log continues each run after a multi-line log
+  ---
+  duration_ms: 1.902355
+  type: 'test'
+  ...
+# Subtest: policy denies shell and network effects by default
+ok 5 - policy denies shell and network effects by default
+  ---
+  duration_ms: 0.647928
+  type: 'test'
+  ...
+# Subtest: policy permits workspace-scoped file writes only
+ok 6 - policy permits workspace-scoped file writes only
+  ---
+  duration_ms: 0.13181
+  type: 'test'
+  ...
+# Subtest: policy rejects parent and root-relative paths outside the workspace
+ok 7 - policy rejects parent and root-relative paths outside the workspace
+  ---
+  duration_ms: 0.201221
+  type: 'test'
+  ...
+1..7
+# tests 7
+# suites 0
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 63.2205
+npm notice run demo
+npm notice run node demo.mjs ../qa/final-demo.jsonl
+{
+  "fixture_only": true,
+  "run_id": "demo-1788560513714",
+  "result": {
+    "status": "budget_exhausted",
+    "steps": 3,
+    "lastAction": "fixture:step-3"
+  },
+  "recovered": {
+    "status": "budget_exhausted",
+    "steps": 3,
+    "seq": 5,
+    "lastAction": "fixture:step-3"
+  }
+}
+npm notice run demo
+npm notice run node demo.mjs ../qa/final-demo.jsonl
+{
+  "fixture_only": true,
+  "run_id": "demo-1788560513842",
+  "result": {
+    "status": "budget_exhausted",
+    "steps": 3,
+    "lastAction": "fixture:step-3"
+  },
+  "recovered": {
+    "status": "budget_exhausted",
+    "steps": 3,
+    "seq": 5,
+    "lastAction": "fixture:step-3"
+  }
+}
+log= "{\"run_id\":\"r\",\"seq\":1,\"type\":\"one\",\"payload\":{}}\n{\"run_id\":\"r\",\"seq\":2,\"type\":\"two\",\"payload\":{}}\n"
+reopen= {"run_id":"r","seq":3,"type":"three","payload":{}}
+traversal= {"allowed":false,"reason":"file path is outside workspace"}
+nested= {"allowed":true,"capability":"workspace.file.write"}
+absolute-outside= {"allowed":false,"reason":"file path is outside workspace"}
+Exit code: 0

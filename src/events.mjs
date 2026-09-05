@@ -1,21 +1,18 @@
-import { appendFile, mkdir, readFile, stat, chmod } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, chmod } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 
 const SECRET = /token|secret|password|authorization|credential|api[_-]?key/i;
-export function redact(value) {
-  if (Array.isArray(value)) return value.map(redact);
+const DIGEST_FIELDS = new Set(['prompt', 'result', 'output', 'message', 'arguments', 'text']);
+const digest = value => `[sha256:${createHash('sha256').update(value).digest('hex')}]`;
+export function redact(value, key = '') {
+  if (SECRET.test(key)) return '[REDACTED]';
+  if (typeof value === 'string') return DIGEST_FIELDS.has(key) ? digest(value) : value;
+  if (Array.isArray(value)) return value.map(item => redact(item, key));
   if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, SECRET.test(key) ? '[REDACTED]' : redact(item)]));
+  return Object.fromEntries(Object.entries(value).map(([k, item]) => [k, redact(item, k)]));
 }
-
-export function receiptPayload(payload) {
-  const safe = redact(payload);
-  for (const key of ['prompt', 'result', 'output', 'message']) {
-    if (typeof safe[key] === 'string' && safe[key].length > 256) safe[key] = `[sha256:${createHash('sha256').update(safe[key]).digest('hex')}]`;
-  }
-  return safe;
-}
+export function receiptPayload(payload) { return redact(payload); }
 
 export class EventLog {
   constructor(path, { maxBytes = 64 * 1024 } = {}) { this.path = path; this.maxBytes = maxBytes; this.nextSeq = new Map(); this.queue = Promise.resolve(); }
@@ -36,7 +33,6 @@ export class EventLog {
     });
   }
 }
-
 export async function recoverEvents(path, runId) {
   const text = await readFile(path, 'utf8').catch(error => error.code === 'ENOENT' ? '' : Promise.reject(error));
   return text.split('\n').filter(Boolean).map(JSON.parse).filter(event => event.run_id === runId);

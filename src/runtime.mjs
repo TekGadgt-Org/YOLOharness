@@ -4,6 +4,16 @@ import { randomUUID } from 'node:crypto';
 import { EventLog } from './events.mjs';
 
 export class MissingProviderError extends Error { constructor() { super('No provider is configured; use --fixture for deterministic offline execution'); this.name = 'MissingProviderError'; } }
+export const EXEC_TOOL = Object.freeze({ type: 'function', name: 'exec', description: 'Run one command in the isolated worker.', parameters: Object.freeze({ type: 'object', additionalProperties: false, required: ['command', 'args'], properties: { command: { type: 'string', minLength: 1, maxLength: 256 }, args: { type: 'array', maxItems: 64, items: { type: 'string', maxLength: 4096 } } } }) });
+
+function normalizeCall(call) {
+  if (!call || call.name !== 'exec') throw new TypeError('only the declared exec tool is permitted');
+  let value = call.arguments;
+  if (typeof value === 'string') { try { value = JSON.parse(value); } catch { throw new TypeError('exec arguments must be valid JSON'); } }
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !['command', 'args'].includes(key)) || typeof value.command !== 'string' || !value.command || value.command.length > 256 || !Array.isArray(value.args) || value.args.length > 64 || value.args.some(arg => typeof arg !== 'string' || arg.length > 4096 || arg.includes('\0'))) throw new TypeError('invalid exec arguments');
+  if (value.command.includes('\0')) throw new TypeError('invalid exec command');
+  return { command: value.command, args: [...value.args], call_id: typeof call.call_id === 'string' ? call.call_id.slice(0, 128) : undefined };
+}
 
 /** @typedef {{next(input: {messages: Array, tools: Array, signal: AbortSignal}): Promise<object>}} Provider */
 /** @typedef {{execute(input: {call: object, signal: AbortSignal}): Promise<object>}} Executor */
@@ -65,11 +75,12 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
       }
       if (safe.tool_call) {
         if (!executor) { errors.push('effect dispatch unavailable: no supported executor selected'); status = 'failed'; break; }
-        if (!tools.some(tool => tool?.name === safe.tool_call.name)) { errors.push(`effect denied: undeclared tool ${safe.tool_call.name}`); status = 'failed'; break; }
-        const receipt = await abortable(executor.execute({ call: safe.tool_call, signal: timer.signal }), timer.signal);
+        if (tools.length !== 1 || tools[0]?.name !== 'exec' || JSON.stringify(tools[0]?.parameters) !== JSON.stringify(EXEC_TOOL.parameters)) { errors.push('effect denied: executor registry mismatch'); status = 'failed'; break; }
+        let call; try { call = normalizeCall(safe.tool_call); } catch (error) { errors.push(`effect denied: ${error.message}`); status = 'failed'; break; }
+        const receipt = await abortable(executor.execute({ call, signal: timer.signal }), timer.signal);
         evidence.push(receipt);
-        messages.push({ type: 'function_call', call_id: safe.tool_call.call_id, name: safe.tool_call.name, arguments: safe.tool_call.arguments });
-        messages.push({ type: 'function_call_output', call_id: safe.tool_call.call_id, output: JSON.stringify(receipt) });
+        messages.push({ type: 'function_call', call_id: call.call_id, name: 'exec', arguments: JSON.stringify({ command: call.command, args: call.args }) });
+        messages.push({ type: 'function_call_output', call_id: call.call_id, output: JSON.stringify(receipt) });
       }
       messages.push({ role: 'assistant', content: safe.message ?? '' });
     }

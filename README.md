@@ -20,7 +20,7 @@ Authentication is separate from a run and never starts automatically. Set a perm
 - **[src/](src/):** bounded one-shot CLI/runtime. `yolo --fixture "prompt"` is offline and deterministic; without `--fixture`, it reports that no provider is configured.
 - **[memory/memory-design.md](memory/memory-design.md):** provenance, scope, expiry, contradictions, compaction, and forgetting.
 - **[security/threat-model.md](security/threat-model.md):** adversarial design review and concrete negative tests, not a security certification.
-- **[ux/interaction-design.md](ux/interaction-design.md):** proposed `yolo` CLI and explicitly mocked operator screens. The CLI is not implemented.
+- **[ux/interaction-design.md](ux/interaction-design.md):** proposed `yolo` CLI and explicitly mocked operator screens. The shipped CLI currently supports the bounded fixture and explicitly configured provider paths.
 - **[qa/maintainability.md](qa/maintainability.md):** the argument against rebuilding what Codex/Hermes already do.
 - **[qa/qa-report.md](qa/qa-report.md):** independent initial QA (historical FAIL; both reproduced bugs were repaired).
 - **[qa/final-verification.md](qa/final-verification.md):** coordinator's post-repair rerun: **7 tests pass**, repeated same-log demos succeed, and both bug probes pass; raw output retained.

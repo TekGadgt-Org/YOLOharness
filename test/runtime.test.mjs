@@ -4,7 +4,7 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventLog, redact, recoverEvents } from '../src/events.mjs';
-import { runOnce, FixtureProvider, MissingProviderError } from '../src/runtime.mjs';
+import { runOnce, FixtureProvider, MissingProviderError, EXEC_TOOL } from '../src/runtime.mjs';
 
 test('event log writes ordered bounded redacted JSONL and reopens', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'yolo-')); const path = join(dir, 'events.jsonl');
@@ -58,3 +58,12 @@ test('invalid inputs are rejected', async () => {
 test('prototype remains present', async () => { assert.ok((await import('../prototype/kernel.mjs')).FixtureAdapter); });
 
 test('recoverEvents ignores no events and returns ordered records', async () => { assert.deepEqual(await recoverEvents('/nonexistent/yolo-events.jsonl', 'none'), []); });
+
+test('exec bridge validates the exact registry and passes normalized argv with pairing', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'yolo-')); const calls = [];
+  let step = 0;
+  const provider = { async next({ tools }) { assert.deepEqual(tools, [EXEC_TOOL]); step += 1; return step === 1 ? { tool_call: { call_id: 'c1', name: 'exec', arguments: JSON.stringify({ command: 'printf', args: ['safe'] }) } } : { done: true, result: 'finished' }; } };
+  const executor = { async execute({ call }) { calls.push(call); return { version: 1, ok: true, output: 'safe' }; } };
+  const record = await runOnce({ prompt: 'run it', workspace, provider, executor, tools: [EXEC_TOOL] });
+  assert.equal(record.status, 'completed'); assert.deepEqual(calls, [{ command: 'printf', args: ['safe'], call_id: 'c1' }]);
+});

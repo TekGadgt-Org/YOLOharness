@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { runOnce, FixtureProvider, MissingProviderError } from './runtime.mjs';
+import { runOnce, FixtureProvider, MissingProviderError, EXEC_TOOL } from './runtime.mjs';
 import { AuthClient, AuthStore } from './auth.mjs';
 import { ConfiguredProvider } from './provider.mjs';
+import { DockerExecutor } from './docker-executor.mjs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -37,7 +38,8 @@ export async function main(args = process.argv.slice(2), io = { stdout: process.
     const controller = new AbortController();
     const onInterrupt = () => { io.stderr.write('interrupt requested; stopping run\n'); controller.abort(new Error('SIGINT')); };
     process.once('SIGINT', onInterrupt);
-    const record = await runOnce({ prompt: options.prompt, minutes: options.minutes, workspace: process.cwd(), provider: options.fixture ? new FixtureProvider() : await configuredProvider(), signal: controller.signal });
+    const workspace = process.cwd();
+    const record = await runOnce({ prompt: options.prompt, minutes: options.minutes, workspace, provider: options.fixture ? new FixtureProvider() : await configuredProvider(), executor: options.fixture || !process.env.YOLO_DOCKER_IMAGE ? undefined : new DockerExecutor({ image: process.env.YOLO_DOCKER_IMAGE, workspace }), tools: options.fixture ? [] : [EXEC_TOOL], signal: controller.signal });
     process.removeListener('SIGINT', onInterrupt);
     io.stdout.write(`${options.json ? JSON.stringify(record) : `${record.status}: ${record.result ?? record.errors.join('; ')}`}\n`);
     return record.status === 'completed' ? 0 : record.status === 'interrupted' ? 130 : record.status === 'deadline' ? 124 : 1;
@@ -51,7 +53,8 @@ async function configuredProvider() {
   if (!process.env.YOLO_RESPONSES_URL || !process.env.YOLO_MODEL) throw new MissingProviderError();
   const endpoint = new URL(process.env.YOLO_RESPONSES_URL);
   const loopback = endpoint.hostname === '127.0.0.1' || endpoint.hostname === 'localhost' || endpoint.hostname === '::1';
-  if (endpoint.username || endpoint.password || (endpoint.protocol !== 'https:' && !(loopback && process.env.YOLO_ALLOW_INSECURE_LOCAL === '1'))) throw new TypeError('YOLO_RESPONSES_URL must use HTTPS; HTTP is limited to explicit loopback fixtures');
+  const canonical = endpoint.origin === 'https://chatgpt.com' && endpoint.pathname === '/backend-api/codex/responses';
+  if (endpoint.username || endpoint.password || (!canonical && !(loopback && process.env.YOLO_ALLOW_INSECURE_LOCAL === '1'))) throw new TypeError('YOLO_RESPONSES_URL must be the canonical HTTPS Responses endpoint; HTTP is limited to explicit loopback fixtures');
   const path = process.env.YOLO_AUTH_FILE ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'yoloharness', 'credentials.json');
   const credentials = await new AuthStore(path).load();
   if (!credentials) throw new MissingProviderError();

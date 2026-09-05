@@ -2,6 +2,7 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { EventLog } from './events.mjs';
+import { validateReceipt } from './docker-executor.mjs';
 
 export class MissingProviderError extends Error { constructor() { super('No provider is configured; use --fixture for deterministic offline execution'); this.name = 'MissingProviderError'; } }
 export const EXEC_TOOL = Object.freeze({ type: 'function', name: 'exec', description: 'Run one command in the isolated worker.', parameters: Object.freeze({ type: 'object', additionalProperties: false, required: ['command', 'args'], properties: { command: { type: 'string', minLength: 1, maxLength: 256 }, args: { type: 'array', maxItems: 64, items: { type: 'string', maxLength: 4096 } } } }) });
@@ -78,7 +79,7 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
         if (tools.length !== 1 || tools[0]?.name !== 'exec' || JSON.stringify(tools[0]?.parameters) !== JSON.stringify(EXEC_TOOL.parameters)) { errors.push('effect denied: executor registry mismatch'); status = 'failed'; break; }
         let call; try { call = normalizeCall(safe.tool_call); } catch (error) { errors.push(`effect denied: ${error.message}`); status = 'failed'; break; }
         const receipt = await abortable(executor.execute({ call, signal: timer.signal }), timer.signal);
-        if (!receipt || receipt.version !== 1 || typeof receipt.ok !== 'boolean' || receipt.call_id !== call.call_id) { errors.push('effect denied: invalid executor receipt'); status = 'failed'; break; }
+        if (!validateReceipt(receipt, call.call_id)) { errors.push('effect denied: invalid executor receipt'); status = 'failed'; break; }
         evidence.push(receipt);
         messages.push({ type: 'function_call', call_id: call.call_id, name: 'exec', arguments: JSON.stringify({ command: call.command, args: call.args }) });
         messages.push({ type: 'function_call_output', call_id: call.call_id, output: JSON.stringify(receipt) });

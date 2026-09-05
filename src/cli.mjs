@@ -49,10 +49,10 @@ export async function main(args = process.argv.slice(2), io = { stdout: process.
   }
 }
 
-async function configuredProvider() {
+export async function configuredProvider() {
   if (!process.env.YOLO_RESPONSES_URL || !process.env.YOLO_MODEL) throw new MissingProviderError();
   const endpoint = new URL(process.env.YOLO_RESPONSES_URL);
-  const canonical = endpoint.origin === 'https://chatgpt.com' && endpoint.pathname === '/backend-api/codex/responses';
+  const canonical = endpoint.href === 'https://chatgpt.com/backend-api/codex/responses';
   if (endpoint.username || endpoint.password || !canonical) throw new TypeError('YOLO_RESPONSES_URL must be the canonical HTTPS Responses endpoint');
   const path = process.env.YOLO_AUTH_FILE ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'yoloharness', 'credentials.json');
   const credentials = await new AuthStore(path).load();

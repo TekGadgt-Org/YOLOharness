@@ -11,7 +11,7 @@ This file records the offline evidence for the final review findings. It is not 
 
 Verification performed:
 
-- `npm test`: 23 passed, 0 failed.
+- `npm test`: 24 passed, 0 failed on the prior remediation; current regression additions are verified separately in the task handoff.
 - `node --check src/auth.mjs src/docker-executor.mjs src/runtime.mjs src/cli.mjs worker.mjs`: passed.
 - `node src/cli.mjs --fixture --json 'offline smoke'`: completed with valid JSON record.
 - `npm pack --dry-run --json`: passed (npm emitted only the missing .npmignore advisory).

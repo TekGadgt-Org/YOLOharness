@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AuthClient, AuthStore } from '../src/auth.mjs';
 import { ResponsesClient, parseSSE } from '../src/responses.mjs';
-import { DockerExecutor, DockerUnavailableError, OutputLimitError } from '../src/docker-executor.mjs';
+import { DockerExecutor, DockerUnavailableError, OutputLimitError, validateReceipt } from '../src/docker-executor.mjs';
+import { configuredProvider } from '../src/cli.mjs';
 
 const json = (res, value, status=200) => { res.writeHead(status, {'content-type':'application/json'}); res.end(JSON.stringify(value)); };
 function server(handler) { return new Promise(async resolve => { const s=http.createServer(handler); await new Promise(r=>s.listen(0,'127.0.0.1',r)); resolve({s, base:`http://127.0.0.1:${s.address().port}`}); }); }
@@ -48,4 +49,23 @@ test('responses rejects an oversized event', async () => {
   if (!body) return;
   const c = new ResponsesClient({ url: 'http://127.0.0.1', model: 'fixture', accessToken: 'secret', fetch: async () => ({ ok: true, body }) });
   await assert.rejects((async () => { for await (const _ of c.respond()) {} })(), /too large/);
+});
+
+test('worker receipts use a closed, typed success/failure schema', () => {
+  assert.equal(validateReceipt({ version: 1, ok: true, call_id: 'c', code: 0, output: '' }, 'c'), true);
+  assert.equal(validateReceipt({ version: 1, ok: true, call_id: 'c', code: 0, output: [] }, 'c'), false);
+  assert.equal(validateReceipt({ version: 1, ok: true, call_id: 'c', code: 1, output: '' }, 'c'), false);
+  assert.equal(validateReceipt({ version: 1, ok: false, call_id: 'c', code: 1, output: '', error: 'failed', extra: 1 }, 'c'), false);
+});
+
+test('production endpoint rejects query and fragment before credential reads', async () => {
+  const old = { url: process.env.YOLO_RESPONSES_URL, model: process.env.YOLO_MODEL, file: process.env.YOLO_AUTH_FILE };
+  process.env.YOLO_MODEL = 'fixture'; process.env.YOLO_AUTH_FILE = '/definitely/not/readable/credentials.json';
+  for (const suffix of ['?exfil=1', '#fragment', ':443']) {
+    process.env.YOLO_RESPONSES_URL = `https://chatgpt.com/backend-api/codex/responses${suffix}`;
+    await assert.rejects(configuredProvider(), /canonical HTTPS Responses endpoint/);
+  }
+  for (const [key, value] of Object.entries({ YOLO_RESPONSES_URL: old.url, YOLO_MODEL: old.model, YOLO_AUTH_FILE: old.file })) {
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
 });

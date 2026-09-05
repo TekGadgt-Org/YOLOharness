@@ -11,7 +11,7 @@ async function run(call, callId) {
   const collect = (which, chunk) => { const value = String(chunk); const next = which === 'out' ? out + value : err + value; if (Buffer.byteLength(next) > MAX_OUTPUT) { overflow = true; child.kill('SIGKILL'); } else if (which === 'out') out = next; else err = next; };
   child.stdout.on('data', x => collect('out', x)); child.stderr.on('data', x => collect('err', x));
   const [code] = await once(child, 'close');
-  return overflow ? { version: 1, ok: false, call_id: callId, error: 'output_limit' } : { version: 1, ok: code === 0, call_id: callId, code, output: out, error: err };
+  return overflow ? { version: 1, ok: false, call_id: callId, code: 1, output: '', error: 'output_limit' } : code === 0 ? { version: 1, ok: true, call_id: callId, code, output: out } : { version: 1, ok: false, call_id: callId, code, output: out, error: err || `exit_${code}` };
 }
 let input = ''; process.stdin.setEncoding('utf8');
 for await (const chunk of process.stdin) input += chunk;

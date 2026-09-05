@@ -48,6 +48,15 @@ test('refresh persistence faults are observable and short receipt text is digest
 });
 
 
+test('real AuthStore save surfaces injected temporary-file and directory fsync faults', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-auth-fsync-'));
+  const path = join(dir, 'credentials.json');
+  const fileStore = new AuthStore(path, { syncFile: async () => { throw new Error('file fsync failed'); } });
+  await assert.rejects(fileStore.save({ accessToken: 'a', refreshToken: 'r' }), /file fsync failed/);
+  const directoryStore = new AuthStore(path, { syncDirectory: async () => { throw new Error('directory fsync failed'); } });
+  await assert.rejects(directoryStore.save({ accessToken: 'a', refreshToken: 'r' }), /directory fsync failed/);
+});
+
 test('two independent node processes consume one rotating refresh token', async t => {
   let refreshes = 0;
   const { s, base } = await server(async (req, res) => {
@@ -112,8 +121,7 @@ test('docker create cancellation reaps and reconciles the exact generated identi
     commands.push(args);
     const child = { stdin: { end() {} }, stdout: { on() {} }, stderr: { on() {} }, kill() { setImmediate(() => child.close?.(137)); }, once(event, fn) { if (event === 'close') child.close = fn; } };
     if (args[0] === 'create') setImmediate(() => { controller.abort(new Error('cancelled')); });
-    else if (args[0] === 'inspect') setImmediate(() => child.close?.(1));
-    else setImmediate(() => child.close?.(0));
+    else if (args[0] === 'inspect') setImmediate(() => child.close?.(1)); else setImmediate(() => child.close?.(0));
     return child;
   }, preflight: async () => true });
   await assert.rejects(ex.execute({ call: { command: 'true', args: [], call_id: 'cancel-create' }, signal: controller.signal }));
@@ -128,6 +136,55 @@ test('docker executor rejects pre-aborted calls before creating a container', as
   const ex = new DockerExecutor({ image: 'yolo:test', workspace: '/tmp', spawn: () => { spawned = true; throw new Error('must not spawn'); }, preflight: async () => true });
   await assert.rejects(ex.execute({ call: { command: 'true', args: [], call_id: 'pre-abort' }, signal: controller.signal }), /pre-aborted/);
   assert.equal(spawned, false);
+});
+
+test('docker create timeout waits for delayed child before exact cleanup', async () => {
+  const commands = [];
+  const ex = new DockerExecutor({ image: 'yolo:test', workspace: '/tmp', timeoutMs: 10, spawn: (command, args) => {
+    commands.push(args);
+    const child = { stdout: { on(event, fn) { if (event === 'data' && args[0] === 'inspect') setImmediate(() => fn(`Error: No such container: ${args.at(-1)}`)); } }, stderr: { on() {} }, kill() { setTimeout(() => child.close?.(137), 1); }, once(event, fn) { if (event === 'close') child.close = fn; } };
+    if (args[0] === 'inspect') setImmediate(() => child.close?.(1)); else if (args[0] !== 'create') setImmediate(() => child.close?.(0));
+    return child;
+  }, preflight: async () => true });
+  await assert.rejects(ex.execute({ call: { command: 'true', args: [], call_id: 'create-timeout' } }));
+  assert.deepEqual(commands.map(args => args[0]), ['create', 'kill', 'rm', 'inspect']);
+  assert.equal(commands.slice(1).every(args => args.at(-1) === commands[0][3]), true);
+});
+
+test('docker create output overflow waits for termination before exact cleanup', async () => {
+  const commands = [];
+  const ex = new DockerExecutor({ image: 'yolo:test', workspace: '/tmp', maxOutput: 4, spawn: (command, args) => {
+    commands.push(args);
+    const child = { stdout: { on(event, fn) { if (event === 'data' && args[0] === 'create') setImmediate(() => fn('xxxxx')); if (event === 'data' && args[0] === 'inspect') setImmediate(() => fn(`Error: No such container: ${args.at(-1)}`)); } }, stderr: { on() {} }, kill() { setImmediate(() => child.close?.(137)); }, once(event, fn) { if (event === 'close') child.close = fn; } };
+    if (args[0] === 'inspect') setImmediate(() => child.close?.(1)); else if (args[0] !== 'create') setImmediate(() => child.close?.(0));
+    return child;
+  }, preflight: async () => true });
+  await assert.rejects(ex.execute({ call: { command: 'true', args: [], call_id: 'create-overflow' } }), /cleanup/);
+  assert.deepEqual(commands.map(args => args[0]), ['create', 'kill', 'rm', 'inspect']);
+});
+
+test('docker start cancellation reaps before exact cleanup and reconciliation', async () => {
+  const commands = [];
+  const controller = new AbortController();
+  const ex = new DockerExecutor({ image: 'yolo:test', workspace: '/tmp', timeoutMs: 100, spawn: (command, args) => {
+    commands.push(args);
+    const child = { stdin: { end() {} }, stdout: { on() {} }, stderr: { on() {} }, kill() { setImmediate(() => child.close?.(137)); }, once(event, fn) { if (event === 'close') child.close = fn; } };
+    if (args[0] === 'start') setImmediate(() => controller.abort(new Error('start cancelled')));
+    else if (args[0] === 'inspect') setImmediate(() => child.close?.(1)); else setImmediate(() => child.close?.(0));
+    return child;
+  }, preflight: async () => true });
+  await assert.rejects(ex.execute({ call: { command: 'true', args: [], call_id: 'start-cancel' }, signal: controller.signal }));
+  assert.deepEqual(commands.map(args => args[0]), ['create', 'start', 'kill', 'rm', 'inspect']);
+});
+
+test('refresh reclaims a lock left by an actually crashed child process', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-auth-crash-')); const store = new AuthStore(join(dir, 'credentials.json'));
+  await store.save({ accessToken: 'old', refreshToken: 'r0', generation: 0 });
+  const lock = `${store.path}.lock`;
+  const script = `import { mkdir, writeFile, utimes } from 'node:fs/promises'; await mkdir(process.env.LOCK); await writeFile(process.env.LOCK + '/owner.json', JSON.stringify({owner:'crashed-child',pid:process.pid})); const d=new Date(Date.now()-5000); await utimes(process.env.LOCK,d,d); process.exit(0);`;
+  await new Promise((resolve, reject) => { const child = spawn(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, LOCK: lock } }); child.on('close', code => code === 0 ? resolve() : reject(new Error(`child exit ${code}`))); });
+  const client = new AuthClient({ clientId: 'fixture', issueUrl: 'https://example.invalid/i', pollUrl: 'https://example.invalid/p', tokenUrl: 'https://example.invalid/t', redirectUri: 'https://example.invalid/cb', store, lockTimeoutMs: 100, fetch: async () => ({ ok: true, async json() { return { access_token: 'new', refresh_token: 'r1' }; } }) });
+  assert.equal((await client.refresh(await store.load())).accessToken, 'new');
 });
 
 test('stale refresh lock with a dead owner is reclaimed through the atomic acquire path', async () => {

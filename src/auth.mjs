@@ -4,16 +4,16 @@ import { randomUUID } from 'node:crypto';
 
 export class AuthError extends Error { constructor(message, code='auth_error') { super(message); this.name='AuthError'; this.code=code; } }
 export class AuthStore {
-  constructor(path) { this.path=path; }
+  constructor(path, { syncFile = fh => fh.sync(), syncDirectory = fh => fh.sync() } = {}) { this.path=path; this.syncFile=syncFile; this.syncDirectory=syncDirectory; }
   async load() { try { return JSON.parse(await readFile(this.path,'utf8')); } catch (e) { if(e.code==='ENOENT') return null; throw new AuthError('credential store unreadable'); } }
   async save(credentials) {
     if (!credentials?.accessToken || !credentials?.refreshToken) throw new AuthError('complete credentials required');
     await mkdir(dirname(this.path),{recursive:true,mode:0o700});
     const tmp=`${this.path}.${randomUUID()}.tmp`; const fh=await open(tmp,'wx',0o600);
-    try { await fh.writeFile(JSON.stringify(credentials)+'\n'); await fh.sync(); } finally { await fh.close(); }
+    try { await fh.writeFile(JSON.stringify(credentials)+'\n'); await this.syncFile(fh); } finally { await fh.close(); }
     await chmod(tmp,0o600); await rename(tmp,this.path); await chmod(this.path,0o600);
  const dir = await open(dirname(this.path), 'r');
- try { await dir.sync(); } finally { await dir.close(); }
+ try { await this.syncDirectory(dir); } finally { await dir.close(); }
     return credentials;
   }
   async clear() { const { unlink } = await import('node:fs/promises'); await unlink(this.path).catch(e=>{if(e.code!=='ENOENT') throw e;}); }

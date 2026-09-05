@@ -241,15 +241,16 @@ test('actual child replacement owner survives a stale-lock reclaim interleaving'
   const lock = `${store.path}.lock`;
   await mkdir(lock, { recursive: true });
   await writeFile(join(lock, 'owner.json'), JSON.stringify({ owner: 'dead-owner', pid: 999999 }));
-  const old = new Date(Date.now() - 5000); await utimes(lock, old, old);
+  const old = new Date(Date.now() - 30000); await utimes(lock, old, old);
   const modulePath = new URL('../src/auth.mjs', import.meta.url).href;
-  const script = `import { AuthClient, AuthStore } from ${JSON.stringify(modulePath)}; import { writeFile, access } from 'node:fs/promises'; const store = new AuthStore(process.env.STORE); const config = { clientId: 'fixture', issueUrl: 'https://example.invalid/i', pollUrl: 'https://example.invalid/p', tokenUrl: process.env.TOKEN_URL, redirectUri: 'https://example.invalid/cb', store, lockTimeoutMs: 300, fetch }; if (process.env.PAUSE) config.beforeReclaimRename = async () => { await writeFile(process.env.SIGNAL, 'ready'); while (true) { try { await access(process.env.RELEASE); break; } catch { await new Promise(r => setTimeout(r, 5)); } } }; const value = await new AuthClient(config).refresh(await store.load()); process.stdout.write(JSON.stringify(value));`;
+  const script = `import { AuthClient, AuthStore } from ${JSON.stringify(modulePath)}; import { writeFile, access } from 'node:fs/promises'; const store = new AuthStore(process.env.STORE); const config = { clientId: 'fixture', issueUrl: 'https://example.invalid/i', pollUrl: 'https://example.invalid/p', tokenUrl: process.env.TOKEN_URL, redirectUri: 'https://example.invalid/cb', store, lockTimeoutMs: 10000, fetch }; if (process.env.PAUSE) config.beforeReclaimRename = async () => { await writeFile(process.env.SIGNAL, 'ready'); while (true) { try { await access(process.env.RELEASE); break; } catch { await new Promise(r => setTimeout(r, 5)); } } }; const value = await new AuthClient(config).refresh(await store.load()); process.stdout.write(JSON.stringify(value));`;
   const run = (extra = {}) => new Promise((resolve, reject) => { const child = spawn(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, ...extra, STORE: store.path, TOKEN_URL: `${base}/token` } }); let out = ''; let err = ''; child.stdout.on('data', chunk => { out += chunk; }); child.stderr.on('data', chunk => { err += chunk; }); child.on('close', code => code === 0 ? resolve(JSON.parse(out)) : reject(new Error(err || `child exit ${code}`))); });
   const signal = join(dir, 'reclaimer-ready');
   const first = run({ PAUSE: '1', SIGNAL: signal, RELEASE: join(dir, 'reclaimer-release') });
   for (let i = 0; i < 100 && !(await stat(signal).catch(() => null)); i += 1) await new Promise(resolve => setTimeout(resolve, 5));
-  await rm(lock, { recursive: true, force: true });
+  assert.notEqual(await stat(signal).catch(() => null), null);
   const second = run();
+  await new Promise(resolve => setTimeout(resolve, 50));
   await writeFile(join(dir, 'reclaimer-release'), 'go');
   const [reclaimed, replacement] = await Promise.all([first, second]);
   assert.equal(refreshes, 1);
@@ -317,7 +318,7 @@ test('worker receipts use a closed, typed success/failure schema', () => {
   assert.equal(validateReceipt({ version: 1, ok: false, call_id: 'c', code: 1, output: '', error: 'failed', extra: 1 }, 'c'), false);
 });
 
-test('worker emits a paired typed failure receipt for spawn and validation errors', async () => {
+test('worker emits paired typed failure receipts for spawn and validation errors', async () => {
   const worker = spawn(process.execPath, ['worker.mjs'], { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'] });
   worker.stdin.end(JSON.stringify({ version: 1, call_id: 'missing-command', call: { command: '/definitely/not-a-command', args: [] } }) + '\n');
   const chunks = [];
@@ -328,6 +329,16 @@ test('worker emits a paired typed failure receipt for spawn and validation error
   assert.equal(typeof receipt.output, 'string');
   assert.equal(Number.isInteger(receipt.code), true);
   assert.equal(receipt.call_id, 'missing-command');
+  const invalid = spawn(process.execPath, ['worker.mjs'], { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'] });
+  invalid.stdin.end(JSON.stringify({ version: 1, call_id: 'invalid-call', call: { command: '', args: [] } }) + '\n');
+  const invalidChunks = [];
+  for await (const chunk of invalid.stdout) invalidChunks.push(chunk);
+  const invalidReceipt = JSON.parse(Buffer.concat(invalidChunks).toString('utf8').trim());
+  assert.equal(validateReceipt(invalidReceipt, 'invalid-call'), true);
+  assert.equal(invalidReceipt.ok, false);
+  assert.equal(invalidReceipt.code > 0, true);
+  assert.equal(typeof invalidReceipt.output, 'string');
+  assert.equal(invalidReceipt.call_id, 'invalid-call');
 });
 
 test('production endpoint rejects query and fragment before credential reads', async () => {

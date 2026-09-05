@@ -35,6 +35,8 @@ npm test
 npm exec -- yolo --fixture "verify the harness"
 ```
 
+The opt-in real-Docker gate requires a locally built worker image and a Docker daemon: `docker build --pull -t yoloharness-phase1:local . && npm run test:docker`. It verifies the worker receipt, UID, writable workspace artifact, read-only root, no-network route, dropped capabilities, deadline cleanup, and exact container absence; see [qa/real-docker-evidence.md](qa/real-docker-evidence.md). The default `npm test` remains offline and skips this gate.
+
 No package installation is needed; only Node builtins are used. Runs write bounded, redacted JSONL receipts below `.yolo/runs/`. A deadline or interrupt stops launching new effects, then waits up to the bounded cleanup grace for an already-running executor; if exact cleanup cannot be proven in that grace, the receipt reports `cleanup_unknown` rather than claiming the effect stopped. Replay is not full agent resumption, and no executor is enabled by default.
 
 ## The design in one minute

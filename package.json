@@ -4,5 +4,5 @@
   "description": "A bounded, inspectable one-shot agent runtime",
   "type": "module",
   "bin": { "yolo": "src/cli.mjs" },
-  "scripts": { "test": "node --test test/*.test.mjs prototype/test/*.test.mjs" }
+  "scripts": { "test": "node --test test/*.test.mjs prototype/test/*.test.mjs", "test:docker": "YOLO_REAL_DOCKER=1 node --test test/real-docker.test.mjs" }
 }

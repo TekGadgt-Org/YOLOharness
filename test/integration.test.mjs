@@ -138,6 +138,20 @@ test('SSE parser handles BOM, comments, CRLF and multiline data', async ()=> { c
 
 test('docker executor fails closed without docker and never runs host shell', async ()=> { const ex=new DockerExecutor({command:'definitely-not-a-real-docker', spawn:()=>{throw new Error('host execution')}, image:'yolo:test'}); await assert.rejects(ex.preflight(),DockerUnavailableError); });
 
+test('docker executor preserves the host Docker context for rootless CLI operations', async () => {
+  let startOptions;
+  const ex = new DockerExecutor({ image: 'yolo:test', workspace: '/tmp', preflight: async () => true, spawn: (command, args, options) => {
+    const operation = args[0];
+    const child = { stdin: { end() {} }, stdout: { on() {} }, stderr: { on() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn(operation === 'start' ? 0 : operation === 'inspect' ? 1 : 0)); } };
+    if (operation === 'start') startOptions = options;
+    if (operation === 'inspect') child.stdout.on = (event, fn) => event === 'data' && setImmediate(() => fn(`Error: No such container: ${args.at(-1)}`));
+    return child;
+  }});
+  await assert.rejects(ex.execute({ call: { command: 'true', args: [], call_id: 'rootless-context' } }));
+  assert.equal(startOptions.env.HOME, process.env.HOME);
+  assert.equal(startOptions.env.XDG_RUNTIME_DIR, process.env.XDG_RUNTIME_DIR);
+});
+
 test('docker executor requests interactive stdin and handles output overflow without a signal', async () => {
   let seen;
   const ex = new DockerExecutor({ image: 'yolo:test', workspace: '/tmp', maxOutput: 10, spawn: (command, args) => { if (args[0] === 'create') seen = args; const child = { stdin: { end() {} }, stdout: { on(event, fn) { if (event === 'data' && args[0] === 'start') setImmediate(() => fn('x'.repeat(20))); if (event === 'data' && args[0] === 'inspect') setImmediate(() => fn(`Error: No such container: ${args.at(-1)}`)); } }, stderr: { on() {} }, kill() {}, once(event, fn) { if (event === 'close') { this.close = fn; setImmediate(() => fn(args[0] === 'inspect' ? 1 : 0)); } } }; return child; }, preflight: async () => true });
@@ -280,6 +294,9 @@ test('docker reconciliation binds not-found evidence to the exact generated iden
   const absent = await run(name => `Error: No such container: ${name}`);
   assert.deepEqual(absent.commands, ['create', 'start', 'kill', 'rm', 'inspect']);
   assert.match(absent.error.message, /executor failed/);
+  const rootlessAbsent = await run(name => `error: no such object: ${name}`);
+  assert.deepEqual(rootlessAbsent.commands, ['create', 'start', 'kill', 'rm', 'inspect']);
+  assert.match(rootlessAbsent.error.message, /executor failed/);
   const mismatched = await run(name => `Error: No such container: ${name}-suffix`);
   assert.match(mismatched.error.message, /cleanup/);
   const ambiguous = await run(() => 'Error: permission denied contacting daemon');

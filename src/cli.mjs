@@ -82,7 +82,7 @@ async function authCommand(args, io) {
   if(args[0]==='status'){const c=await store.load();io.stdout.write(c?`authenticated (expires ${c.expiresAt?new Date(c.expiresAt).toISOString():'unknown'})\n`:'not authenticated\n');return 0;}
   if(args[0]==='logout'){await store.clear();io.stdout.write('local credentials removed\n');return 0;}
   if(args[0]!=='login') throw new TypeError('usage: yolo auth login|status|logout');
-  const client=new AuthClient(authConfig(store)); const attempt=await client.begin(); io.stdout.write(`Open ${attempt.verificationUrl} and enter ${attempt.userCode}\n`); await client.finish(attempt); io.stdout.write('authenticated\n'); return 0;
+  const client=new AuthClient(authConfig(store, process.env.YOLO_CLIENT_ID, false)); const attempt=await client.begin(); io.stdout.write(`Open ${attempt.verificationUrl} and enter ${attempt.userCode}\n`); await client.finish(attempt); io.stdout.write('authenticated\n'); return 0;
 }
 
 if (process.argv[1] && (process.argv[1].endsWith('/cli.mjs') || process.argv[1].endsWith('/yolo'))) {

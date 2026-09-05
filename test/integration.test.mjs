@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtemp, readFile, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, stat, rm, utimes, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { AuthClient, AuthStore } from '../src/auth.mjs';
 import { ResponsesClient, parseSSE } from '../src/responses.mjs';
 import { DockerExecutor, DockerUnavailableError, OutputLimitError, validateReceipt } from '../src/docker-executor.mjs';
@@ -121,6 +122,25 @@ test('docker create cancellation reaps and reconciles the exact generated identi
   assert.equal(commands.slice(1).every(args => args.at(-1).startsWith('yoloharness-')), true);
 });
 
+test('docker executor rejects pre-aborted calls before creating a container', async () => {
+  const controller = new AbortController(); controller.abort(new Error('pre-aborted'));
+  let spawned = false;
+  const ex = new DockerExecutor({ image: 'yolo:test', workspace: '/tmp', spawn: () => { spawned = true; throw new Error('must not spawn'); }, preflight: async () => true });
+  await assert.rejects(ex.execute({ call: { command: 'true', args: [], call_id: 'pre-abort' }, signal: controller.signal }), /pre-aborted/);
+  assert.equal(spawned, false);
+});
+
+test('stale refresh lock with a dead owner is reclaimed through the atomic acquire path', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-auth-stale-')); const store = new AuthStore(join(dir, 'credentials.json'));
+  await store.save({ accessToken: 'old', refreshToken: 'r0', generation: 0 });
+  const lock = `${store.path}.lock`; await mkdir(lock, { recursive: true });
+  await writeFile(join(lock, 'owner.json'), JSON.stringify({ owner: 'dead-owner', pid: 999999 }));
+  const old = new Date(Date.now() - 5000); await utimes(lock, old, old);
+  const client = new AuthClient({ clientId: 'fixture', issueUrl: 'https://example.invalid/i', pollUrl: 'https://example.invalid/p', tokenUrl: 'https://example.invalid/t', redirectUri: 'https://example.invalid/cb', store, lockTimeoutMs: 100, fetch: async () => ({ ok: true, async json() { return { access_token: 'new', refresh_token: 'r1' }; } }) });
+  assert.equal((await client.refresh(await store.load())).accessToken, 'new');
+});
+
+
 test('docker reconciliation binds not-found evidence to the exact generated identity', async () => {
   const run = async inspectOutputFor => {
     const commands = [];
@@ -222,4 +242,14 @@ test('production provider uses stored client identity when transient env is abse
   for (const [key, value] of Object.entries({ YOLO_RESPONSES_URL: old.url, YOLO_MODEL: old.model, YOLO_AUTH_FILE: old.file, YOLO_CLIENT_ID: old.client })) {
     if (value === undefined) delete process.env[key]; else process.env[key] = value;
   }
+});
+
+test('packed package bin runs offline from an extracted artifact', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-pack-'));
+  try {
+    const packed = execFileSync('npm', ['pack', '--pack-destination', dir], { cwd: process.cwd(), encoding: 'utf8' }).trim().split(/\r?\n/).at(-1);
+    execFileSync('tar', ['-xzf', join(dir, packed), '-C', dir]);
+    const output = execFileSync(process.execPath, [join(dir, 'package', 'src/cli.mjs'), '--fixture', '--json', 'offline smoke'], { encoding: 'utf8' });
+    assert.equal(JSON.parse(output).status, 'completed');
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

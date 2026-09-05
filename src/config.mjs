@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 export class ConfigError extends Error { constructor(message, code = 'config_error') { super(message); this.name = 'ConfigError'; this.code = code; } }
 
 export function validateModel(model) {
-  if (typeof model !== 'string' || model.length === 0 || /\s|[\u0000-\u001f\u007f]/u.test(model)) throw new ConfigError('model name must be non-empty and contain no whitespace or control characters', 'invalid_model');
+  if (typeof model !== 'string' || model.length === 0 || /\s|[\u0000-\u001f\u007f-\u009f]/u.test(model)) throw new ConfigError('model name must be non-empty and contain no whitespace or control characters', 'invalid_model');
   return model;
 }
 

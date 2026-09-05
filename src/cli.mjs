@@ -36,7 +36,7 @@ export function parseArgs(args) {
   return { minutes, json, fixture, prompt: prompt.join(' ') };
 }
 
-export async function main(args = process.argv.slice(2), io = { stdout: process.stdout, stderr: process.stderr }, { clientFactory } = {}) {
+export async function main(args = process.argv.slice(2), io = { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr }, { clientFactory } = {}) {
   try {
     if (args[0] === 'auth') return await authCommand(args.slice(1), io, { clientFactory });
     if (args[0] === 'config') return await configCommand(args.slice(1), io);
@@ -103,7 +103,7 @@ export async function resolveModel() {
 
 async function configCommand(args, io) {
   if (args.length !== 3 || args[0] !== 'set' || args[1] !== 'model') throw new TypeError('usage: yolo config set model <model-id>');
-  const model = validateModel(args[2]); await new ConfigStore(configPath()).save(model); io.stdout.write(`saved model ${model}\n`); return 0;
+  const model = validateModel(args[2]); const store = new ConfigStore(configPath()); await store.load(); await store.save(model); io.stdout.write(`saved model ${model}\n`); return 0;
 }
 
 function authConfig(store, clientId = process.env.YOLO_CLIENT_ID, allowOverrides = true) { return { clientId, ...(allowOverrides ? { issueUrl: process.env.YOLO_AUTH_ISSUE_URL ?? AUTH_ENDPOINTS.issueUrl, pollUrl: process.env.YOLO_AUTH_POLL_URL ?? AUTH_ENDPOINTS.pollUrl, tokenUrl: process.env.YOLO_AUTH_TOKEN_URL ?? AUTH_ENDPOINTS.tokenUrl, verificationUrl: process.env.YOLO_AUTH_VERIFY_URL ?? AUTH_ENDPOINTS.verificationUrl, redirectUri: process.env.YOLO_AUTH_REDIRECT_URI ?? AUTH_ENDPOINTS.redirectUri } : AUTH_ENDPOINTS), store }; }
@@ -116,7 +116,7 @@ export async function authCommand(args, io, { clientFactory } = {}) {
   if (io.stdin?.isTTY) {
     const current = await new ConfigStore(configPath()).load();
     const { createInterface } = await import('node:readline/promises'); const rl = createInterface({ input: io.stdin, output: io.stdout }); let interrupted = false; rl.on('SIGINT', () => { interrupted = true; rl.close(); });
-    try { const answer = await rl.question(`Model name?${current ? ` [${current.model}]` : ''} `); if (interrupted || answer === '' && (io.stdin.readableEnded || io.stdin.destroyed)) throw Object.assign(new Error('input ended'), { code: 'EOF' }); const model = answer === '' && current ? current.model : validateModel(answer); await new ConfigStore(configPath()).save(model); io.stdout.write(`saved model ${model}\n`); }
+    try { const answer = await Promise.race([rl.question(`Model name?${current ? ` [${current.model}]` : ''} `), new Promise((_, reject) => io.stdin.once?.('end', () => reject(Object.assign(new Error('input ended'), { code: 'EOF' }))))]); if (interrupted || answer === '' && (io.stdin.readableEnded || io.stdin.destroyed)) throw Object.assign(new Error('input ended'), { code: 'EOF' }); const model = answer === '' && current ? current.model : validateModel(answer); await new ConfigStore(configPath()).save(model); io.stdout.write(`saved model ${model}\n`); }
     catch (error) { if (error.code === 'EOF' || error.code === 'ERR_USE_AFTER_CLOSE' || error.code === 'ABORT_ERR' || error.code === 'ERR_STREAM_PREMATURE_CLOSE') io.stderr.write('authentication succeeded; model setup unfinished (run `yolo config set model <model-id>`)\n'); else throw error; }
     finally { rl.close(); }
   } else if (!(await new ConfigStore(configPath()).load())) io.stderr.write('authentication succeeded; set a model with `yolo config set model <model-id>`\n');

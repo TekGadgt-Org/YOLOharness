@@ -5,6 +5,7 @@ import { mkdtemp, readFile, stat, rm, utimes, mkdir, writeFile, readdir } from '
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
+import { Readable } from 'node:stream';
 
 import { execFileSync } from 'node:child_process';
 import { AuthClient, AuthStore } from '../src/auth.mjs';
@@ -27,10 +28,46 @@ test('model configuration roundtrips in XDG config and preserves exact spelling'
 });
 
 test('model configuration rejects invalid identifiers and malformed schemas without fallback', async () => {
-  for (const value of ['', 'has space', 'has\nnewline', '\u0000']) assert.throws(() => validateModel(value), ConfigError);
+  for (const value of ['', 'has space', 'has\nnewline', '\u0000', '\u009b']) assert.throws(() => validateModel(value), ConfigError);
   const dir = await mkdtemp(join(tmpdir(), 'yolo-config-invalid-')); const path = join(dir, 'config.json');
   await writeFile(path, '{not json'); await assert.rejects(new ConfigStore(path).load(), /malformed JSON/);
   await writeFile(path, JSON.stringify({ version: 2, model: 'fallback' })); await assert.rejects(new ConfigStore(path).load(), /unsupported schema/);
+});
+
+test('config command preserves malformed and unsupported configuration', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-config-command-invalid-')); const old = process.env.XDG_CONFIG_HOME; process.env.XDG_CONFIG_HOME = dir;
+  const errors = []; const out = { stdout: { write() {} }, stderr: { write(value) { errors.push(value); } } };
+  try {
+    const path = configPath(); await mkdir(join(dir, 'yoloharness'), { recursive: true });
+    await writeFile(path, '{not json'); assert.equal(await main(['config', 'set', 'model', 'replacement'], out), 1); assert.equal(await readFile(path, 'utf8'), '{not json'); assert.match(errors.at(-1), /malformed JSON/);
+    await writeFile(path, JSON.stringify({ version: 2, model: 'future' })); assert.equal(await main(['config', 'set', 'model', 'replacement'], out), 1); assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { version: 2, model: 'future' }); assert.match(errors.at(-1), /unsupported schema/);
+  } finally { if (old === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = old; }
+});
+
+test('interactive auth saves the prompted model and retains an existing model on Enter', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-auth-model-')); const old = process.env.XDG_CONFIG_HOME; process.env.XDG_CONFIG_HOME = dir;
+  const output = []; const io = { stdin: Readable.from(['Prompted/Model\n']), stdout: { write(value) { output.push(value); } }, stderr: { write() {} } }; io.stdin.isTTY = true;
+  const clientFactory = () => ({ async begin() { return { verificationUrl: 'https://example.test/device', userCode: 'CODE' }; }, async finish() {} });
+  try {
+    assert.equal(await main(['auth', 'login'], io, { clientFactory }), 0); assert.equal((await new ConfigStore(configPath()).load()).model, 'Prompted/Model'); assert.equal(output.some(value => value.includes('Model name?')), true);
+    const retained = { stdin: Readable.from(['\n']), stdout: { write() {} }, stderr: { write() {} } }; retained.stdin.isTTY = true;
+    assert.equal(await main(['auth', 'login'], retained, { clientFactory }), 0); assert.equal((await new ConfigStore(configPath()).load()).model, 'Prompted/Model');
+  } finally { if (old === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = old; }
+});
+
+test('noninteractive auth does not read stdin and reports missing model guidance', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-auth-nontty-')); const old = process.env.XDG_CONFIG_HOME; process.env.XDG_CONFIG_HOME = dir;
+  let guidance = false; const io = { stdin: { isTTY: false, on() { throw new Error('must not read stdin'); } }, stdout: { write() {} }, stderr: { write(value) { if (value.includes('set a model')) guidance = true; } } };
+  const clientFactory = () => ({ async begin() { return { verificationUrl: 'https://example.test/device', userCode: 'CODE' }; }, async finish() {} });
+  try { assert.equal(await main(['auth', 'login'], io, { clientFactory }), 0); assert.equal(guidance, true); assert.equal(await new ConfigStore(configPath()).load(), null); } finally { if (old === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = old; }
+});
+
+test('interactive auth reports unfinished model setup on EOF without erasing prior config', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-auth-eof-')); const old = process.env.XDG_CONFIG_HOME; process.env.XDG_CONFIG_HOME = dir;
+  const store = new ConfigStore(configPath()); await store.save('existing-model'); const errors = [];
+  const stdin = Readable.from([]); stdin.isTTY = true; const io = { stdin, stdout: { write() {} }, stderr: { write(value) { errors.push(value); } } };
+  const clientFactory = () => ({ async begin() { return { verificationUrl: 'https://example.test/device', userCode: 'CODE' }; }, async finish() {} });
+  try { assert.equal(await main(['auth', 'login'], io, { clientFactory }), 0); assert.equal((await store.load()).model, 'existing-model'); assert.match(errors.at(-1), /model setup unfinished/); } finally { if (old === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = old; }
 });
 
 test('failed model config writes preserve the old file and remove temporary files', async () => {
@@ -111,7 +148,7 @@ test('two independent node processes consume one rotating refresh token', async 
 
 
 test('responses client parses split SSE text and completed tool roundtrip', async t => {
-  const {s,base}=await server(async (req,res)=>{ assert.equal(req.url,'/responses'); const body=JSON.parse(await new Promise((resolve,reject)=>{let x='';req.on('data',c=>x+=c);req.on('end',()=>resolve(x));req.on('error',reject)})); assert.equal(body.store,false); res.writeHead(200,{'content-type':'text/event-stream'}); const frames=['data: {"type":"response.output_text.delta","delta":"hel','lo"}\n\n','data: {"type":"response.output_item.added","item":{"type":"function_call","id":"item1","call_id":"call1","name":"exec","arguments":""}}\n\n','data: {"type":"response.function_call_arguments.delta","item_id":"item1","delta":"{\\"command\\":\\"printf\\",\\"args\\":[\\"ok\\"]}"}\n\n','data: {"type":"response.output_item.done","item":{"type":"function_call","id":"item1","call_id":"call1","name":"exec","arguments":"{\\"command\\":\\"printf\\",\\"args\\":[\\"ok\\"]}","status":"completed"}}\n\n','data: {"type":"response.completed","response":{"id":"r1","status":"completed"}}\n\n']; for(const f of frames) { res.write(f); await new Promise(r=>setTimeout(r,1)); } res.end(); }); t.after(()=>s.close());
+  const {s,base}=await server(async (req,res)=>{ assert.equal(req.url,'/responses'); const body=JSON.parse(await new Promise((resolve,reject)=>{let x='';req.on('data',c=>x+=c);req.on('end',()=>resolve(x));req.on('error',reject)})); assert.equal(body.store,false); assert.equal(body.model, 'fixture-model'); res.writeHead(200,{'content-type':'text/event-stream'}); const frames=['data: {"type":"response.output_text.delta","delta":"hel','lo"}\n\n','data: {"type":"response.output_item.added","item":{"type":"function_call","id":"item1","call_id":"call1","name":"exec","arguments":""}}\n\n','data: {"type":"response.function_call_arguments.delta","item_id":"item1","delta":"{\\"command\\":\\"printf\\",\\"args\\":[\\"ok\\"]}"}\n\n','data: {"type":"response.output_item.done","item":{"type":"function_call","id":"item1","call_id":"call1","name":"exec","arguments":"{\\"command\\":\\"printf\\",\\"args\\":[\\"ok\\"]}","status":"completed"}}\n\n','data: {"type":"response.completed","response":{"id":"r1","status":"completed"}}\n\n']; for(const f of frames) { res.write(f); await new Promise(r=>setTimeout(r,1)); } res.end(); }); t.after(()=>s.close());
   const c=new ResponsesClient({url:`${base}/responses`,fetch,accessToken:'secret',model:'fixture-model'}); const events=[]; for await(const e of c.respond({input:[{role:'user',content:'hi'}],tools:[EXEC_TOOL]})) events.push(e); assert.equal(events.at(-1).status,'completed'); assert.equal(events.find(e=>e.type==='text_delta').delta,'hello'); assert.equal(events.find(e=>e.type==='tool_call').call.call_id,'call1');
 });
 

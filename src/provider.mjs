@@ -2,6 +2,9 @@ import { ResponsesClient } from './responses.mjs';
 export class ConfiguredProvider {
   constructor({credentials, url, model, fetch, authClient}={}) { if(!credentials?.accessToken||!url||!model) throw new TypeError('provider requires credentials, YOLO_RESPONSES_URL, and YOLO_MODEL'); this.credentials=credentials;this.url=url;this.model=model;this.fetch=fetch;this.authClient=authClient; }
   async next({messages,tools,signal}) {
+    if (Number.isFinite(this.credentials.expiresAt) && this.credentials.expiresAt <= Date.now() && !this.authClient) {
+      throw Object.assign(new Error('access token expired; reauthentication required'), { code: 'reauth_required' });
+    }
     if (this.authClient && this.credentials.expiresAt && this.credentials.expiresAt <= Date.now()) this.credentials = await this.authClient.refresh(this.credentials, { signal });
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
@@ -13,6 +16,7 @@ export class ConfiguredProvider {
           this.credentials = await this.authClient.refresh(this.credentials, { signal });
           continue;
         }
+        if (error.status === 401 && !this.authClient) throw Object.assign(new Error('provider rejected access token; reauthentication required'), { code: 'reauth_required', status: 401 });
         throw error;
       }
     }

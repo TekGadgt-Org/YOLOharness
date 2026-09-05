@@ -22,6 +22,7 @@ try {
   const executor = new ContainerProcessExecutor({ timeoutMs: Math.max(1_000, boot.deadline - Date.now()) });
   record = await runOnce({ prompt: boot.prompt, minutes: remaining, workspace: '/workspace', provider, executor, tools: [EXEC_TOOL], maxSteps: 100 });
 } catch (error) {
-  record = { version: 1, run_id: null, status: 'failed', result: null, evidence: [], artifacts: [], errors: [error?.message ?? String(error)] };
+  const message = error?.code === 'reauth_required' ? 'reauth_required' : (error?.message ?? String(error));
+  record = { version: 1, run_id: null, status: 'failed', result: null, evidence: [], artifacts: [], errors: [message] };
 }
 process.stdout.write(`${JSON.stringify(record)}\n`);

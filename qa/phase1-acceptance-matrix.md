@@ -1,6 +1,6 @@
 # Whole-runtime container acceptance matrix
 
-This matrix is tied to the current local commit `bcf5146` and exact built image `sha256:f7d2faef57cd63130db4ea9ecedaf16a52238c167309dfcbf6efc43e5ff13222`. Synthetic HOME/XDG/auth/provider fixtures only; no live provider requests or real credentials. Linux evidence below uses rootless Docker 29.8.0 and the local image digest recorded by the build.
+This matrix records the whole-runtime migration on the current feature branch. Synthetic HOME/XDG/auth/provider fixtures only; no live provider requests or real credentials. Linux evidence below uses the observed rootless Docker daemon; the non-root image must be rebuilt with `yolo setup` after source changes.
 
 ID       Retained evidence                                      Status
 WRC-01   Whole-runtime shipped launcher/image synthetic provider roundtrip  PASS (final image synthetic SSE provider roundtrip; provider→parser→exec→provider; artifact written in /workspace)
@@ -12,7 +12,7 @@ WRC-06   Symlink namespace controls                              NOT RUN (real i
 WRC-07   Nested mount rejection                                  IMPLEMENTED in validateWorkspace; no nested-mount fixture
 WRC-08   Multi-link regular-file rejection                       PASS test/container-launcher.test.mjs
 WRC-09   Project secret warning / intentional exposure            NOT RUN
-WRC-10   Rootless-only UID0 exception, read-only root, tmpfs, canary PASS on verified rootless Docker using approved rootless-only uid0 mapping; normal mode-0755 canary and /workspace write/delete pass
+WRC-10   Explicit non-root UID/GID, read-only root, tmpfs, canary NOT RUN after non-root migration (the prior UID0 exception is retired)
 WRC-11   Daemon resource/security inspection                      NOT RUN
 WRC-12   Started-child deadline and exact absence                  NOT RUN on ContainerLauncher
 WRC-13   Real OS SIGINT and exact absence                         NOT RUN on ContainerLauncher
@@ -32,4 +32,4 @@ Offline verification
 - git diff --check: PASS
 
 Known platform boundary
-The launcher verifies `name=rootless` from `docker info` before selecting the approved container uid0 mapping. Rootful/unknown Docker fails closed; no chmod/chown or world-writable workaround is used. Linux evidence does not imply native macOS support. The whole-runtime synthetic provider evidence was collected with a disposable workspace, synthetic token, and local mock server; it is not live-provider evidence.
+The launcher verifies `name=rootless` from `docker info` and selects explicit container UID/GID 10001:10001. Rootful/unknown Docker fails closed; no chmod/chown or world-writable workaround is used. Rootless bind mounts may require operator ACL/ownership preparation for that numeric identity; if the selected project cannot be written, the run fails closed. Linux evidence does not imply native macOS support. The whole-runtime synthetic provider evidence was collected with a disposable workspace, synthetic token, and local mock server; it is not live-provider evidence.

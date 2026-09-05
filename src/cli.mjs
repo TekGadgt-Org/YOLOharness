@@ -1,8 +1,5 @@
 #!/usr/bin/env node
-import { runOnce, FixtureProvider, MissingProviderError } from './runtime.mjs';
 import { AuthClient, AuthStore } from './auth.mjs';
-import { ConfiguredProvider } from './provider.mjs';
-
 import { ConfigStore, configPath, configRoot, validateModel, imageMetadataPath } from './config.mjs';
 import { ContainerLauncher } from './container-launcher.mjs';
 import { readFile, mkdir, cp, rm, open, rename, readdir } from 'node:fs/promises';
@@ -15,6 +12,14 @@ import { createHash, randomUUID } from 'node:crypto';
 const execFileAsync = promisify(execFile);
 
 const VERSION = '0.1.0';
+// Kept local so production launcher errors do not require loading the agent
+// runtime module on the host.
+export class MissingProviderError extends Error {
+  constructor(message = 'No provider is configured; use --fixture for deterministic offline execution') {
+    super(message);
+    this.name = 'MissingProviderError';
+  }
+}
 const AUTH_ENDPOINTS = Object.freeze({
   issueUrl: 'https://auth.openai.com/api/accounts/deviceauth/usercode',
   pollUrl: 'https://auth.openai.com/api/accounts/deviceauth/token',
@@ -57,7 +62,12 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     process.once('SIGINT', onInterrupt);
     const workspace = process.cwd();
     let record;
-    if (options.fixture) record = await runOnce({ prompt: options.prompt, minutes: options.minutes, workspace, provider: new FixtureProvider(), signal: controller.signal });
+    if (options.fixture) {
+      // The fixture is an explicit offline test path. Keep the production
+      // launcher free of the host runtime/provider imports.
+      const { runFixture } = await import('./fixture-runtime.mjs');
+      record = await runFixture({ prompt: options.prompt, minutes: options.minutes, workspace, signal: controller.signal });
+    }
     else {
       const model = await resolveModel();
       validateRuntimeEndpoint();
@@ -77,7 +87,7 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
 export async function configuredImage() {
   try {
     const value = JSON.parse(await readFile(imageMetadataPath(), 'utf8'));
-    if (value?.version !== 1 || typeof value.imageId !== 'string' || !/^sha256:[0-9a-f]{64}$/i.test(value.imageId) || typeof value.sourceDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/i.test(value.sourceDigest) || value.sourceVersion !== VERSION) throw new Error('invalid image metadata');
+    if (!value || Object.keys(value).length !== 2 || value.version !== 1 || typeof value.imageId !== 'string' || !/^sha256:[0-9a-f]{64}$/i.test(value.imageId)) throw new Error('invalid image metadata');
     return value.imageId;
   } catch (error) { if (error.code === 'ENOENT') throw new MissingProviderError('no runtime image configured; run `yolo setup` before starting a run'); throw error; }
 }
@@ -88,14 +98,16 @@ export async function setupCommand(io) {
     await cp(new URL('../package.json', import.meta.url), join(context, 'package.json'));
     await cp(new URL('../src', import.meta.url), join(context, 'src'), { recursive: true });
     const docker = process.env.YOLO_DOCKER_COMMAND ?? 'docker';
-    const sourceIdentity = await runtimeSourceIdentity();
+    await runtimeSourceIdentity();
     const tag = `yoloharness-local:${VERSION}`;
     await execFileAsync(docker, ['build', '--pull', '-f', new URL('../assets/runtime/Dockerfile', import.meta.url).pathname, '-t', tag, context], { maxBuffer: 1024 * 1024 });
     const { stdout } = await execFileAsync(docker, ['image', 'inspect', '--format', '{{.Id}}', tag], { maxBuffer: 16 * 1024 });
     const imageId = stdout.trim();
     if (!/^sha256:[0-9a-f]{64}$/i.test(imageId)) throw new Error('Docker returned an invalid immutable image ID');
     await mkdir(dirname(imageMetadataPath()), { recursive: true, mode: 0o700 });
-    await saveImageMetadata({ version: 1, imageId, ...sourceIdentity });
+    // The local image ID is the only runtime selection authority. Source
+    // identity is calculated for build observability, but is not a selector.
+    await saveImageMetadata({ version: 1, imageId });
     io.stdout.write(`runtime image ready: ${imageId}\n`); return 0;
   } finally { await rm(context, { recursive: true, force: true }); }
 }
@@ -158,6 +170,9 @@ export function validateRuntimeEndpoint() {
 }
 
 export async function configuredProvider() {
+  // Retained as an explicit test/integration seam; ordinary runs never call
+  // this host-side provider path.
+  const { ConfiguredProvider } = await import('./provider.mjs');
   const model = await resolveModel();
   if (!process.env.YOLO_RESPONSES_URL) throw new MissingProviderError();
   const rawEndpoint = process.env.YOLO_RESPONSES_URL;

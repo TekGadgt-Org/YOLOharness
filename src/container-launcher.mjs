@@ -26,7 +26,7 @@ export class ContainerLauncher {
     const identity = await containerIdentity(this.command, this.spawn, { signal, timeoutMs: remaining() });
     if (signal?.aborted) throw signal.reason;
     if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
-    const args = ['create', '--pull=never', '--name', name, '--label', label, '--init', '-i', '--user', `${identity.uid}:${identity.gid}`, '--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--cpus', '1', '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m', '--tmpfs', '/home/worker:rw,noexec,nosuid,size=16m', '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/tmp', '--env', `YOLO_RESPONSES_URL=${this.responsesUrl ?? ''}`, this.image, 'node', '/app/src/container-runtime.mjs'];
+    const args = ['create', '--pull=never', '--name', name, '--label', label, '--init', '-i', '--user', `${identity.uid}:${identity.gid}`, '--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--cpus', '1', '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m', '--tmpfs', '/home/worker:rw,noexec,nosuid,size=16m', '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', '--env', `YOLO_RESPONSES_URL=${this.responsesUrl ?? ''}`, this.image, 'node', '/app/src/container-runtime.mjs'];
     let id;
     let attached;
     let creating;
@@ -65,9 +65,11 @@ async function containerIdentity(command, spawn, opts) {
   let options;
   try { options = JSON.parse(result.trim()); } catch { throw new Error('unable to verify Docker rootless mode'); }
   if (!Array.isArray(options) || !options.some(value => value === 'name=rootless')) throw new Error('refusing launch: Docker rootless mode was not verified');
-  // Rootless Docker maps container uid 0 to the invoking host uid. Ryan
-  // explicitly approved this narrow exception to preserve mode-0755 writes.
-  return { uid: 0, gid: 0 };
+  // Do not rely on rootless UID 0. The image and launcher must execute the
+  // runtime as an explicit non-root identity; projects that do not permit
+  // that identity are rejected by the runtime canary rather than repaired by
+  // silently chmod'ing or chown'ing host files.
+  return { uid: 10001, gid: 10001 };
 }
 
 function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT, signal } = {}) {

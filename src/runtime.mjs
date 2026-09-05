@@ -20,14 +20,26 @@ function deadlineSignal(signal, ms) {
   const controller = new AbortController();
   const abort = reason => { if (!controller.signal.aborted) controller.abort(reason); };
   const timer = setTimeout(() => abort(new Error('deadline exceeded')), ms);
-  signal?.addEventListener('abort', () => abort(signal.reason ?? new Error('interrupted')), { once: true });
-  return { signal: controller.signal, cancel: () => clearTimeout(timer) };
+  const parentAbort = () => abort(signal.reason ?? new Error('interrupted'));
+  signal?.addEventListener('abort', parentAbort, { once: true });
+  return { signal: controller.signal, cancel: () => { clearTimeout(timer); signal?.removeEventListener('abort', parentAbort); } };
+}
+
+function abortable(promise, signal) {
+  if (signal.aborted) return Promise.reject(signal.reason ?? new Error('aborted'));
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason ?? new Error('aborted'));
+    signal.addEventListener('abort', abort, { once: true });
+    const cleanup = () => signal.removeEventListener('abort', abort);
+    Promise.resolve(promise).then(value => { cleanup(); resolve(value); }, error => { cleanup(); reject(error); });
+  });
 }
 
 export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(), provider, executor, maxSteps = 100, signal = new AbortController().signal }) {
   if (typeof prompt !== 'string' || !prompt.trim()) throw new TypeError('prompt must be non-empty');
   if (!(Number.isFinite(minutes) && minutes > 0)) throw new TypeError('minutes must be positive and finite');
   if (!provider) throw new MissingProviderError();
+  if (signal.aborted) return { version: 1, run_id: null, status: 'interrupted', result: null, evidence: [], artifacts: [], errors: ['interrupted before start'] };
   const runId = `run-${Date.now()}-${randomUUID().slice(0, 8)}`;
   const runDir = join(workspace, '.yolo', 'runs', runId);
   await mkdir(runDir, { recursive: true, mode: 0o700 });
@@ -40,7 +52,7 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
     await log.append(runId, 'run_started', { prompt, max_steps: maxSteps });
     while (steps < maxSteps) {
       if (timer.signal.aborted) { status = signal.aborted ? 'interrupted' : 'deadline'; break; }
-      const response = await provider.next({ messages, tools: [], signal: timer.signal });
+      const response = await abortable(provider.next({ messages, tools: [], signal: timer.signal }), timer.signal);
       steps += 1;
       const safe = response && typeof response === 'object' ? response : { result: String(response) };
       await log.append(runId, 'step', { step: steps, response: safe });
@@ -53,8 +65,10 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
       }
       if (safe.tool_call) {
         if (!executor) { errors.push('effect dispatch unavailable: no supported executor selected'); status = 'failed'; break; }
-        const receipt = await executor.execute({ call: safe.tool_call, signal: timer.signal });
+        const receipt = await abortable(executor.execute({ call: safe.tool_call, signal: timer.signal }), timer.signal);
         evidence.push(receipt);
+        messages.push({ type: 'function_call', call_id: safe.tool_call.call_id, name: safe.tool_call.name, arguments: safe.tool_call.arguments });
+        messages.push({ type: 'function_call_output', call_id: safe.tool_call.call_id, output: JSON.stringify(receipt) });
       }
       messages.push({ role: 'assistant', content: safe.message ?? '' });
     }
@@ -69,5 +83,5 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
     timer.cancel();
     try { await log.append(runId, status === 'completed' ? 'run_completed' : 'run_stopped', { status, steps }); } catch (error) { errors.push(`receipt write failed: ${error.message}`); if (status === 'completed') status = 'failed'; }
   }
-  return { run_id: runId, status, result: result ?? null, evidence, artifacts, errors };
+  return { version: 1, run_id: runId, status, result: result ?? null, evidence, artifacts, errors };
 }

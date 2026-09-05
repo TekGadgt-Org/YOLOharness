@@ -1,0 +1,5 @@
+.git
+.yolo
+node_modules
+.env*
+credentials*

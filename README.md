@@ -6,7 +6,11 @@ A ten-minute experiment in the harness Astra would choose for itself: a small, i
 
 ## Current direction
 
-**A thin, container-first, one-shot agent:** `yolo "<prompt>"` or `yolo -t <minutes> "<prompt>"`. No full chat interface. Read **[DIRECTION.md](DIRECTION.md)** first. The executable currently provides an explicit deterministic offline fixture; live provider integration and container preparation are later work.
+A thin, container-first, one-shot agent: `yolo "<prompt>"` or `yolo -t <minutes> "<prompt>"`. No full chat interface. The executable provides an explicit deterministic offline fixture and a direct, explicitly configured Responses adapter; container execution is fail-closed preparation.
+
+## Direct provider setup (explicit opt-in)
+
+Authentication is separate from a run and never starts automatically. Set a permitted `YOLO_CLIENT_ID`, then run `yolo auth login`; credentials are stored at `$XDG_CONFIG_HOME/yoloharness/credentials.json` (or `YOLO_AUTH_FILE`) outside the project with mode 0600. `yolo auth status` reports only local presence/expiry and `yolo auth logout` removes local credentials; it does not claim remote revocation. For a run, set `YOLO_RESPONSES_URL` and an explicitly selected `YOLO_MODEL`. Endpoint overrides are intended for local tests or an operator-established trust profile, not model input. No live OAuth, entitlement, Docker isolation, or native macOS execution has been verified in this repository.
 
 ## What is here
 

@@ -19,7 +19,7 @@ test('event log writes ordered bounded redacted JSONL and reopens', async () => 
 test('fixture completes with a final version 1 record', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'yolo-'));
   const record = await runOnce({ prompt: 'hello', minutes: 1, workspace, provider: new FixtureProvider() });
-  assert.equal(record.status, 'completed'); assert.equal(record.result, 'fixture response for: hello');
+  assert.equal(record.status, 'completed'); assert.equal(record.version, 1); assert.equal(record.result, 'fixture response for: hello');
   assert.match(record.run_id, /^run-/); assert.ok(record.evidence.length >= 1);
 });
 
@@ -39,6 +39,13 @@ test('zero-progress provider is capped', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'yolo-'));
   const record = await runOnce({ prompt: 'x', minutes: 1, workspace, provider: { async next() { return { done: false }; } }, maxSteps: 2 });
   assert.equal(record.status, 'step_limit');
+});
+
+test('deadline returns from a non-cooperative provider', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'yolo-'));
+  const started = Date.now();
+  const record = await runOnce({ prompt: 'never', minutes: 0.0005, workspace, provider: { next() { return new Promise(() => {}); } } });
+  assert.equal(record.status, 'deadline'); assert.ok(Date.now() - started < 1000);
 });
 
 test('invalid inputs are rejected', async () => {

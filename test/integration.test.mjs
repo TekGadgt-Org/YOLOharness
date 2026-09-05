@@ -99,7 +99,7 @@ test('docker executor fails closed without docker and never runs host shell', as
 
 test('docker executor requests interactive stdin and handles output overflow without a signal', async () => {
   let seen;
-  const ex = new DockerExecutor({ image: 'yolo:test', workspace: '/tmp', maxOutput: 10, spawn: (command, args) => { if (args[0] === 'create') seen = args; const child = { stdin: { end() {} }, stdout: { on(event, fn) { if (event === 'data' && args[0] === 'start') setImmediate(() => fn('x'.repeat(20))); } }, stderr: { on() {} }, kill() {}, once(event, fn) { if (event === 'close') { this.close = fn; setImmediate(() => fn(args[0] === 'inspect' ? 1 : 0)); } } }; return child; }, preflight: async () => true });
+  const ex = new DockerExecutor({ image: 'yolo:test', workspace: '/tmp', maxOutput: 10, spawn: (command, args) => { if (args[0] === 'create') seen = args; const child = { stdin: { end() {} }, stdout: { on(event, fn) { if (event === 'data' && args[0] === 'start') setImmediate(() => fn('x'.repeat(20))); if (event === 'data' && args[0] === 'inspect') setImmediate(() => fn('not found')); } }, stderr: { on() {} }, kill() {}, once(event, fn) { if (event === 'close') { this.close = fn; setImmediate(() => fn(args[0] === 'inspect' ? 1 : 0)); } } }; return child; }, preflight: async () => true });
   await assert.rejects(ex.execute({ call: { command: 'printf', args: ['x'], call_id: 'overflow' } }), OutputLimitError);
   assert.equal(seen.includes('-i'), true);
 });
@@ -119,6 +119,48 @@ test('docker create cancellation reaps and reconciles the exact generated identi
   assert.equal(commands[0][0], 'create');
   assert.deepEqual(commands.slice(1).map(args => args[0]), ['kill', 'rm', 'inspect']);
   assert.equal(commands.slice(1).every(args => args.at(-1).startsWith('yoloharness-')), true);
+});
+
+test('docker reconciliation distinguishes not-found from ambiguous inspect failures', async () => {
+  const run = async inspectOutput => {
+    const commands = [];
+    const ex = new DockerExecutor({ image: 'yolo:test', workspace: '/tmp', spawn: (command, args) => {
+      commands.push(args);
+      const child = { stdin: { end() {} }, stdout: { on(event, fn) { if (event === 'data' && args[0] === 'inspect') setImmediate(() => fn(inspectOutput)); if (event === 'data' && args[0] === 'start') setImmediate(() => fn(JSON.stringify({ version: 1, ok: true, call_id: 'inspect-case', code: 0, output: '' }) + '\n')); } }, stderr: { on() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn.call(child, args[0] === 'inspect' ? 1 : args[0] === 'start' ? 2 : 0)); } };
+      return child;
+    }, preflight: async () => true });
+    let error;
+    try { await ex.execute({ call: { command: 'true', args: [], call_id: 'inspect-case' } }); } catch (value) { error = value; }
+    return { commands: commands.map(args => args[0]), error };
+  };
+  const absent = await run('Error: No such container: yoloharness-x');
+  assert.deepEqual(absent.commands, ['create', 'start', 'kill', 'rm', 'inspect']);
+  assert.match(absent.error.message, /executor failed/);
+  const ambiguous = await run('Error: permission denied contacting daemon');
+  assert.match(ambiguous.error.message, /cleanup/);
+});
+
+test('configured provider refreshes expired credentials before first provider request', async () => {
+  const requests = [];
+  const provider = new ConfiguredProvider({
+    credentials: { accessToken: 'expired', refreshToken: 'r0', expiresAt: Date.now() - 1 },
+    url: 'https://chatgpt.com/backend-api/codex/responses', model: 'fixture',
+    fetch: async () => { requests.push('provider'); return { ok: true, body: new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('data: {"type":"response.completed","response":{"status":"completed"}}\n\n')); controller.close(); } }) }; },
+    authClient: { async refresh(credentials) { requests.push('refresh'); return { ...credentials, accessToken: 'fresh', expiresAt: Date.now() + 100000 }; } },
+  });
+  await provider.next({ messages: [], tools: [], signal: new AbortController().signal });
+  assert.deepEqual(requests, ['refresh', 'provider']);
+});
+
+test('configured provider retries exactly one actual 401', async () => {
+  let requests = 0; let refreshes = 0;
+  const provider = new ConfiguredProvider({
+    credentials: { accessToken: 'stale', refreshToken: 'r0' }, url: 'https://chatgpt.com/backend-api/codex/responses', model: 'fixture',
+    fetch: async () => { requests += 1; if (requests === 1) return { ok: false, status: 401 }; return { ok: true, body: new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('data: {"type":"response.completed","response":{"status":"completed"}}\n\n')); controller.close(); } }) }; },
+    authClient: { async refresh(credentials) { refreshes += 1; return { ...credentials, accessToken: 'fresh' }; } },
+  });
+  await provider.next({ messages: [], tools: [], signal: new AbortController().signal });
+  assert.equal(requests, 2); assert.equal(refreshes, 1);
 });
 
 

@@ -28,9 +28,11 @@ export class AuthClient {
     const token=await this.request(this.config.tokenUrl,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded',accept:'application/json'},body:new URLSearchParams({grant_type:'authorization_code',code:x.authorization_code,redirect_uri:this.config.redirectUri,client_id:this.config.clientId,code_verifier:x.code_verifier})},signal); if(signal?.aborted) throw signal.reason; if(typeof token.access_token!=='string'||!token.access_token||typeof token.refresh_token!=='string'||!token.refresh_token) throw new AuthError('incomplete token response','malformed_response'); const credentials={accessToken:token.access_token,refreshToken:token.refresh_token,expiresAt:token.expires_in?Date.now()+Number(token.expires_in)*1000:undefined,clientId:this.config.clientId}; await this.store.save(credentials); return credentials; }
   async refresh(credentials,{signal}={}) { if(this.refreshing) return this.refreshing; this.refreshing=(async()=>{ const lock=`${this.store.path}.lock`; const owner=randomUUID(); const started=Date.now(); let owned=false; try { while (!owned) { try { await mkdir(lock, { mode: 0o700 }); await writeFile(`${lock}/owner.json`, JSON.stringify({ owner, pid: process.pid })); owned=true; } catch (error) { await rm(`${lock}.acquire-${owner}`, { recursive: true, force: true }).catch(() => {}); if (error.code !== 'EEXIST' || Date.now() - started >= this.lockTimeoutMs) throw new AuthError('credential refresh lock unavailable','lock_timeout'); let stale=false; let age=0; let info; try { age=Date.now() - (await stat(lock)).mtimeMs; info=JSON.parse(await readFile(`${lock}/owner.json`,'utf8')); } catch {} if (age > this.lockTimeoutMs * 2) { if (!info?.owner || !Number.isInteger(info.pid)) stale=true; else { try { process.kill(info.pid, 0); } catch (e) { if (e.code === 'ESRCH') stale=true; } } } if (stale) {
    const quarantine=`${lock}.reclaim-${randomUUID()}`;
+   const reclaimMarker = `${lock}/reclaim-${owner}`;
    try {
+     await mkdir(reclaimMarker, { mode: 0o700 });
      let before = info?.owner ?? null;
-     try { const latest = JSON.parse(await readFile(`${lock}/owner.json`,'utf8')); if ((latest.owner ?? null) !== before) { await new Promise(resolve=>setTimeout(resolve,25)); continue; } } catch { if (before !== null) { await new Promise(resolve=>setTimeout(resolve,25)); continue; } }
+     try { const latest = JSON.parse(await readFile(`${lock}/owner.json`,'utf8')); if ((latest.owner ?? null) !== before) { await rm(reclaimMarker,{recursive:true,force:true}); await new Promise(resolve=>setTimeout(resolve,25)); continue; } } catch { if (before !== null) { await rm(reclaimMarker,{recursive:true,force:true}); await new Promise(resolve=>setTimeout(resolve,25)); continue; } }
      await rename(lock, quarantine);
      let moved = null;
      try { moved = JSON.parse(await readFile(`${quarantine}/owner.json`,'utf8')); } catch {}
@@ -38,7 +40,7 @@ export class AuthClient {
      else {
        try { await stat(lock); } catch (e) { if (e.code === 'ENOENT') await rename(quarantine, lock); }
      }
-   } catch (e) { if (!['ENOENT','EEXIST'].includes(e.code)) throw new AuthError('credential refresh lock unavailable','lock_timeout'); }
+   } catch (e) { await rm(reclaimMarker,{recursive:true,force:true}).catch(() => {}); if (!['ENOENT','EEXIST'].includes(e.code)) throw new AuthError('credential refresh lock unavailable','lock_timeout'); }
  } await new Promise(resolve=>setTimeout(resolve,25)); } }
       const current = await this.store.load() ?? credentials;
       if ((current.generation ?? 0) > (credentials.generation ?? 0)) return current;

@@ -7,3 +7,6 @@ prototype/demo-events.jsonl
 *.zip
 # Local third-party research downloads; canonical sources are linked in research/findings.md.
 research/*.source.md
+.worktrees/
+.yolo/
+auth-state/

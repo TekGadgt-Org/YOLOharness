@@ -1,0 +1,8 @@
+{
+  "name": "yoloharness",
+  "version": "0.1.0",
+  "description": "A bounded, inspectable one-shot agent runtime",
+  "type": "module",
+  "bin": { "yolo": "src/cli.mjs" },
+  "scripts": { "test": "node --test test/*.test.mjs prototype/test/*.test.mjs" }
+}

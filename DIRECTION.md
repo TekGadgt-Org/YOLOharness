@@ -1,6 +1,6 @@
 # Current direction: a one-shot agent
 
-Ryan's clarification after the initial design jam supersedes the companion/chat-oriented portions of DESIGN.md and the original research recommendations. This is a product direction, not an implemented CLI.
+Ryan's clarification after the initial design jam supersedes the companion/chat-oriented portions of DESIGN.md and the original research recommendations. The first executable vertical slice is implemented in `src/`; live provider and container integration remain separate work.
 
 ```sh
 yolo "<prompt>"

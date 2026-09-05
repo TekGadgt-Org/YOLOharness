@@ -6,13 +6,14 @@ A ten-minute experiment in the harness Astra would choose for itself: a small, i
 
 ## Current direction
 
-**A thin, container-first, one-shot agent:** `yolo "<prompt>"` or `yolo -t <minutes> "<prompt>"`. No full chat interface. Read **[DIRECTION.md](DIRECTION.md)** first: it records Ryan's clarification and the verified finding that Hermes performs direct device-code authentication without requiring Codex CLI. It supersedes the original companion-first recommendation and mandatory-Codex prerequisites below. These commands remain proposed; only the fixture prototype runs today.
+**A thin, container-first, one-shot agent:** `yolo "<prompt>"` or `yolo -t <minutes> "<prompt>"`. No full chat interface. Read **[DIRECTION.md](DIRECTION.md)** first. The executable currently provides an explicit deterministic offline fixture; live provider integration and container preparation are later work.
 
 ## What is here
 
 - **[DESIGN.md](DESIGN.md):** the opinionated architecture and build plan. Start here.
 - **[research/findings.md](research/findings.md):** source-first comparison of public Codex, Hermes, and OpenClaw; Codex OAuth integration feasibility.
-- **[prototype/](prototype/):** dependency-free Node ESM fixture kernel, runnable demo, and tests. **Not a live AI agent.**
+- **[prototype/](prototype/):** historical dependency-free fixture kernel, runnable demo, and tests. **Not a live AI agent.**
+- **[src/](src/):** bounded one-shot CLI/runtime. `yolo --fixture "prompt"` is offline and deterministic; without `--fixture`, it reports that no provider is configured.
 - **[memory/memory-design.md](memory/memory-design.md):** provenance, scope, expiry, contradictions, compaction, and forgetting.
 - **[security/threat-model.md](security/threat-model.md):** adversarial design review and concrete negative tests, not a security certification.
 - **[ux/interaction-design.md](ux/interaction-design.md):** proposed `yolo` CLI and explicitly mocked operator screens. The CLI is not implemented.
@@ -23,15 +24,14 @@ A ten-minute experiment in the harness Astra would choose for itself: a small, i
 
 ## Run the real code
 
-From the project directory, with Node available:
+From the project directory, with Node 22+ available:
 
 ```sh
-cd prototype
 npm test
-npm run demo -- ./demo-events.jsonl
+npm exec -- yolo --fixture "verify the harness"
 ```
 
-No package installation is needed; only Node builtins are used. The demo emits `fixture_only: true`, exercises the step budget, and reconstructs state from the event log. Replaying state is not full agent resumption. The file-policy function is demonstrative and is not connected to an executor.
+No package installation is needed; only Node builtins are used. Runs write bounded, redacted JSONL receipts below `.yolo/runs/`. The fixture is explicitly offline and does not execute tools. Replay is not full agent resumption, and no executor is enabled by default.
 
 ## The design in one minute
 

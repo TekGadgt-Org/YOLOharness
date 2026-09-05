@@ -63,7 +63,7 @@ test('exec bridge validates the exact registry and passes normalized argv with p
   const workspace = await mkdtemp(join(tmpdir(), 'yolo-')); const calls = [];
   let step = 0;
   const provider = { async next({ tools }) { assert.deepEqual(tools, [EXEC_TOOL]); step += 1; return step === 1 ? { tool_call: { call_id: 'c1', name: 'exec', arguments: JSON.stringify({ command: 'printf', args: ['safe'] }) } } : { done: true, result: 'finished' }; } };
-  const executor = { async execute({ call }) { calls.push(call); return { version: 1, ok: true, output: 'safe' }; } };
+  const executor = { async execute({ call }) { calls.push(call); return { version: 1, ok: true, call_id: call.call_id, output: 'safe' }; } };
   const record = await runOnce({ prompt: 'run it', workspace, provider, executor, tools: [EXEC_TOOL] });
   assert.equal(record.status, 'completed'); assert.deepEqual(calls, [{ command: 'printf', args: ['safe'], call_id: 'c1' }]);
 });

@@ -18,6 +18,15 @@ test('device auth issues, polls, exchanges, and stores restrictive credentials',
   const attempt=await client.begin(); assert.equal(attempt.userCode,'TEST-CODE'); const ref=await client.finish(attempt,{sleep:async()=>{}}); assert.equal(ref.accessToken,'access-secret'); assert.deepEqual(calls.map(x=>x[1]),['/issue','/poll','/token']); assert.equal((await stat(store.path)).mode & 0o777,0o600); assert.match(await readFile(store.path,'utf8'),/access-secret/);
 });
 
+test('concurrent refresh clients reread the stored generation before consuming a rotating token', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-auth-race-')); const store = new AuthStore(join(dir, 'credentials.json'));
+  await store.save({ accessToken: 'old', refreshToken: 'r0', generation: 0 }); let refreshes = 0;
+  const fetcher = async () => { refreshes += 1; await new Promise(resolve => setTimeout(resolve, 10)); return { ok: true, async json() { return { access_token: `a${refreshes}`, refresh_token: `r${refreshes}`, expires_in: 3600 }; } }; };
+  const config = { clientId: 'fixture', issueUrl: 'https://example.invalid/issue', pollUrl: 'https://example.invalid/poll', tokenUrl: 'https://example.invalid/token', redirectUri: 'https://example.invalid/cb', store, fetch: fetcher, lockTimeoutMs: 1000 };
+  const [first, second] = await Promise.all([new AuthClient(config).refresh({ accessToken: 'old', refreshToken: 'r0', generation: 0 }), new AuthClient(config).refresh({ accessToken: 'old', refreshToken: 'r0', generation: 0 })]);
+  assert.equal(refreshes, 1); assert.equal(first.accessToken, second.accessToken); assert.equal((await store.load()).generation, 1);
+});
+
 test('responses client parses split SSE text and completed tool roundtrip', async t => {
   const {s,base}=await server(async (req,res)=>{ assert.equal(req.url,'/responses'); const body=JSON.parse(await new Promise((resolve,reject)=>{let x='';req.on('data',c=>x+=c);req.on('end',()=>resolve(x));req.on('error',reject)})); assert.equal(body.store,false); res.writeHead(200,{'content-type':'text/event-stream'}); const frames=['data: {"type":"response.output_text.delta","delta":"hel','lo"}\n\n','data: {"type":"response.output_item.added","item":{"type":"function_call","id":"item1","call_id":"call1","name":"read_file","arguments":""}}\n\n','data: {"type":"response.function_call_arguments.delta","item_id":"item1","delta":"{\\"path\\":\\"README.md\\"}"}\n\n','data: {"type":"response.output_item.done","item":{"type":"function_call","id":"item1","call_id":"call1","name":"read_file","arguments":"{\\"path\\":\\"README.md\\"}","status":"completed"}}\n\n','data: {"type":"response.completed","response":{"id":"r1","status":"completed"}}\n\n']; for(const f of frames) { res.write(f); await new Promise(r=>setTimeout(r,1)); } res.end(); }); t.after(()=>s.close());
   const c=new ResponsesClient({url:`${base}/responses`,fetch,accessToken:'secret',model:'fixture-model'}); const events=[]; for await(const e of c.respond({input:[{role:'user',content:'hi'}],tools:[{type:'function',name:'read_file',parameters:{type:'object'}}]})) events.push(e); assert.equal(events.at(-1).status,'completed'); assert.equal(events.find(e=>e.type==='text_delta').delta,'hello'); assert.equal(events.find(e=>e.type==='tool_call').call.call_id,'call1');
@@ -29,9 +38,8 @@ test('docker executor fails closed without docker and never runs host shell', as
 
 test('docker executor requests interactive stdin and handles output overflow without a signal', async () => {
   let seen;
-  const child = { stdin: { end() {} }, stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn('x'.repeat(20))); } }, stderr: { on() {} }, kill() {}, once(event, fn) { if (event === 'close') this.close = fn; } };
-  const ex = new DockerExecutor({ image: 'yolo:test', workspace: '/tmp', maxOutput: 10, spawn: (command, args) => { seen = args; setImmediate(() => child.stdout.on('data', () => {})); return child; }, preflight: async () => true });
-  await assert.rejects(ex.execute({ command: 'printf', args: ['x'] }), OutputLimitError);
+  const ex = new DockerExecutor({ image: 'yolo:test', workspace: '/tmp', maxOutput: 10, spawn: (command, args) => { if (args[0] === 'create') seen = args; const child = { stdin: { end() {} }, stdout: { on(event, fn) { if (event === 'data' && args[0] === 'start') setImmediate(() => fn('x'.repeat(20))); } }, stderr: { on() {} }, kill() {}, once(event, fn) { if (event === 'close') { this.close = fn; setImmediate(() => fn(0)); } } }; return child; }, preflight: async () => true });
+  await assert.rejects(ex.execute({ call: { command: 'printf', args: ['x'], call_id: 'overflow' } }), OutputLimitError);
   assert.equal(seen.includes('-i'), true);
 });
 

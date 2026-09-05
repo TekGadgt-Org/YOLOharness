@@ -183,9 +183,14 @@ export async function validateWorkspace(workspace, { signal, deadline } = {}) {
 async function rejectNestedMounts(source) {
   if (process.platform !== 'linux') return;
   const mountInfo = await readFile('/proc/self/mountinfo', 'utf8');
-  const targets = mountInfo.split('\n').map(line => line.split(' - ')[0]?.split(' ')[4])
-    .filter(Boolean).map(target => target.replaceAll('\\040', ' ').replaceAll('\\011', '\t').replaceAll('\\134', '\\'));
+  const targets = decodeMountInfoTargets(mountInfo);
   if (targets.some(target => target.startsWith(`${source}/`))) {
     throw new TypeError('workspace contains a nested mount; choose a directory without submounts');
   }
+}
+
+export function decodeMountInfoTargets(mountInfo) {
+  return mountInfo.split('\n').map(line => line.split(' - ')[0]?.split(' ')[4])
+    .filter(Boolean)
+    .map(target => target.replaceAll('\\040', ' ').replaceAll('\\011', '\t').replaceAll('\\012', '\n').replaceAll('\\134', '\\'));
 }

@@ -9,7 +9,7 @@ WRC-03   Missing Docker/daemon/image fail-closed                FAIL (offline fa
 WRC-04   Exact one /workspace bind and prohibited targets       NOT RUN (daemon inspection)
 WRC-05   Outside absolute/parent path controls                   NOT RUN (real image)
 WRC-06   Symlink namespace controls                              NOT RUN (real image)
-WRC-07   Nested mount rejection                                  IMPLEMENTED in validateWorkspace; no nested-mount fixture
+WRC-07   Nested mount rejection                                  IMPLEMENTED in validateWorkspace; escaped-newline parser regression PASS
 WRC-08   Multi-link regular-file rejection                       PASS test/container-launcher.test.mjs
 WRC-09   Project secret warning / intentional exposure            NOT RUN
 WRC-10   Rootless-only UID0 mapping, read-only root, tmpfs, canary PARTIAL (provider path and configured-image canary pass; complete daemon-observed shipped-path row NOT RUN)
@@ -26,11 +26,15 @@ WRC-20   Observed Linux rootless evidence tied to image/commit     PARTIAL (Dock
 WRC-21   Native macOS Docker Desktop                              NOT RUN (separate platform gate)
 
 Offline verification
-- npm test: PASS (83 pass, 2 skipped; 85 total)
-- node --test test/container-launcher.test.mjs: PASS (14 pass)
-- `YOLO_REAL_DOCKER=1 node --test test/real-docker.test.mjs`: FAIL (1 pass, 1 fail; provider row cannot use the removed PATH network-routing seam; rootless image canary passes)
+- npm test: PASS (84 pass, 2 skipped; 86 total)
+- node --test test/container-launcher.test.mjs: PASS (17 pass)
+- `YOLO_REAL_DOCKER=1 node --test test/real-docker.test.mjs`: PASS (2 pass, 0 fail; rootless image canary and shipped provider row)
 - node --check src/cli.mjs src/container-launcher.mjs: PASS
 - git diff --check: PASS
+
+Security finding disposition
+- Newline-escaped mount target (security review medium): fixed by decoding Linux mountinfo `\\012` in `src/container-launcher.mjs`; regression is `mountinfo decoding preserves escaped newline targets for nested-mount checks` in `test/container-launcher.test.mjs`.
+- Synthetic Docker configuration provenance remains test-harness scoped: the real-Docker fixture uses the invoker-selected Docker client/context for setup and inspection, while application HOME/XDG/auth paths remain disposable and no credentials are read. This is not a production trust claim.
 
 Cleanup regression
 - `uncertain create waits for stable absence and removes a delayed daemon container`: PASS. Exact name+label reconciliation polls for the complete bounded 500 ms grace; discovered IDs reset the absence clock, are removed and inspected, and `cleanup_unknown` is returned unless the full grace proves stable absence.

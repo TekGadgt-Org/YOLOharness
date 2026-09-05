@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, link, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { ContainerLauncher, validateWorkspace } from '../src/container-launcher.mjs';
+import { ContainerLauncher, validateWorkspace, decodeMountInfoTargets } from '../src/container-launcher.mjs';
 import { configuredImage, runtimeSourceIdentity } from '../src/cli.mjs';
 
 const child = (onCreate) => {
@@ -195,6 +195,12 @@ test('workspace validation rejects nested mount points and multiply-linked files
     await link(file, join(workspace, 'alias.txt'));
     await assert.rejects(validateWorkspace(workspace), /multiply-linked/);
   } finally { await rm(workspace, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
+});
+
+test('mountinfo decoding preserves escaped newline targets for nested-mount checks', () => {
+  const source = '/tmp/project';
+  const targets = decodeMountInfoTargets(`42 35 0:1 / ${source}\\012nested - overlay overlay rw`);
+  assert.deepEqual(targets, [`${source}\nnested`]);
 });
 
 test('runtime source identity is a versioned sha256 digest', async () => {

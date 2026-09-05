@@ -3,8 +3,7 @@ import { runOnce, FixtureProvider, MissingProviderError, EXEC_TOOL } from './run
 import { AuthClient, AuthStore } from './auth.mjs';
 import { ConfiguredProvider } from './provider.mjs';
 import { DockerExecutor } from './docker-executor.mjs';
-import { ConfigStore, configPath, validateModel } from './config.mjs';
-import { homedir } from 'node:os';
+import { ConfigStore, configPath, configRoot, validateModel } from './config.mjs';
 import { join } from 'node:path';
 
 const VERSION = '0.1.0';
@@ -86,7 +85,7 @@ export async function configuredProvider() {
   }
   const endpoint = new URL(rawEndpoint);
   if (endpoint.username || endpoint.password || endpoint.protocol !== 'https:') throw new TypeError('YOLO_RESPONSES_URL must be the canonical HTTPS Responses endpoint');
-  const path = process.env.YOLO_AUTH_FILE ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'yoloharness', 'credentials.json');
+  const path = process.env.YOLO_AUTH_FILE ?? join(configRoot(), 'yoloharness', 'credentials.json');
   const credentials = await new AuthStore(path).load();
   if (!credentials) throw new MissingProviderError();
   if (typeof credentials.clientId !== 'string' || !credentials.clientId) throw new MissingProviderError();
@@ -108,7 +107,7 @@ async function configCommand(args, io) {
 
 function authConfig(store, clientId = process.env.YOLO_CLIENT_ID, allowOverrides = true) { return { clientId, ...(allowOverrides ? { issueUrl: process.env.YOLO_AUTH_ISSUE_URL ?? AUTH_ENDPOINTS.issueUrl, pollUrl: process.env.YOLO_AUTH_POLL_URL ?? AUTH_ENDPOINTS.pollUrl, tokenUrl: process.env.YOLO_AUTH_TOKEN_URL ?? AUTH_ENDPOINTS.tokenUrl, verificationUrl: process.env.YOLO_AUTH_VERIFY_URL ?? AUTH_ENDPOINTS.verificationUrl, redirectUri: process.env.YOLO_AUTH_REDIRECT_URI ?? AUTH_ENDPOINTS.redirectUri } : AUTH_ENDPOINTS), store }; }
 export async function authCommand(args, io, { clientFactory } = {}) {
-  const path = process.env.YOLO_AUTH_FILE ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'yoloharness', 'credentials.json'); const store=new AuthStore(path);
+  const path = process.env.YOLO_AUTH_FILE ?? join(configRoot(), 'yoloharness', 'credentials.json'); const store=new AuthStore(path);
   if(args[0]==='status'){const c=await store.load();io.stdout.write(c?`authenticated (expires ${c.expiresAt?new Date(c.expiresAt).toISOString():'unknown'})\n`:'not authenticated\n');return 0;}
   if(args[0]==='logout'){await store.clear();io.stdout.write('local credentials removed\n');return 0;}
   if(args[0]!=='login') throw new TypeError('usage: yolo auth login|status|logout');

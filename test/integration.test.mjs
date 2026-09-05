@@ -14,7 +14,7 @@ import { DockerExecutor, DockerUnavailableError, OutputLimitError, validateRecei
 import { configuredProvider } from '../src/cli.mjs';
 import { runOnce, EXEC_TOOL } from '../src/runtime.mjs';
 import { ConfiguredProvider } from '../src/provider.mjs';
-import { ConfigStore, validateModel, ConfigError, configPath } from '../src/config.mjs';
+import { ConfigStore, validateModel, ConfigError, configPath, configRoot } from '../src/config.mjs';
 import { main, resolveModel } from '../src/cli.mjs';
 
 const json = (res, value, status=200) => { res.writeHead(status, {'content-type':'application/json'}); res.end(JSON.stringify(value)); };
@@ -74,6 +74,44 @@ test('configPath falls back to isolated HOME config when XDG_CONFIG_HOME is abse
   const home = await mkdtemp(join(tmpdir(), 'yolo-config-home-')); const path = configPath({ HOME: home });
   assert.equal(path, join(home, '.config', 'yoloharness', 'config.json'));
   await new ConfigStore(path).save('home-model'); assert.equal((await new ConfigStore(path).load()).model, 'home-model');
+});
+
+test('empty and relative XDG_CONFIG_HOME use the absolute HOME root for model and credentials', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'yolo-config-root-'));
+  const old = { xdg: process.env.XDG_CONFIG_HOME, home: process.env.HOME, auth: process.env.YOLO_AUTH_FILE };
+  try {
+    process.env.HOME = home;
+    for (const xdg of ['', 'relative-config']) {
+      process.env.XDG_CONFIG_HOME = xdg;
+      assert.equal(configRoot(), join(home, '.config'));
+      assert.equal(configPath(), join(home, '.config', 'yoloharness', 'config.json'));
+      let credentialPath;
+      const io = { stdin: { isTTY: false }, stdout: { write() {} }, stderr: { write() {} } };
+      const clientFactory = store => { credentialPath = store.path; return { async begin() { return { verificationUrl: 'https://example.test/device', userCode: 'CODE' }; }, async finish() {} }; };
+      assert.equal(await main(['auth', 'login'], io, { clientFactory }), 0);
+      assert.equal(credentialPath, join(home, '.config', 'yoloharness', 'credentials.json'));
+    }
+  } finally {
+    for (const [key, value] of [['XDG_CONFIG_HOME', old.xdg], ['HOME', old.home], ['YOLO_AUTH_FILE', old.auth]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
+test('missing model command reports actionable guidance without inventing a model', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'yolo-missing-model-'));
+  const old = { xdg: process.env.XDG_CONFIG_HOME, home: process.env.HOME, url: process.env.YOLO_RESPONSES_URL, model: process.env.YOLO_MODEL };
+  const errors = [];
+  try {
+    process.env.HOME = home; delete process.env.XDG_CONFIG_HOME; delete process.env.YOLO_MODEL;
+    process.env.YOLO_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
+    assert.equal(await main(['prompt'], { stdout: { write() {} }, stderr: { write(value) { errors.push(value); } } }), 1);
+    assert.match(errors.at(-1), /no model configured; run `yolo config set model <model-id>`/);
+  } finally {
+    for (const [key, value] of [['XDG_CONFIG_HOME', old.xdg], ['HOME', old.home], ['YOLO_RESPONSES_URL', old.url], ['YOLO_MODEL', old.model]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
 });
 
 test('interactive auth reports unfinished model setup on SIGINT without erasing prior config', async () => {

@@ -1,5 +1,5 @@
 import { mkdir, rename, open, readFile, chmod, rm } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 
@@ -10,7 +10,13 @@ export function validateModel(model) {
   return model;
 }
 
-export function configPath(env = process.env) { return join(env.XDG_CONFIG_HOME ?? join(env.HOME ?? homedir(), '.config'), 'yoloharness', 'config.json'); }
+export function configRoot(env = process.env) {
+  const xdg = typeof env.XDG_CONFIG_HOME === 'string' && env.XDG_CONFIG_HOME.length > 0 && isAbsolute(env.XDG_CONFIG_HOME)
+    ? env.XDG_CONFIG_HOME
+    : join(env.HOME && isAbsolute(env.HOME) ? env.HOME : homedir(), '.config');
+  return xdg;
+}
+export function configPath(env = process.env) { return join(configRoot(env), 'yoloharness', 'config.json'); }
 
 export class ConfigStore {
   constructor(path, { syncFile = fh => fh.sync(), syncDirectory = fh => fh.sync() } = {}) { this.path = path; this.syncFile = syncFile; this.syncDirectory = syncDirectory; }

@@ -59,11 +59,12 @@ export async function configuredProvider() {
   const path = process.env.YOLO_AUTH_FILE ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'yoloharness', 'credentials.json');
   const credentials = await new AuthStore(path).load();
   if (!credentials) throw new MissingProviderError();
-  const authClient = process.env.YOLO_CLIENT_ID ? new AuthClient(authConfig(new AuthStore(path))) : undefined;
+  if (typeof credentials.clientId !== 'string' || !credentials.clientId) throw new MissingProviderError();
+  const authClient = new AuthClient(authConfig(new AuthStore(path), credentials.clientId));
   return new ConfiguredProvider({ credentials, url: process.env.YOLO_RESPONSES_URL, model: process.env.YOLO_MODEL, authClient });
 }
 
-function authConfig(store) { return { clientId: process.env.YOLO_CLIENT_ID, issueUrl: process.env.YOLO_AUTH_ISSUE_URL ?? 'https://auth.openai.com/api/accounts/deviceauth/usercode', pollUrl: process.env.YOLO_AUTH_POLL_URL ?? 'https://auth.openai.com/api/accounts/deviceauth/token', tokenUrl: process.env.YOLO_AUTH_TOKEN_URL ?? 'https://auth.openai.com/oauth/token', verificationUrl: process.env.YOLO_AUTH_VERIFY_URL ?? 'https://auth.openai.com/codex/device', redirectUri: process.env.YOLO_AUTH_REDIRECT_URI ?? 'https://auth.openai.com/deviceauth/callback', store }; }
+function authConfig(store, clientId = process.env.YOLO_CLIENT_ID) { return { clientId, issueUrl: process.env.YOLO_AUTH_ISSUE_URL ?? 'https://auth.openai.com/api/accounts/deviceauth/usercode', pollUrl: process.env.YOLO_AUTH_POLL_URL ?? 'https://auth.openai.com/api/accounts/deviceauth/token', tokenUrl: process.env.YOLO_AUTH_TOKEN_URL ?? 'https://auth.openai.com/oauth/token', verificationUrl: process.env.YOLO_AUTH_VERIFY_URL ?? 'https://auth.openai.com/codex/device', redirectUri: process.env.YOLO_AUTH_REDIRECT_URI ?? 'https://auth.openai.com/deviceauth/callback', store }; }
 async function authCommand(args, io) {
   const path = process.env.YOLO_AUTH_FILE ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'yoloharness', 'credentials.json'); const store=new AuthStore(path);
   if(args[0]==='status'){const c=await store.load();io.stdout.write(c?`authenticated (expires ${c.expiresAt?new Date(c.expiresAt).toISOString():'unknown'})\n`:'not authenticated\n');return 0;}

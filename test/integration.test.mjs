@@ -99,7 +99,7 @@ test('docker executor fails closed without docker and never runs host shell', as
 
 test('docker executor requests interactive stdin and handles output overflow without a signal', async () => {
   let seen;
-  const ex = new DockerExecutor({ image: 'yolo:test', workspace: '/tmp', maxOutput: 10, spawn: (command, args) => { if (args[0] === 'create') seen = args; const child = { stdin: { end() {} }, stdout: { on(event, fn) { if (event === 'data' && args[0] === 'start') setImmediate(() => fn('x'.repeat(20))); if (event === 'data' && args[0] === 'inspect') setImmediate(() => fn('not found')); } }, stderr: { on() {} }, kill() {}, once(event, fn) { if (event === 'close') { this.close = fn; setImmediate(() => fn(args[0] === 'inspect' ? 1 : 0)); } } }; return child; }, preflight: async () => true });
+  const ex = new DockerExecutor({ image: 'yolo:test', workspace: '/tmp', maxOutput: 10, spawn: (command, args) => { if (args[0] === 'create') seen = args; const child = { stdin: { end() {} }, stdout: { on(event, fn) { if (event === 'data' && args[0] === 'start') setImmediate(() => fn('x'.repeat(20))); if (event === 'data' && args[0] === 'inspect') setImmediate(() => fn(`Error: No such container: ${args.at(-1)}`)); } }, stderr: { on() {} }, kill() {}, once(event, fn) { if (event === 'close') { this.close = fn; setImmediate(() => fn(args[0] === 'inspect' ? 1 : 0)); } } }; return child; }, preflight: async () => true });
   await assert.rejects(ex.execute({ call: { command: 'printf', args: ['x'], call_id: 'overflow' } }), OutputLimitError);
   assert.equal(seen.includes('-i'), true);
 });
@@ -121,22 +121,24 @@ test('docker create cancellation reaps and reconciles the exact generated identi
   assert.equal(commands.slice(1).every(args => args.at(-1).startsWith('yoloharness-')), true);
 });
 
-test('docker reconciliation distinguishes not-found from ambiguous inspect failures', async () => {
-  const run = async inspectOutput => {
+test('docker reconciliation binds not-found evidence to the exact generated identity', async () => {
+  const run = async inspectOutputFor => {
     const commands = [];
     const ex = new DockerExecutor({ image: 'yolo:test', workspace: '/tmp', spawn: (command, args) => {
       commands.push(args);
-      const child = { stdin: { end() {} }, stdout: { on(event, fn) { if (event === 'data' && args[0] === 'inspect') setImmediate(() => fn(inspectOutput)); if (event === 'data' && args[0] === 'start') setImmediate(() => fn(JSON.stringify({ version: 1, ok: true, call_id: 'inspect-case', code: 0, output: '' }) + '\n')); } }, stderr: { on() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn.call(child, args[0] === 'inspect' ? 1 : args[0] === 'start' ? 2 : 0)); } };
+      const child = { stdin: { end() {} }, stdout: { on(event, fn) { if (event === 'data' && args[0] === 'inspect') setImmediate(() => fn(inspectOutputFor(args.at(-1)))); if (event === 'data' && args[0] === 'start') setImmediate(() => fn(JSON.stringify({ version: 1, ok: true, call_id: 'inspect-case', code: 0, output: '' }) + '\n')); } }, stderr: { on() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn.call(child, args[0] === 'inspect' ? 1 : args[0] === 'start' ? 2 : 0)); } };
       return child;
     }, preflight: async () => true });
     let error;
     try { await ex.execute({ call: { command: 'true', args: [], call_id: 'inspect-case' } }); } catch (value) { error = value; }
     return { commands: commands.map(args => args[0]), error };
   };
-  const absent = await run('Error: No such container: yoloharness-x');
+  const absent = await run(name => `Error: No such container: ${name}`);
   assert.deepEqual(absent.commands, ['create', 'start', 'kill', 'rm', 'inspect']);
   assert.match(absent.error.message, /executor failed/);
-  const ambiguous = await run('Error: permission denied contacting daemon');
+  const mismatched = await run(() => 'Error: No such container: a-different-container');
+  assert.match(mismatched.error.message, /cleanup/);
+  const ambiguous = await run(() => 'Error: permission denied contacting daemon');
   assert.match(ambiguous.error.message, /cleanup/);
 });
 
@@ -194,6 +196,19 @@ test('production endpoint rejects query and fragment before credential reads', a
     await assert.rejects(configuredProvider(), /canonical HTTPS Responses endpoint/);
   }
   for (const [key, value] of Object.entries({ YOLO_RESPONSES_URL: old.url, YOLO_MODEL: old.model, YOLO_AUTH_FILE: old.file })) {
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
+});
+
+test('production provider uses stored client identity when transient env is absent', async () => {
+  const old = { url: process.env.YOLO_RESPONSES_URL, model: process.env.YOLO_MODEL, file: process.env.YOLO_AUTH_FILE, client: process.env.YOLO_CLIENT_ID };
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-cli-auth-'));
+  process.env.YOLO_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
+  process.env.YOLO_MODEL = 'fixture'; process.env.YOLO_AUTH_FILE = join(dir, 'credentials.json'); delete process.env.YOLO_CLIENT_ID;
+  await new AuthStore(process.env.YOLO_AUTH_FILE).save({ accessToken: 'synthetic', refreshToken: 'refresh', clientId: 'stored-client' });
+  const provider = await configuredProvider();
+  assert.equal(provider.authClient.config.clientId, 'stored-client');
+  for (const [key, value] of Object.entries({ YOLO_RESPONSES_URL: old.url, YOLO_MODEL: old.model, YOLO_AUTH_FILE: old.file, YOLO_CLIENT_ID: old.client })) {
     if (value === undefined) delete process.env[key]; else process.env[key] = value;
   }
 });

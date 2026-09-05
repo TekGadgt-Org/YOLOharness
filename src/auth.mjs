@@ -1,4 +1,4 @@
-import { mkdir, rename, open, readFile, chmod, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, rename, open, readFile, chmod, rm, stat, writeFile, readdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -45,5 +45,5 @@ export class AuthClient {
       const current = await this.store.load() ?? credentials;
       if ((current.generation ?? 0) > (credentials.generation ?? 0)) return current;
       const token=await this.request(this.config.tokenUrl,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded',accept:'application/json'},body:new URLSearchParams({grant_type:'refresh_token',refresh_token:current.refreshToken,client_id:this.config.clientId})},signal); if(!token.access_token) throw new AuthError('refresh returned no access token','reauth_required'); const next={...current,accessToken:token.access_token,generation:(current.generation ?? 0)+1}; if(token.refresh_token) next.refreshToken=token.refresh_token; if(token.expires_in) next.expiresAt=Date.now()+Number(token.expires_in)*1000; await this.store.save(next); return next;
-    } finally { if (owned) { try { const current=JSON.parse(await readFile(`${lock}/owner.json`,'utf8')); if (current.owner===owner) await rm(lock,{recursive:true,force:true}); } catch {} } } })(); try{return await this.refreshing;} finally{this.refreshing=null;} }
+    } finally { if (owned) { try { const current=JSON.parse(await readFile(`${lock}/owner.json`,'utf8')); if (current.owner===owner && (await readdir(lock)).every(entry => !entry.startsWith('reclaim-'))) await rm(lock,{recursive:true,force:true}); } catch {} } } })(); try{return await this.refreshing;} finally{this.refreshing=null;} }
 }

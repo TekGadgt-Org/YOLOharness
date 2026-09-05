@@ -97,10 +97,26 @@ test('local HTTP provider to runtime to executor preserves the exec bridge contr
   t.after(() => s.close());
   const calls = [];
   const provider = new ConfiguredProvider({ credentials: { accessToken: 'synthetic-token' }, url: `${base}/responses`, model: 'fixture', fetch });
-  const executor = { async execute({ call }) { calls.push(call); return { version: 1, ok: true, call_id: call.call_id, code: 0, output: 'ok' }; } };
-  const record = await runOnce({ prompt: 'bridge', provider, executor, tools: [EXEC_TOOL], workspace: await mkdtemp(join(tmpdir(), 'yolo-')) });
-  assert.equal(record.status, 'completed');
-  assert.deepEqual(calls, [{ command: 'printf', args: ['ok'], call_id: 'bridge-1' }]);
+  let envelope;
+  const executor = new DockerExecutor({
+    image: 'yolo:test', workspace: await mkdtemp(join(tmpdir(), 'yolo-bridge-')), preflight: async () => true,
+    spawn: (command, args) => {
+      const operation = args[0];
+      const child = {
+        stdin: { end(value) { if (operation === 'start') { envelope = JSON.parse(value); calls.push(envelope.call); } } },
+        stdout: { on(event, fn) { if (event === 'data' && operation === 'start') setImmediate(() => fn(JSON.stringify({ version: 1, ok: true, call_id: 'bridge-1', code: 0, output: 'ok' }))); if (event === 'data' && operation === 'inspect') setImmediate(() => fn(`Error: No such container: ${args.at(-1)}`)); } },
+        stderr: { on() {} },
+        kill() {},
+        once(event, fn) { if (event === 'close') setImmediate(() => fn(operation === 'start' ? 0 : operation === 'inspect' ? 1 : 0)); },
+      };
+      return child;
+    },
+  });
+  const record = await runOnce({ prompt: 'bridge', provider, executor, tools: [EXEC_TOOL] });
+  assert.equal(record.status, 'completed', JSON.stringify(record));
+  assert.deepEqual(calls, [{ command: 'printf', args: ['ok'] }]);
+  assert.equal(envelope.version, 1);
+  assert.equal(envelope.call_id, 'bridge-1');
 });
 
 test('SSE parser handles BOM, comments, CRLF and multiline data', async ()=> { const got=[...parseSSE(new TextEncoder().encode('\ufeff: hi\r\ndata: {"a":\r\ndata: 1}\r\n\r\n'))]; assert.deepEqual(got,['{"a":\n1}']); assert.deepEqual(JSON.parse(got[0]),{a:1}); });
@@ -255,6 +271,19 @@ test('worker receipts use a closed, typed success/failure schema', () => {
   assert.equal(validateReceipt({ version: 1, ok: true, call_id: 'c', code: 0, output: [] }, 'c'), false);
   assert.equal(validateReceipt({ version: 1, ok: true, call_id: 'c', code: 1, output: '' }, 'c'), false);
   assert.equal(validateReceipt({ version: 1, ok: false, call_id: 'c', code: 1, output: '', error: 'failed', extra: 1 }, 'c'), false);
+});
+
+test('worker emits a paired typed failure receipt for spawn and validation errors', async () => {
+  const worker = spawn(process.execPath, ['worker.mjs'], { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'] });
+  worker.stdin.end(JSON.stringify({ version: 1, call_id: 'missing-command', call: { command: '/definitely/not-a-command', args: [] } }) + '\n');
+  const chunks = [];
+  for await (const chunk of worker.stdout) chunks.push(chunk);
+  const receipt = JSON.parse(Buffer.concat(chunks).toString('utf8').trim());
+  assert.equal(validateReceipt(receipt, 'missing-command'), true);
+  assert.equal(receipt.ok, false);
+  assert.equal(typeof receipt.output, 'string');
+  assert.equal(Number.isInteger(receipt.code), true);
+  assert.equal(receipt.call_id, 'missing-command');
 });
 
 test('production endpoint rejects query and fragment before credential reads', async () => {

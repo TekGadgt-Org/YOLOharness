@@ -83,7 +83,7 @@ export async function configuredImage() {
   }
   try {
     const value = JSON.parse(await readFile(imageMetadataPath(), 'utf8'));
-    if (value?.version !== 1 || typeof value.imageId !== 'string' || !value.imageId) throw new Error('invalid image metadata');
+    if (value?.version !== 1 || typeof value.imageId !== 'string' || !/^sha256:[0-9a-f]{64}$/i.test(value.imageId)) throw new Error('invalid image metadata');
     return value.imageId;
   } catch (error) { if (error.code === 'ENOENT') throw new MissingProviderError('no runtime image configured; run `yolo setup` before starting a run'); throw error; }
 }

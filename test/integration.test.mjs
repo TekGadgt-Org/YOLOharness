@@ -5,6 +5,7 @@ import { mkdtemp, readFile, stat, rm, utimes, mkdir, writeFile, readdir } from '
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
+
 import { execFileSync } from 'node:child_process';
 import { AuthClient, AuthStore } from '../src/auth.mjs';
 import { ResponsesClient, parseSSE } from '../src/responses.mjs';
@@ -12,9 +13,39 @@ import { DockerExecutor, DockerUnavailableError, OutputLimitError, validateRecei
 import { configuredProvider } from '../src/cli.mjs';
 import { runOnce, EXEC_TOOL } from '../src/runtime.mjs';
 import { ConfiguredProvider } from '../src/provider.mjs';
+import { ConfigStore, validateModel, ConfigError, configPath } from '../src/config.mjs';
+import { main, resolveModel } from '../src/cli.mjs';
 
 const json = (res, value, status=200) => { res.writeHead(status, {'content-type':'application/json'}); res.end(JSON.stringify(value)); };
 function server(handler) { return new Promise(async resolve => { const s=http.createServer(handler); await new Promise(r=>s.listen(0,'127.0.0.1',r)); resolve({s, base:`http://127.0.0.1:${s.address().port}`}); }); }
+
+test('model configuration roundtrips in XDG config and preserves exact spelling', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-config-')); const path = join(dir, 'yoloharness', 'config.json');
+  const store = new ConfigStore(path); await store.save('Provider/MODEL:v2');
+  assert.deepEqual(await store.load(), { version: 1, model: 'Provider/MODEL:v2' });
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
+});
+
+test('model configuration rejects invalid identifiers and malformed schemas without fallback', async () => {
+  for (const value of ['', 'has space', 'has\nnewline', '\u0000']) assert.throws(() => validateModel(value), ConfigError);
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-config-invalid-')); const path = join(dir, 'config.json');
+  await writeFile(path, '{not json'); await assert.rejects(new ConfigStore(path).load(), /malformed JSON/);
+  await writeFile(path, JSON.stringify({ version: 2, model: 'fallback' })); await assert.rejects(new ConfigStore(path).load(), /unsupported schema/);
+});
+
+test('failed model config writes preserve the old file and remove temporary files', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-config-fault-')); const path = join(dir, 'config.json'); const original = new ConfigStore(path); await original.save('old-model');
+  const failing = new ConfigStore(path, { syncFile: async () => { throw new Error('file fsync failed'); } }); await assert.rejects(failing.save('new-model'), /file fsync failed/);
+  assert.deepEqual(await original.load(), { version: 1, model: 'old-model' }); assert.deepEqual((await readdir(dir)).filter(name => name.includes('.tmp')), []);
+});
+
+test('config command persists model and runtime override is non-persistent', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-config-cli-')); const old = process.env.XDG_CONFIG_HOME; process.env.XDG_CONFIG_HOME = dir;
+  try {
+    const out = { stdout: { write() {} }, stderr: { write() {} } }; assert.equal(await main(['config', 'set', 'model', 'Exact-Case'], out), 0); assert.equal((await new ConfigStore(configPath()).load()).model, 'Exact-Case');
+    delete process.env.YOLO_MODEL; assert.equal(await resolveModel(), 'Exact-Case'); process.env.YOLO_MODEL = 'Transient'; assert.equal(await resolveModel(), 'Transient'); assert.equal((await new ConfigStore(configPath()).load()).model, 'Exact-Case');
+  } finally { if (old === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = old; delete process.env.YOLO_MODEL; }
+});
 
 test('device auth issues, polls, exchanges, and stores restrictive credentials', async t => {
   const calls=[]; const {s,base}=await server((req,res)=>{ calls.push([req.method,req.url]); if(req.url==='/issue') return json(res,{user_code:'TEST-CODE',device_auth_id:'fixture-device',interval:1}); if(req.url==='/poll') return json(res,{authorization_code:'auth-code',code_verifier:'verifier'}); if(req.url==='/token') return json(res,{access_token:'access-secret',refresh_token:'refresh-secret',expires_in:3600}); }); t.after(()=>s.close());

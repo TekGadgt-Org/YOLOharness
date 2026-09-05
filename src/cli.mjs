@@ -3,6 +3,7 @@ import { runOnce, FixtureProvider, MissingProviderError, EXEC_TOOL } from './run
 import { AuthClient, AuthStore } from './auth.mjs';
 import { ConfiguredProvider } from './provider.mjs';
 import { DockerExecutor } from './docker-executor.mjs';
+import { ConfigStore, configPath, validateModel } from './config.mjs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -14,7 +15,7 @@ const AUTH_ENDPOINTS = Object.freeze({
   verificationUrl: 'https://auth.openai.com/codex/device',
   redirectUri: 'https://auth.openai.com/deviceauth/callback',
 });
-function usage() { return 'Usage: yolo [-t MINUTES] [--json] [--fixture] <prompt>\n       yolo --help\n       yolo --version'; }
+function usage() { return 'Usage: yolo [-t MINUTES] [--json] [--fixture] <prompt>\n       yolo config set model <model-id>\n       yolo auth login|status|logout\n       yolo --help\n       yolo --version'; }
 export function parseArgs(args) {
   let minutes = 10; let json = false; let fixture = false; const prompt = [];
   for (let i = 0; i < args.length; i += 1) {
@@ -35,9 +36,10 @@ export function parseArgs(args) {
   return { minutes, json, fixture, prompt: prompt.join(' ') };
 }
 
-export async function main(args = process.argv.slice(2), io = { stdout: process.stdout, stderr: process.stderr }) {
+export async function main(args = process.argv.slice(2), io = { stdout: process.stdout, stderr: process.stderr }, { clientFactory } = {}) {
   try {
-    if (args[0] === 'auth') return await authCommand(args.slice(1), io);
+    if (args[0] === 'auth') return await authCommand(args.slice(1), io, { clientFactory });
+    if (args[0] === 'config') return await configCommand(args.slice(1), io);
     const options = parseArgs(args);
     if (options.help) { io.stdout.write(`${usage()}\n`); return 0; }
     if (options.version) { io.stdout.write(`${VERSION}\n`); return 0; }
@@ -72,7 +74,8 @@ class CliSignalTestExecutor extends DockerExecutor {
 }
 
 export async function configuredProvider() {
-  if (!process.env.YOLO_RESPONSES_URL || !process.env.YOLO_MODEL) throw new MissingProviderError();
+  const model = await resolveModel();
+  if (!process.env.YOLO_RESPONSES_URL) throw new MissingProviderError();
   const rawEndpoint = process.env.YOLO_RESPONSES_URL;
   const canonicalEndpoint = 'https://chatgpt.com/backend-api/codex/responses';
   if (rawEndpoint !== canonicalEndpoint) throw new TypeError('YOLO_RESPONSES_URL must be the canonical HTTPS Responses endpoint');
@@ -88,16 +91,36 @@ export async function configuredProvider() {
   if (!credentials) throw new MissingProviderError();
   if (typeof credentials.clientId !== 'string' || !credentials.clientId) throw new MissingProviderError();
   const authClient = new AuthClient(authConfig(new AuthStore(path), credentials.clientId, false));
-  return new ConfiguredProvider({ credentials, url: process.env.YOLO_RESPONSES_URL, model: process.env.YOLO_MODEL, authClient });
+  return new ConfiguredProvider({ credentials, url: process.env.YOLO_RESPONSES_URL, model, authClient });
+}
+
+export async function resolveModel() {
+  if (process.env.YOLO_MODEL !== undefined) return validateModel(process.env.YOLO_MODEL);
+  const saved = await new ConfigStore(configPath()).load();
+  if (!saved) throw new MissingProviderError('no model configured; run `yolo config set model <model-id>`');
+  return saved.model;
+}
+
+async function configCommand(args, io) {
+  if (args.length !== 3 || args[0] !== 'set' || args[1] !== 'model') throw new TypeError('usage: yolo config set model <model-id>');
+  const model = validateModel(args[2]); await new ConfigStore(configPath()).save(model); io.stdout.write(`saved model ${model}\n`); return 0;
 }
 
 function authConfig(store, clientId = process.env.YOLO_CLIENT_ID, allowOverrides = true) { return { clientId, ...(allowOverrides ? { issueUrl: process.env.YOLO_AUTH_ISSUE_URL ?? AUTH_ENDPOINTS.issueUrl, pollUrl: process.env.YOLO_AUTH_POLL_URL ?? AUTH_ENDPOINTS.pollUrl, tokenUrl: process.env.YOLO_AUTH_TOKEN_URL ?? AUTH_ENDPOINTS.tokenUrl, verificationUrl: process.env.YOLO_AUTH_VERIFY_URL ?? AUTH_ENDPOINTS.verificationUrl, redirectUri: process.env.YOLO_AUTH_REDIRECT_URI ?? AUTH_ENDPOINTS.redirectUri } : AUTH_ENDPOINTS), store }; }
-async function authCommand(args, io) {
+export async function authCommand(args, io, { clientFactory } = {}) {
   const path = process.env.YOLO_AUTH_FILE ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'yoloharness', 'credentials.json'); const store=new AuthStore(path);
   if(args[0]==='status'){const c=await store.load();io.stdout.write(c?`authenticated (expires ${c.expiresAt?new Date(c.expiresAt).toISOString():'unknown'})\n`:'not authenticated\n');return 0;}
   if(args[0]==='logout'){await store.clear();io.stdout.write('local credentials removed\n');return 0;}
   if(args[0]!=='login') throw new TypeError('usage: yolo auth login|status|logout');
-  const client=new AuthClient(authConfig(store, process.env.YOLO_CLIENT_ID, false)); const attempt=await client.begin(); io.stdout.write(`Open ${attempt.verificationUrl} and enter ${attempt.userCode}\n`); await client.finish(attempt); io.stdout.write('authenticated\n'); return 0;
+  const client=clientFactory ? clientFactory(store) : new AuthClient(authConfig(store, process.env.YOLO_CLIENT_ID, false)); const attempt=await client.begin(); io.stdout.write(`Open ${attempt.verificationUrl} and enter ${attempt.userCode}\n`); await client.finish(attempt); io.stdout.write('authenticated\n');
+  if (io.stdin?.isTTY) {
+    const current = await new ConfigStore(configPath()).load();
+    const { createInterface } = await import('node:readline/promises'); const rl = createInterface({ input: io.stdin, output: io.stdout }); let interrupted = false; rl.on('SIGINT', () => { interrupted = true; rl.close(); });
+    try { const answer = await rl.question(`Model name?${current ? ` [${current.model}]` : ''} `); if (interrupted || answer === '' && (io.stdin.readableEnded || io.stdin.destroyed)) throw Object.assign(new Error('input ended'), { code: 'EOF' }); const model = answer === '' && current ? current.model : validateModel(answer); await new ConfigStore(configPath()).save(model); io.stdout.write(`saved model ${model}\n`); }
+    catch (error) { if (error.code === 'EOF' || error.code === 'ERR_USE_AFTER_CLOSE' || error.code === 'ABORT_ERR' || error.code === 'ERR_STREAM_PREMATURE_CLOSE') io.stderr.write('authentication succeeded; model setup unfinished (run `yolo config set model <model-id>`)\n'); else throw error; }
+    finally { rl.close(); }
+  } else if (!(await new ConfigStore(configPath()).load())) io.stderr.write('authentication succeeded; set a model with `yolo config set model <model-id>`\n');
+  return 0;
 }
 
 if (process.argv[1] && (process.argv[1].endsWith('/cli.mjs') || process.argv[1].endsWith('/yolo'))) {

@@ -6,7 +6,9 @@ A ten-minute experiment in the harness Astra would choose for itself: a small, i
 
 ## Current direction
 
-A thin, container-first, one-shot agent: `yolo "<prompt>"` or `yolo -t <minutes> "<prompt>"`. No full chat interface. The executable provides an explicit deterministic offline fixture and a direct, explicitly configured Responses adapter; container execution is fail-closed preparation.
+A thin, container-first, one-shot agent: `yolo "<prompt>"` or `yolo -t <minutes> "<prompt>"`. Ordinary runs execute the provider, planner, parser, dispatch, and generated commands inside one non-root Docker container. The host process is only a bounded launcher/supervisor; `yolo --fixture` remains an explicit offline test path.
+
+Run `yolo setup` to build the installation-owned runtime image and store its immutable local image ID under `$XDG_DATA_HOME/yoloharness/image.json` (or `$HOME/.local/share/yoloharness/image.json`). Ordinary runs use that exact ID with `--pull=never`. The selected project is the only host bind at `/workspace`; the runtime has a read-only root, dropped capabilities, bounded tmpfs/resource limits, and network egress for provider traffic. Project contents and the in-container access token are intentionally not treated as confidential from generated code.
 
 ## Direct provider setup (explicit opt-in)
 

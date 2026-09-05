@@ -1,0 +1,25 @@
+#!/usr/bin/env node
+import { readFile } from 'node:fs/promises';
+import { decodeBootstrap } from './bootstrap.mjs';
+import { ConfiguredProvider } from './provider.mjs';
+import { runOnce, EXEC_TOOL } from './runtime.mjs';
+
+const MAX_INPUT = 128 * 1024;
+let input = Buffer.alloc(0);
+for await (const chunk of process.stdin) {
+  input = Buffer.concat([input, Buffer.from(chunk)]);
+  if (input.length > MAX_INPUT) throw new Error('bootstrap too large');
+}
+let record;
+try {
+  const boot = decodeBootstrap(input);
+  if (boot.expiresAt <= boot.deadline) throw new Error('access token does not cover run deadline');
+  const endpoint = process.env.YOLO_RESPONSES_URL;
+  if (!endpoint) throw new Error('container provider endpoint is not configured');
+  const provider = new ConfiguredProvider({ credentials: { accessToken: boot.accessToken, expiresAt: boot.expiresAt }, url: endpoint, model: boot.model });
+  const remaining = Math.max(1, (boot.deadline - Date.now()) / 60000);
+  record = await runOnce({ prompt: boot.prompt, minutes: remaining, workspace: '/workspace', provider, tools: [EXEC_TOOL], maxSteps: 100 });
+} catch (error) {
+  record = { version: 1, run_id: null, status: 'failed', result: null, evidence: [], artifacts: [], errors: [error?.message ?? String(error)] };
+}
+process.stdout.write(`${JSON.stringify(record)}\n`);

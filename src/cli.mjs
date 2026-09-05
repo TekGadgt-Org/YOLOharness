@@ -3,8 +3,15 @@ import { runOnce, FixtureProvider, MissingProviderError, EXEC_TOOL } from './run
 import { AuthClient, AuthStore } from './auth.mjs';
 import { ConfiguredProvider } from './provider.mjs';
 import { DockerExecutor } from './docker-executor.mjs';
-import { ConfigStore, configPath, configRoot, validateModel } from './config.mjs';
-import { join } from 'node:path';
+import { ConfigStore, configPath, configRoot, validateModel, imageMetadataPath } from './config.mjs';
+import { ContainerLauncher } from './container-launcher.mjs';
+import { readFile, mkdir, cp, rm, writeFile } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+const execFileAsync = promisify(execFile);
 
 const VERSION = '0.1.0';
 const AUTH_ENDPOINTS = Object.freeze({
@@ -14,7 +21,7 @@ const AUTH_ENDPOINTS = Object.freeze({
   verificationUrl: 'https://auth.openai.com/codex/device',
   redirectUri: 'https://auth.openai.com/deviceauth/callback',
 });
-function usage() { return 'Usage: yolo [-t MINUTES] [--json] [--fixture] <prompt>\n       yolo config set model <model-id>\n       yolo auth login|status|logout\n       yolo --help\n       yolo --version'; }
+function usage() { return 'Usage: yolo [-t MINUTES] [--json] [--fixture] <prompt>\n       yolo setup\n       yolo config set model <model-id>\n       yolo auth login|status|logout\n       yolo --help\n       yolo --version'; }
 export function parseArgs(args) {
   let minutes = 10; let json = false; let fixture = false; const prompt = [];
   for (let i = 0; i < args.length; i += 1) {
@@ -37,6 +44,7 @@ export function parseArgs(args) {
 
 export async function main(args = process.argv.slice(2), io = { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr }, { clientFactory } = {}) {
   try {
+    if (args[0] === 'setup') return await setupCommand(io);
     if (args[0] === 'auth') return await authCommand(args.slice(1), io, { clientFactory });
     if (args[0] === 'config') return await configCommand(args.slice(1), io);
     const options = parseArgs(args);
@@ -49,7 +57,16 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     const workspace = process.cwd();
     const cliSignalTest = process.env.YOLO_REAL_DOCKER === '1' && process.env.YOLO_CLI_SIGINT_TEST === '1';
     const dockerSelected = !options.fixture && (Boolean(process.env.YOLO_DOCKER_IMAGE) || cliSignalTest);
-    const record = await runOnce({ prompt: options.prompt, minutes: options.minutes, workspace, provider: options.fixture ? new FixtureProvider() : cliSignalTest ? new CliSignalTestProvider() : await configuredProvider(), executor: !dockerSelected ? undefined : cliSignalTest ? new CliSignalTestExecutor({ image: process.env.YOLO_DOCKER_IMAGE, workspace, name: process.env.YOLO_CLI_SIGINT_CONTAINER_NAME }) : new DockerExecutor({ image: process.env.YOLO_DOCKER_IMAGE, workspace }), tools: dockerSelected ? [EXEC_TOOL] : [], signal: controller.signal });
+    let record;
+    if (options.fixture) record = await runOnce({ prompt: options.prompt, minutes: options.minutes, workspace, provider: new FixtureProvider(), signal: controller.signal });
+    else if (cliSignalTest) record = await runOnce({ prompt: options.prompt, minutes: options.minutes, workspace, provider: new CliSignalTestProvider(), executor: new CliSignalTestExecutor({ image: process.env.YOLO_DOCKER_IMAGE, workspace, name: process.env.YOLO_CLI_SIGINT_CONTAINER_NAME }), tools: [EXEC_TOOL], signal: controller.signal });
+    else {
+      const model = await resolveModel();
+      validateRuntimeEndpoint();
+      const image = await configuredImage();
+      const credentials = await runtimeCredentials(options.minutes);
+      record = await new ContainerLauncher({ image, workspace, responsesUrl: process.env.YOLO_RESPONSES_URL, timeoutMs: options.minutes * 60_000 + 10_000 }).launch({ prompt: options.prompt, model, deadline: Date.now() + options.minutes * 60_000, accessToken: credentials.accessToken, expiresAt: credentials.expiresAt }, { signal: controller.signal });
+    }
     process.removeListener('SIGINT', onInterrupt);
     io.stdout.write(`${options.json ? JSON.stringify(record) : `${record.status}: ${record.result ?? record.errors.join('; ')}`}\n`);
     return record.status === 'completed' ? 0 : record.status === 'interrupted' ? 130 : record.status === 'deadline' ? 124 : 1;
@@ -57,6 +74,52 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     const message = error instanceof MissingProviderError ? error.message : error.message;
     io.stderr.write(`${message}\n`); return 1;
   }
+}
+
+export async function configuredImage() {
+  if (process.env.YOLO_DOCKER_IMAGE) {
+    if (!/^sha256:[0-9a-f]{64}$/i.test(process.env.YOLO_DOCKER_IMAGE)) throw new MissingProviderError('runtime image must be an immutable local image ID; run `yolo setup`');
+    return process.env.YOLO_DOCKER_IMAGE;
+  }
+  try {
+    const value = JSON.parse(await readFile(imageMetadataPath(), 'utf8'));
+    if (value?.version !== 1 || typeof value.imageId !== 'string' || !value.imageId) throw new Error('invalid image metadata');
+    return value.imageId;
+  } catch (error) { if (error.code === 'ENOENT') throw new MissingProviderError('no runtime image configured; run `yolo setup` before starting a run'); throw error; }
+}
+
+export async function setupCommand(io) {
+  const context = await mkdtemp(join(tmpdir(), 'yoloharness-image-'));
+  try {
+    await cp(new URL('../package.json', import.meta.url), join(context, 'package.json'));
+    await cp(new URL('../src', import.meta.url), join(context, 'src'), { recursive: true });
+    const docker = process.env.YOLO_DOCKER_COMMAND ?? 'docker';
+    const tag = `yoloharness-local:${VERSION}`;
+    await execFileAsync(docker, ['build', '--pull', '-f', new URL('../assets/runtime/Dockerfile', import.meta.url).pathname, '-t', tag, context], { maxBuffer: 1024 * 1024 });
+    const { stdout } = await execFileAsync(docker, ['image', 'inspect', '--format', '{{.Id}}', tag], { maxBuffer: 16 * 1024 });
+    const imageId = stdout.trim();
+    if (!/^sha256:[0-9a-f]{64}$/i.test(imageId)) throw new Error('Docker returned an invalid immutable image ID');
+    await mkdir(dirname(imageMetadataPath()), { recursive: true, mode: 0o700 });
+    await writeFile(imageMetadataPath(), `${JSON.stringify({ version: 1, imageId })}\n`, { mode: 0o600 });
+    io.stdout.write(`runtime image ready: ${imageId}\n`); return 0;
+  } finally { await rm(context, { recursive: true, force: true }); }
+}
+
+export async function runtimeCredentials(minutes) {
+  const path = process.env.YOLO_AUTH_FILE ?? join(configRoot(), 'yoloharness', 'credentials.json');
+  const store = new AuthStore(path); let credentials = await store.load();
+  if (!credentials?.accessToken || !credentials?.refreshToken || !Number.isFinite(credentials.expiresAt)) throw new MissingProviderError('no usable credentials; run `yolo auth login`');
+  const required = Date.now() + minutes * 60_000 + 30_000;
+  if (credentials.expiresAt <= required) {
+    if (!credentials.clientId) throw new MissingProviderError('credential lifetime is insufficient and cannot be refreshed; run `yolo auth login`');
+    credentials = await new AuthClient(authConfig(store, credentials.clientId, false)).refresh(credentials);
+  }
+  if (!Number.isFinite(credentials.expiresAt) || credentials.expiresAt <= required) throw new MissingProviderError('access token lifetime does not cover the requested deadline; run `yolo auth login`');
+  return credentials;
+}
+
+export function validateRuntimeEndpoint() {
+  if (process.env.YOLO_RESPONSES_URL !== 'https://chatgpt.com/backend-api/codex/responses') throw new MissingProviderError('YOLO_RESPONSES_URL must be the canonical HTTPS Responses endpoint');
 }
 
 class CliSignalTestProvider {

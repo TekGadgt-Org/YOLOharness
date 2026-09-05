@@ -17,6 +17,13 @@ export function configRoot(env = process.env) {
   return xdg;
 }
 export function configPath(env = process.env) { return join(configRoot(env), 'yoloharness', 'config.json'); }
+export function dataRoot(env = process.env) {
+  const xdg = typeof env.XDG_DATA_HOME === 'string' && env.XDG_DATA_HOME.length > 0 && isAbsolute(env.XDG_DATA_HOME)
+    ? env.XDG_DATA_HOME
+    : join(env.HOME && isAbsolute(env.HOME) ? env.HOME : homedir(), '.local', 'share');
+  return join(xdg, 'yoloharness');
+}
+export function imageMetadataPath(env = process.env) { return join(dataRoot(env), 'image.json'); }
 
 export class ConfigStore {
   constructor(path, { syncFile = fh => fh.sync(), syncDirectory = fh => fh.sync() } = {}) { this.path = path; this.syncFile = syncFile; this.syncDirectory = syncDirectory; }

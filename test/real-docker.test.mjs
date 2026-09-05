@@ -20,6 +20,15 @@ class NamedExecutor extends DockerExecutor {
 const dockerInspect = name => JSON.parse(execFileSync('docker', ['inspect', name], { encoding: 'utf8' }))[0];
 const dockerNames = () => execFileSync('docker', ['ps', '-a', '--format', '{{.Names}}'], { encoding: 'utf8' }).trim().split(/\r?\n/).filter(Boolean);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const waitForClose = (closePromise, timeoutMs) => new Promise((resolve, reject) => {
+  const timer = setTimeout(() => reject(new Error(`CLI did not exit within ${timeoutMs}ms`)), timeoutMs);
+  closePromise.then(result => { clearTimeout(timer); resolve(result); }, error => { clearTimeout(timer); reject(error); });
+});
+const reapChild = async (child, closePromise) => {
+  if (!child || child.exitCode !== null) return;
+  child.kill('SIGKILL');
+  await Promise.race([closePromise, delay(2000)]);
+};
 
 test('real Docker worker enforces the phase1 boundary and cleans up', { skip }, async () => {
   const workspace = await mkdtemp('/tmp/yoloharness-real-test-');
@@ -131,15 +140,24 @@ test('real shipped CLI handles an OS SIGINT through Docker and cleans up', { ski
   const name = `yoloharness-real-cli-${randomUUID()}`;
   const marker = join(workspace, 'cli-interrupt-started.txt');
   const artifact = join(workspace, 'cli-after-interrupt.txt');
-  const controlArtifact = join(workspace, 'cli-control.txt');
-  const controlExecutor = new NamedExecutor({ image, workspace, timeoutMs: 5000 });
+  const controlName = `yoloharness-real-cli-control-${randomUUID()}`;
+  let control;
+  let controlClosed;
   let child;
   let childClosed;
   let childOutput = '';
   try {
-    const control = await controlExecutor.execute({ call: { call_id: 'real-cli-control', command: 'sh', args: ['-c', 'printf control > /workspace/cli-control.txt'] } });
-    assert.equal(control.ok, true);
-    assert.equal(await readFile(controlArtifact, 'utf8'), 'control');
+    control = spawn(process.execPath, [join(process.cwd(), 'src/cli.mjs'), '--json', 'cli sigint'], { cwd: workspace, env: { ...process.env, YOLO_REAL_DOCKER: '1', YOLO_CLI_SIGINT_TEST: '1', YOLO_DOCKER_IMAGE: image, YOLO_CLI_SIGINT_CONTAINER_NAME: controlName }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let controlOutput = '';
+    control.stdout.on('data', chunk => { controlOutput += String(chunk); });
+    control.stderr.on('data', chunk => { controlOutput += String(chunk); });
+    controlClosed = once(control, 'close');
+    const [controlCode] = await waitForClose(controlClosed, 15000);
+    assert.equal(controlCode, 0, controlOutput);
+    assert.match(controlOutput, /"status":"completed"/);
+    assert.equal(await readFile(artifact, 'utf8'), 'late');
+    await rm(marker, { force: true });
+    await rm(artifact, { force: true });
     const baseline = new Set(dockerNames());
     child = spawn(process.execPath, [join(process.cwd(), 'src/cli.mjs'), '--json', 'cli sigint'], { cwd: workspace, env: { ...process.env, YOLO_REAL_DOCKER: '1', YOLO_CLI_SIGINT_TEST: '1', YOLO_DOCKER_IMAGE: image, YOLO_CLI_SIGINT_CONTAINER_NAME: name }, stdio: ['ignore', 'pipe', 'pipe'] });
     childClosed = once(child, 'close');
@@ -155,7 +173,7 @@ test('real shipped CLI handles an OS SIGINT through Docker and cleans up', { ski
     }
     assert.equal(dockerNames().includes(name), true);
     child.kill('SIGINT');
-    const [code] = await childClosed;
+    const [code] = await waitForClose(childClosed, 15000);
     child = undefined;
     assert.equal(code, 130, childOutput);
     assert.match(childOutput, /interrupt requested; stopping run/);
@@ -166,8 +184,10 @@ test('real shipped CLI handles an OS SIGINT through Docker and cleans up', { ski
     assert.equal(dockerNames().includes(name), false);
     assert.deepEqual([...baseline].filter(candidate => candidate === name), []);
   } finally {
-    if (child) { child.kill('SIGKILL'); await childClosed.catch(() => undefined); }
+    await reapChild(control, controlClosed);
+    await reapChild(child, childClosed);
     if (dockerNames().includes(name)) execFileSync('docker', ['rm', '--force', name], { stdio: 'ignore' });
+    if (dockerNames().includes(controlName)) execFileSync('docker', ['rm', '--force', controlName], { stdio: 'ignore' });
     assert.equal(dockerNames().includes(name), false);
     await rm(workspace, { recursive: true, force: true });
   }

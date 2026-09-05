@@ -9,7 +9,7 @@ Commands:
 - `docker build --pull -t yoloharness-phase1:local .`
 - `npm run test:docker`
 
-Result: 4 passed, 0 failed, 0 skipped.
+Result: 5 passed, 0 failed, 0 skipped.
 
 Observed through the actual `DockerExecutor` and worker:
 

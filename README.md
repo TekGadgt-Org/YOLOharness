@@ -6,7 +6,7 @@ A ten-minute experiment in the harness Astra would choose for itself: a small, i
 
 ## Current direction
 
-A thin, container-first, one-shot agent: `yolo "<prompt>"` or `yolo -t <minutes> "<prompt>"`. Ordinary runs execute the provider, planner, parser, dispatch, and generated commands inside one non-root Docker container. The host process is only a bounded launcher/supervisor; `yolo --fixture` remains an explicit offline test path.
+A thin, container-first, one-shot agent: `yolo "<prompt>"` or `yolo -t <minutes> "<prompt>"`. Ordinary runs execute the provider, planner, parser, dispatch, and generated commands inside one rootless Docker container. For the approved rootless-only compatibility exception, container UID 0 maps to the invoking host identity; rootful or unknown Docker is rejected. The host process is only a bounded launcher/supervisor; `yolo --fixture` remains an explicit offline test path.
 
 Run `yolo setup` to build the installation-owned runtime image and store its immutable local image ID under `$XDG_DATA_HOME/yoloharness/image.json` (or `$HOME/.local/share/yoloharness/image.json`). Ordinary runs use that exact ID with `--pull=never`. The selected project is the only host bind at `/workspace`; the runtime has a read-only root, dropped capabilities, bounded tmpfs/resource limits, and network egress for provider traffic. Project contents and the in-container access token are intentionally not treated as confidential from generated code.
 

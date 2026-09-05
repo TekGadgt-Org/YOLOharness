@@ -16,27 +16,34 @@ export class ContainerLauncher {
   async launch(bootstrap, { signal } = {}) {
     const startedAt = Date.now();
     const deadline = startedAt + this.timeoutMs;
+    const remaining = () => Math.max(1, deadline - Date.now());
     if (signal?.aborted) throw signal.reason;
     const source = await validateWorkspace(this.workspace, { signal, deadline });
     if (signal?.aborted) throw signal.reason;
+    if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
     const name = `yoloharness-${randomUUID()}`;
     const label = `yoloharness.run=${randomUUID()}`;
-    const identity = await containerIdentity(this.command, this.spawn, { signal, timeoutMs: this.timeoutMs });
+    const identity = await containerIdentity(this.command, this.spawn, { signal, timeoutMs: remaining() });
+    if (signal?.aborted) throw signal.reason;
+    if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
     const args = ['create', '--pull=never', '--name', name, '--label', label, '--init', '-i', '--user', `${identity.uid}:${identity.gid}`, '--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--cpus', '1', '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m', '--tmpfs', '/home/worker:rw,noexec,nosuid,size=16m', '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/tmp', '--env', `YOLO_RESPONSES_URL=${this.responsesUrl ?? ''}`, this.image, 'node', '/app/src/container-runtime.mjs'];
     let id;
     let attached;
     let creating;
+    let createAttempted = false;
     let reason;
     const abort = () => { reason = signal?.reason ?? Object.assign(new Error('container interrupted'), { code: 'interrupted' }); creating?.kill('SIGKILL'); attached?.kill('SIGKILL'); };
-    const timer = setTimeout(() => { reason = Object.assign(new Error('container deadline exceeded'), { code: 'deadline' }); creating?.kill('SIGKILL'); attached?.kill('SIGKILL'); }, this.timeoutMs);
+    const timer = setTimeout(() => { reason = Object.assign(new Error('container deadline exceeded'), { code: 'deadline' }); creating?.kill('SIGKILL'); attached?.kill('SIGKILL'); }, remaining());
     signal?.addEventListener('abort', abort, { once: true });
     try {
-      const create = operation(this.command, args, this.spawn, { timeoutMs: this.timeoutMs });
+      createAttempted = true;
+      const create = operation(this.command, args, this.spawn, { timeoutMs: remaining(), signal });
       creating = create.child;
       id = (await create.promise).trim();
       if (!/^sha256:|^[a-f0-9]{12,64}$/i.test(id)) throw new Error('docker did not return a container ID');
       if (reason || signal?.aborted) throw reason ?? signal.reason;
       creating = null;
+      if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
       attached = this.spawn(this.command, ['start', '--attach', '--interactive', id], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } });
       const result = await attachedOperation(attached, encodeBootstrap(bootstrap));
       if (reason) return { version: 1, run_id: null, status: reason.code === 'deadline' ? 'deadline' : 'interrupted', result: null, evidence: [], artifacts: [], errors: [reason.message] };
@@ -48,7 +55,7 @@ export class ContainerLauncher {
     } finally {
       clearTimeout(timer); signal?.removeEventListener('abort', abort);
       if (id) await cleanup(this.command, id, this.spawn);
-      else if (reason) await reconcileUnknownCreate(this.command, name, label, this.spawn);
+      else if (createAttempted) await reconcileUnknownCreate(this.command, name, label, this.spawn);
     }
   }
 }

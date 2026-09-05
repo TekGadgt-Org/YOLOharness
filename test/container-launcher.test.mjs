@@ -52,3 +52,17 @@ test('runtime source identity is a versioned sha256 digest', async () => {
   assert.match(identity.sourceDigest, /^sha256:[0-9a-f]{64}$/);
   assert.equal(identity.sourceVersion, '0.1.0');
 });
+
+test('launcher uses one absolute deadline and does not create after slow preflight', async () => {
+  const workspace = await mkdtemp('/tmp/yolo-workspace-deadline-');
+  const operations = [];
+  try {
+    const launcher = new ContainerLauncher({ image: 'sha256:' + 'b'.repeat(64), workspace, timeoutMs: 10, spawn: (_command, args) => {
+      operations.push(args[0]);
+      const listeners = new Map();
+      return { stdout: { on(event, fn) { if (event === 'data') setTimeout(() => fn('[\"name=rootless\"]'), 20); } }, stderr: { on() {} }, stdin: { end() {} }, kill() { setImmediate(() => listeners.get('close')?.(137)); }, once(event, fn) { listeners.set(event, fn); if (event === 'close') setTimeout(() => fn(0), 25); } };
+    } });
+    await assert.rejects(launcher.launch({ prompt: 'slow' }), /cleanup_unknown|deadline|operation/);
+    assert.deepEqual(operations, ['info']);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});

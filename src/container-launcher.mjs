@@ -48,7 +48,7 @@ export class ContainerLauncher {
       const create = operation(this.command, args, this.spawn, { timeoutMs: remaining(), signal });
       creating = create.child;
       id = (await create.promise).trim();
-      if (!/^[a-f0-9]{12,64}$/i.test(id)) throw new Error('docker did not return a container ID');
+      if (!/^[a-f0-9]{64}$/i.test(id)) throw new Error('docker did not return a full container ID');
       if (reason || signal?.aborted) throw reason ?? signal.reason;
       creating = null;
       if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
@@ -126,7 +126,7 @@ async function reconcileUnknownCreate(command, name, label, spawn) {
     const ids = output.trim().split(/\s+/).filter(id => /^[a-f0-9]{64}$/i.test(id));
     if (ids.length > 0) {
       absentSince = null;
-      for (const id of ids) await cleanup(command, id, spawn);
+      for (const id of ids) await cleanup(command, id, name, label, spawn);
     } else {
       absentSince ??= Date.now();
     }
@@ -144,7 +144,7 @@ async function verifyOwnedContainer(command, id, name, label, spawn) {
   let inspected;
   try { inspected = JSON.parse(output.trim()); } catch (error) { throw Object.assign(new Error('container ownership could not be verified'), { code: 'cleanup_unknown', cause: error }); }
   const labels = inspected?.Config?.Labels ?? {};
-  if (!/^[a-f0-9]{64}$/i.test(inspected?.Id ?? '') || !(inspected.Id === id || inspected.Id.startsWith(id)) || inspected?.Name !== `/${name}` || labels['yoloharness.run'] !== label) throw new Error(`container ownership mismatch (id=${inspected?.Id ?? 'missing'}, name=${inspected?.Name ?? 'missing'}, label=${labels['yoloharness.run'] ?? 'missing'})`);
+  if (!/^[a-f0-9]{64}$/i.test(inspected?.Id ?? '') || inspected.Id !== id || inspected?.Name !== `/${name}` || labels['yoloharness.run'] !== label) throw new Error(`container ownership mismatch (id=${inspected?.Id ?? 'missing'}, name=${inspected?.Name ?? 'missing'}, label=${labels['yoloharness.run'] ?? 'missing'})`);
   return inspected.Id;
 }
 

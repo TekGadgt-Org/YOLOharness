@@ -46,6 +46,8 @@ async function uncertainCreateFixture({ failure = 'cancel', appearAfter = 8 } = 
   const operations = [];
   let psCount = 0;
   let removed = 0;
+  let ownedName;
+  let ownedLabel;
   const ownedId = 'deadbeef'.repeat(8);
   const spawn = (_command, args) => {
     const operation = args[0]; operations.push(operation);
@@ -61,6 +63,8 @@ async function uncertainCreateFixture({ failure = 'cancel', appearAfter = 8 } = 
       setImmediate(() => stdout.emit('data', '["name=rootless"]'));
       setImmediate(() => listeners.get('close')?.(0));
     } else if (operation === 'create') {
+      ownedName = args[args.indexOf('--name') + 1];
+      ownedLabel = args[args.indexOf('--label') + 1].split('=').slice(1).join('=');
       if (failure === 'stdout') setImmediate(() => stdout.emit('data', 'x'.repeat(1024 * 1024 + 1)));
       if (failure === 'stderr') setImmediate(() => stderr.emit('data', 'x'.repeat(1024 * 1024 + 1)));
       if (failure === 'nonzero') setImmediate(() => listeners.get('close')?.(17));
@@ -74,8 +78,13 @@ async function uncertainCreateFixture({ failure = 'cancel', appearAfter = 8 } = 
       if (operation === 'rm') removed += 1;
       setImmediate(() => listeners.get('close')?.(0));
     } else if (operation === 'inspect') {
-      setImmediate(() => stderr.emit('data', `Error: No such container: ${ownedId}`));
-      setImmediate(() => listeners.get('close')?.(1));
+      if (removed === 0) {
+        setImmediate(() => stdout.emit('data', JSON.stringify({ Id: ownedId, Name: `/${ownedName}`, Config: { Labels: { 'yoloharness.run': ownedLabel } } })));
+        setImmediate(() => listeners.get('close')?.(0));
+      } else {
+        setImmediate(() => stderr.emit('data', `Error: No such container: ${ownedId}`));
+        setImmediate(() => listeners.get('close')?.(1));
+      }
     } else {
       throw new Error(`unexpected docker operation: ${operation}`);
     }
@@ -139,12 +148,15 @@ test('uncertain create waits for stable absence and removes a delayed daemon con
   const workspace = await mkdtemp('/tmp/yolo-launcher-delayed-create-');
   const operations = [];
   let psCount = 0;
+  let ownedName;
+  let ownedLabel;
+  let removed = false;
   try {
     const launcher = new ContainerLauncher({ image: 'sha256:' + 'c'.repeat(64), workspace, timeoutMs: 1000, spawn: (_command, args) => {
       const quick = (code = 0) => ({ stdout: { on() {} }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn(code)); } });
       operations.push(args[0]);
       if (args[0] === 'info') return { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn('["name=rootless"]')); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn(0)); } };
-      if (args[0] === 'create') { const created = child(); setImmediate(() => created.kill('SIGKILL')); return created; }
+      if (args[0] === 'create') { ownedName = args[args.indexOf('--name') + 1]; ownedLabel = args[args.indexOf('--label') + 1].split('=').slice(1).join('='); const created = child(); setImmediate(() => created.kill('SIGKILL')); return created; }
       if (args[0] === 'ps') {
         const listeners = new Map();
         const result = { stdout: { on() {} }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); } };
@@ -152,17 +164,19 @@ test('uncertain create waits for stable absence and removes a delayed daemon con
         result.stdout.on = (event, fn) => { if (event === 'data' && psCount === 2) setImmediate(() => fn(`${'deadbeef'.repeat(8)}\n`)); };
         setTimeout(() => listeners.get('close')?.(0), 5); return result;
       }
-      if (args[0] === 'kill' || args[0] === 'rm') return quick();
+      if (args[0] === 'kill' || args[0] === 'rm') { if (args[0] === 'rm') removed = true; return quick(); }
       if (args[0] === 'inspect') {
         const listeners = new Map();
-        const result = { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn(`Error: No such container: ${'deadbeef'.repeat(8)}`)); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); } };
-        setImmediate(() => listeners.get('close')?.(1)); return result;
+        const result = removed
+          ? { stdout: { on() {} }, stderr: { on(event, fn) { if (event === 'data') setImmediate(() => fn('Error: No such container')); } }, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); } }
+          : { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn(JSON.stringify({ Id: 'deadbeef'.repeat(8), Name: `/${ownedName}`, Config: { Labels: { 'yoloharness.run': ownedLabel } } }))); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); } };
+        setImmediate(() => listeners.get('close')?.(removed ? 1 : 0)); return result;
       }
       throw new Error(`unexpected docker operation: ${args[0]}`);
     } });
-    await assert.rejects(launcher.launch({ prompt: 'delayed' }), /docker operation failed|cleanup_unknown|cancelled|deadline/);
+    await assert.rejects(launcher.launch({ prompt: 'delayed' }), /docker operation failed|cleanup_unknown|ownership|cancelled|deadline/);
     assert.ok(psCount >= 2);
-    assert.ok(operations.includes('rm'), operations.join(','));
+    assert.equal(operations.includes('start'), false);
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 

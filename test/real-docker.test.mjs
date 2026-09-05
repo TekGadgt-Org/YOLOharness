@@ -49,7 +49,7 @@ async function fixture() {
   const daemonEndpoint = docker('context', 'inspect', '--format', '{{.Endpoints.docker.Host}}', docker('context', 'show').trim()).trim();
   assert.match(daemonEndpoint, /^unix:\/\//, 'real-Docker evidence requires an explicit local daemon endpoint');
   await writeFile(join(dockerConfig, 'config.json'), '{}\n');
-  const oldEnv = Object.fromEntries(['HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'YOLO_AUTH_FILE', 'PATH', 'DOCKER_CONFIG', 'DOCKER_HOST'].map(key => [key, process.env[key]]));
+  const oldEnv = Object.fromEntries(['HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'YOLO_AUTH_FILE', 'PATH', 'DOCKER_CONFIG', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_HOSTNAME', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH'].map(key => [key, process.env[key]]));
   try {
     const caDir = join(root, 'tls'); await mkdir(caDir);
     execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', join(caDir, 'ca.key'), '-out', join(caDir, 'ca.crt'), '-subj', '/CN=yoloharness-test-ca', '-days', '1'], { stdio: 'ignore' });
@@ -78,6 +78,7 @@ async function fixture() {
     const canary = docker('run', '--rm', '--pull=never', '--network', network, '--entrypoint', 'node', derivativeTag, '-e', "require('https').get('https://chatgpt.com/health',r=>{console.log(r.statusCode);r.resume();r.on('end',()=>process.exit(0))}).on('error',e=>{console.error(e.message);process.exit(1)})");
     assert.match(canary, /200|404|401/);
     const env = { ...process.env, HOME: join(root, 'home'), XDG_CONFIG_HOME: configHome, XDG_DATA_HOME: dataHome, YOLO_AUTH_FILE: join(configHome, 'yoloharness', 'credentials.json'), DOCKER_CONFIG: dockerConfig, DOCKER_HOST: daemonEndpoint, PATH: `${wrapperDir}:${process.env.PATH}` };
+    for (const key of ['DOCKER_CONTEXT', 'DOCKER_HOSTNAME', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH']) delete env[key];
     const child = spawn(process.execPath, [new URL('../src/cli.mjs', import.meta.url).pathname, '--json', 'whole-runtime nonce synthetic'], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = ''; let stderr = ''; child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
     const exit = await new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));

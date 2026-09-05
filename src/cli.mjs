@@ -115,8 +115,20 @@ export async function authCommand(args, io, { clientFactory } = {}) {
   const client=clientFactory ? clientFactory(store) : new AuthClient(authConfig(store, process.env.YOLO_CLIENT_ID, false)); const attempt=await client.begin(); io.stdout.write(`Open ${attempt.verificationUrl} and enter ${attempt.userCode}\n`); await client.finish(attempt); io.stdout.write('authenticated\n');
   if (io.stdin?.isTTY) {
     const current = await new ConfigStore(configPath()).load();
-    const { createInterface } = await import('node:readline/promises'); const rl = createInterface({ input: io.stdin, output: io.stdout }); let interrupted = false; rl.on('SIGINT', () => { interrupted = true; rl.close(); });
-    try { const answer = await Promise.race([rl.question(`Model name?${current ? ` [${current.model}]` : ''} `), new Promise((_, reject) => io.stdin.once?.('end', () => reject(Object.assign(new Error('input ended'), { code: 'EOF' }))))]); if (interrupted || answer === '' && (io.stdin.readableEnded || io.stdin.destroyed)) throw Object.assign(new Error('input ended'), { code: 'EOF' }); const model = answer === '' && current ? current.model : validateModel(answer); await new ConfigStore(configPath()).save(model); io.stdout.write(`saved model ${model}\n`); }
+    const { createInterface } = await import('node:readline/promises'); const rl = createInterface({ input: io.stdin, output: io.stdout }); let interrupted = false;
+    try {
+      const answer = await new Promise((resolve, reject) => {
+        let settled = false;
+        const cleanup = () => { io.stdin.removeListener?.('end', onEnd); rl.removeListener('SIGINT', onSigint); };
+        const settle = (fn, value) => { if (settled) return; settled = true; cleanup(); fn(value); };
+        const onEnd = () => setImmediate(() => settle(reject, Object.assign(new Error('input ended'), { code: 'EOF' })));
+        const onSigint = () => { interrupted = true; settle(resolve, ''); rl.close(); };
+        rl.once('SIGINT', onSigint);
+        const question = rl.question(`Model name?${current ? ` [${current.model}]` : ''} `);
+        io.stdin.once?.('end', onEnd);
+        question.then(value => settle(resolve, value), error => settle(reject, error));
+      });
+      if (interrupted || answer === '' && (io.stdin.readableEnded || io.stdin.destroyed)) throw Object.assign(new Error('input ended'), { code: 'EOF' }); const model = answer === '' && current ? current.model : validateModel(answer); await new ConfigStore(configPath()).save(model); io.stdout.write(`saved model ${model}\n`); }
     catch (error) { if (error.code === 'EOF' || error.code === 'ERR_USE_AFTER_CLOSE' || error.code === 'ABORT_ERR' || error.code === 'ERR_STREAM_PREMATURE_CLOSE') io.stderr.write('authentication succeeded; model setup unfinished (run `yolo config set model <model-id>`)\n'); else throw error; }
     finally { rl.close(); }
   } else if (!(await new ConfigStore(configPath()).load())) io.stderr.write('authentication succeeded; set a model with `yolo config set model <model-id>`\n');

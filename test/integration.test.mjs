@@ -70,6 +70,21 @@ test('interactive auth reports unfinished model setup on EOF without erasing pri
   try { assert.equal(await main(['auth', 'login'], io, { clientFactory }), 0); assert.equal((await store.load()).model, 'existing-model'); assert.match(errors.at(-1), /model setup unfinished/); } finally { if (old === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = old; }
 });
 
+test('configPath falls back to isolated HOME config when XDG_CONFIG_HOME is absent', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'yolo-config-home-')); const path = configPath({ HOME: home });
+  assert.equal(path, join(home, '.config', 'yoloharness', 'config.json'));
+  await new ConfigStore(path).save('home-model'); assert.equal((await new ConfigStore(path).load()).model, 'home-model');
+});
+
+test('interactive auth reports unfinished model setup on SIGINT without erasing prior config', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-auth-sigint-')); const old = process.env.XDG_CONFIG_HOME; process.env.XDG_CONFIG_HOME = dir;
+  const store = new ConfigStore(configPath()); await store.save('existing-model'); const errors = [];
+  const stdin = Readable.from(['\u0003']); stdin.isTTY = true; const io = { stdin, stdout: { write() {} }, stderr: { write(value) { errors.push(value); } } };
+  const clientFactory = () => ({ async begin() { return { verificationUrl: 'https://example.test/device', userCode: 'CODE' }; }, async finish() {} });
+  try { assert.equal(await Promise.race([main(['auth', 'login'], io, { clientFactory }), new Promise((_, reject) => setTimeout(() => reject(new Error('prompt hung')), 1000))]), 0); assert.equal((await store.load()).model, 'existing-model'); assert.match(errors.at(-1), /model setup unfinished/); }
+  finally { if (old === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = old; }
+});
+
 test('failed model config writes preserve the old file and remove temporary files', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'yolo-config-fault-')); const path = join(dir, 'config.json'); const original = new ConfigStore(path); await original.save('old-model');
   const failing = new ConfigStore(path, { syncFile: async () => { throw new Error('file fsync failed'); } }); await assert.rejects(failing.save('new-model'), /file fsync failed/);

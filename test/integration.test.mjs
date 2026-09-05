@@ -452,19 +452,21 @@ test('configured provider refreshes expired credentials before first provider re
 
 test('default CLI omits exec capability when Docker execution is not selected', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'yolo-cli-no-docker-'));
-  const old = { xdg: process.env.XDG_CONFIG_HOME, model: process.env.YOLO_MODEL, image: process.env.YOLO_DOCKER_IMAGE, url: process.env.YOLO_RESPONSES_URL, auth: process.env.YOLO_AUTH_FILE, fetch: globalThis.fetch };
+  const envNames = ['YOLO_REAL_DOCKER', 'YOLO_CLI_SIGINT_TEST', 'YOLO_CLI_SIGINT_CONTAINER_NAME', 'YOLO_AUTH_ISSUE_URL', 'YOLO_AUTH_POLL_URL', 'YOLO_AUTH_TOKEN_URL', 'YOLO_AUTH_VERIFY_URL', 'YOLO_AUTH_REDIRECT_URI'];
+  const old = { xdg: process.env.XDG_CONFIG_HOME, model: process.env.YOLO_MODEL, image: process.env.YOLO_DOCKER_IMAGE, url: process.env.YOLO_RESPONSES_URL, auth: process.env.YOLO_AUTH_FILE, fetch: globalThis.fetch, env: Object.fromEntries(envNames.map(name => [name, process.env[name]])) };
   const requests = [];
-  process.env.XDG_CONFIG_HOME = dir;
-  delete process.env.YOLO_MODEL;
-  delete process.env.YOLO_DOCKER_IMAGE;
-  process.env.YOLO_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
-  process.env.YOLO_AUTH_FILE = join(dir, 'credentials.json');
-  await new AuthStore(process.env.YOLO_AUTH_FILE).save({ clientId: 'synthetic-client', accessToken: 'synthetic-token', refreshToken: 'synthetic-refresh' });
-  globalThis.fetch = async (_url, init) => {
-    const body = JSON.parse(init.body); requests.push(body);
-    return { ok: true, body: new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('data: {"type":"response.completed","response":{"status":"completed"}}\n\n')); controller.close(); } }) };
-  };
   try {
+    process.env.XDG_CONFIG_HOME = dir;
+    delete process.env.YOLO_MODEL;
+    delete process.env.YOLO_DOCKER_IMAGE;
+    process.env.YOLO_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
+    process.env.YOLO_AUTH_FILE = join(dir, 'credentials.json');
+    for (const name of envNames) delete process.env[name];
+    await new AuthStore(process.env.YOLO_AUTH_FILE).save({ clientId: 'synthetic-client', accessToken: 'synthetic-token', refreshToken: 'synthetic-refresh' });
+    globalThis.fetch = async (_url, init) => {
+      const body = JSON.parse(init.body); requests.push(body);
+      return { ok: true, body: new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('data: {"type":"response.completed","response":{"status":"completed"}}\n\n')); controller.close(); } }) };
+    };
     await new ConfigStore(configPath()).save('synthetic-model');
     const output = []; const errors = [];
     assert.equal(await main(['--json', 'text only'], { stdin: { isTTY: false }, stdout: { write(value) { output.push(value); } }, stderr: { write(value) { errors.push(value); } } }), 0);
@@ -477,6 +479,10 @@ test('default CLI omits exec capability when Docker execution is not selected', 
     if (old.image === undefined) delete process.env.YOLO_DOCKER_IMAGE; else process.env.YOLO_DOCKER_IMAGE = old.image;
     if (old.url === undefined) delete process.env.YOLO_RESPONSES_URL; else process.env.YOLO_RESPONSES_URL = old.url;
     if (old.auth === undefined) delete process.env.YOLO_AUTH_FILE; else process.env.YOLO_AUTH_FILE = old.auth;
+    for (const name of envNames) {
+      const value = old.env[name];
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
     globalThis.fetch = old.fetch;
   }
 });

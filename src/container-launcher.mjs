@@ -6,11 +6,13 @@ import { encodeBootstrap } from './bootstrap.mjs';
 
 const MAX_OUTPUT = 1024 * 1024;
 const OP_TIMEOUT = 10_000;
+const CLEANUP_GRACE_MS = 500;
+const CLEANUP_POLL_MS = 50;
 
 export class ContainerLauncher {
-  constructor({ image, workspace = process.cwd(), command = 'docker', spawn = nodeSpawn, timeoutMs = 600000, responsesUrl } = {}) {
+  constructor({ image, workspace = process.cwd(), command = 'docker', spawn = nodeSpawn, timeoutMs = 600000, responsesUrl, network = 'bridge' } = {}) {
     if (!image || !workspace) throw new TypeError('container image and workspace are required');
-    this.image = image; this.workspace = workspace; this.command = command; this.spawn = spawn; this.timeoutMs = timeoutMs; this.responsesUrl = responsesUrl;
+    this.image = image; this.workspace = workspace; this.command = command; this.spawn = spawn; this.timeoutMs = timeoutMs; this.responsesUrl = responsesUrl; this.network = network;
   }
 
   async launch(bootstrap, { signal } = {}) {
@@ -26,7 +28,8 @@ export class ContainerLauncher {
     const identity = await containerIdentity(this.command, this.spawn, { signal, timeoutMs: remaining() });
     if (signal?.aborted) throw signal.reason;
     if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
-    const args = ['create', '--pull=never', '--name', name, '--label', label, '--init', '-i', '--user', `${identity.uid}:${identity.gid}`, '--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--cpus', '1', '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m', '--tmpfs', '/home/worker:rw,noexec,nosuid,size=16m', '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', '--env', `YOLO_RESPONSES_URL=${this.responsesUrl ?? ''}`, this.image, 'node', '/app/src/container-runtime.mjs'];
+    if (typeof this.network !== 'string' || !this.network || this.network.includes('\0') || this.network.length > 128) throw new TypeError('invalid container network');
+    const args = ['create', '--pull=never', '--name', name, '--label', label, '--init', '-i', '--user', `${identity.uid}:${identity.gid}`, '--network', this.network, '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--cpus', '1', '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m', '--tmpfs', '/home/worker:rw,noexec,nosuid,size=16m', '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', '--env', `YOLO_RESPONSES_URL=${this.responsesUrl ?? ''}`, this.image, 'node', '/app/src/container-runtime.mjs'];
     let id;
     let attached;
     let creating;
@@ -107,10 +110,23 @@ function attachedOperation(child, input) {
 }
 
 async function reconcileUnknownCreate(command, name, label, spawn) {
-  let output;
-  try { output = await operation(command, ['ps', '--all', '--quiet', '--filter', `label=${label}`, '--filter', `name=^/${name}$`], spawn).promise; }
-  catch (error) { throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown', cause: error }); }
-  for (const id of output.trim().split(/\s+/).filter(Boolean)) await cleanup(command, id, spawn);
+  const startedAt = Date.now();
+  let absentPolls = 0;
+  while (Date.now() - startedAt < CLEANUP_GRACE_MS) {
+    let output;
+    try { output = await operation(command, ['ps', '--all', '--quiet', '--filter', `label=${label}`, '--filter', `name=^/${name}$`], spawn).promise; }
+    catch (error) { throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown', cause: error }); }
+    const ids = output.trim().split(/\s+/).filter(Boolean);
+    if (ids.length > 0) {
+      absentPolls = 0;
+      for (const id of ids) await cleanup(command, id, spawn);
+    } else {
+      absentPolls += 1;
+      if (absentPolls >= 2) return;
+    }
+    await new Promise(resolve => setTimeout(resolve, CLEANUP_POLL_MS));
+  }
+  throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown' });
 }
 
 async function cleanup(command, id, spawn) {

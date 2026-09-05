@@ -33,7 +33,38 @@ test('launcher never starts a container after create is cancelled', async () => 
       throw new Error('start must not run after cancellation');
     } });
     await assert.rejects(launcher.launch({ prompt: 'synthetic' }, { signal: controller.signal }), /cancelled during create|docker operation failed/);
-    assert.deepEqual(operations, ['info', 'create', 'ps']);
+    assert.deepEqual(operations, ['info', 'create', 'ps', 'ps']);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
+test('uncertain create waits for stable absence and removes a delayed daemon container', async () => {
+  const workspace = await mkdtemp('/tmp/yolo-launcher-delayed-create-');
+  const operations = [];
+  let psCount = 0;
+  try {
+    const launcher = new ContainerLauncher({ image: 'sha256:' + 'c'.repeat(64), workspace, timeoutMs: 1000, spawn: (_command, args) => {
+      const quick = (code = 0) => ({ stdout: { on() {} }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn(code)); } });
+      operations.push(args[0]);
+      if (args[0] === 'info') return { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn('["name=rootless"]')); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn(0)); } };
+      if (args[0] === 'create') { const created = child(); setImmediate(() => created.kill('SIGKILL')); return created; }
+      if (args[0] === 'ps') {
+        const listeners = new Map();
+        const result = { stdout: { on() {} }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); } };
+        psCount += 1;
+        result.stdout.on = (event, fn) => { if (event === 'data' && psCount === 2) setImmediate(() => fn('deadbeefdead')); };
+        setTimeout(() => listeners.get('close')?.(0), 5); return result;
+      }
+      if (args[0] === 'kill' || args[0] === 'rm') return quick();
+      if (args[0] === 'inspect') {
+        const listeners = new Map();
+        const result = { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn('Error: No such container: deadbeefdead')); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); } };
+        setImmediate(() => listeners.get('close')?.(1)); return result;
+      }
+      throw new Error(`unexpected docker operation: ${args[0]}`);
+    } });
+    await assert.rejects(launcher.launch({ prompt: 'delayed' }), /docker operation failed|cleanup_unknown|cancelled|deadline/);
+    assert.ok(psCount >= 2);
+    assert.ok(operations.includes('rm'), operations.join(','));
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 

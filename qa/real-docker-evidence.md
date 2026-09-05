@@ -1,33 +1,31 @@
 # Real Docker phase1 gate evidence
 
-Run date: 2026-09-05 (UTC)
+Run date: 2026-09-05 18:02 UTC
 Docker server: 29.8.0, context `rootless`
-Image: `yoloharness-phase1:local`, built locally with `docker build --pull -t yoloharness-phase1:local .`
+Image: `yoloharness-local:0.1.0`, immutable ID `sha256:0ef6dd2d0d2acd040fd8b04ef547b4a8a1cfa35f88b9ce49497a169c6ce32824`, rebuilt locally from `assets/runtime/Dockerfile` after the whole-runtime changes.
 
 Commands:
 
-- `docker build --pull -t yoloharness-phase1:local .`
-- `npm run test:docker`
+- `docker build -f assets/runtime/Dockerfile -t yoloharness-local:0.1.0 .`
+- `YOLO_REAL_DOCKER=1 YOLO_DOCKER_IMAGE=yoloharness-local:0.1.0 node --test test/real-docker.test.mjs`
+- `npm test`
 
-Result: 5 passed, 0 failed, 0 skipped.
+Result: real-Docker gate 2 passed, 0 failed, 0 skipped; full suite 72 passed, 0 failed, 2 skipped.
 
-Observed through the actual `DockerExecutor` and worker:
+Exact real-Docker test names:
 
-- Preflight returned Docker server version `29.8.0`.
-- Successful worker receipt returned `ok: true`, `call_id: real-success`, and UID `10001`.
-- The worker wrote `artifact` to the explicitly writable mounted workspace.
-- A command exiting 7 returned a typed failure receipt with exit code 7 and the stderr text.
-- `/app` write failed with `Read-only file system`.
-- `/proc/net/route` was empty, confirming the worker had no configured network route.
-- `CapEff` was `0000000000000000`, confirming dropped effective capabilities for this image/kernel.
-- A non-interrupted delayed write to `/workspace/delayed-control.txt` appeared in the host workspace, proving the negative delayed-write probes target the actual writable bind mount.
-- The deadline probe first wrote a `deadline-started.txt` marker from inside the worker, then a 2-second delayed workspace write was cancelled by the 1500ms executor deadline; the marker was observed before rejection, the test waited 3 seconds (strictly beyond the scheduled write with margin) before asserting the delayed artifact never appeared, and the exact generated container name was independently absent from `docker ps -a`.
-- A synthetic provider was driven through `runOnce` and the real `DockerExecutor`; the test waited for an `interrupt-started.txt` marker written inside the worker before aborting its signal, then waited 3 seconds (strictly beyond the worker's 2-second delayed write with margin). The run produced `interrupted`, the delayed write to the mounted `/workspace` path never appeared, and the exact generated container name was absent. This validates runtime abort-signal cleanup, not OS-level CLI SIGINT wiring.
-- `real shipped CLI handles an OS SIGINT through Docker and cleans up` spawned `src/cli.mjs` as an actual child process with a deterministic test-only provider injection, drove the shipped CLI's production SIGINT handler through `runOnce` and the real `DockerExecutor`, and sent `child.kill('SIGINT')` only after observing `cli-interrupt-started.txt` from the worker. The same writable workspace/action had a successful control first; after SIGINT the child exited 130 with the documented interrupt message and JSON `status: interrupted`, the delayed mounted artifact was absent after a 3-second margin, and the exact injected container name was absent. Marker polling is bounded and its failure cleanup removes only that exact owned name. This validates OS-level CLI SIGINT wiring in addition to the separate runtime-abort test.
-- A nonexistent image failed closed with `--pull=never`; its exact generated container name was absent.
-- The daemon's `docker inspect` response for a created (then removed) executor container reported `NetworkMode=none`, `ReadonlyRootfs=true`, `CapDrop=[ALL]`, `SecurityOpt=[no-new-privileges]`, `PidsLimit=128`, `Memory=512 MiB`, `NanoCpus=1`, and only the `/workspace` writable bind mount.
-- After every owned operation, `docker ps -a` contained no `yoloharness-real-*` containers.
+- `shipped CLI runs the whole runtime in the configured immutable image against an isolated synthetic provider` — PASS.
+- `final image has a read-only root and rootless UID0 workspace write/delete canary` — PASS.
 
-Configuration asserted by `DockerExecutor.args()` (and sent to the real daemon): `--pull=never`, `--network none`, `--read-only`, `--cap-drop=ALL`, `--security-opt no-new-privileges`, `--pids-limit 128`, `--memory 512m`, `--cpus 1`, and only the workspace bind mount at `/workspace:rw`.
+Observed through the shipped `main`/`ContainerLauncher` path and the final image:
 
-The test is opt-in because it requires a Docker daemon and prebuilt image. Run the build and `npm run test:docker`, or set `YOLO_REAL_DOCKER=1` and optionally `YOLO_DOCKER_IMAGE`. The resource and security values above are daemon-observed configuration; practical enforcement was additionally observed for read-only root, no route, dropped capabilities, and post-deadline/interrupt process cleanup on this rootless daemon/kernel. Rootless behavior is daemon/kernel dependent; live OAuth/provider traffic and native macOS remain untested; the CLI test's synthetic provider does not constitute live auth verification.
+- The synthetic provider ran in a separate container attached only to a per-test Docker network; it captured the request nonce, remote container address, and provider PID.
+- The first provider request produced a tool call; the runtime executed `printf` inside the whole-runtime container; the second provider request contained the paired function-call output and returned `whole-runtime-ok`.
+- The shipped CLI path selected the configured immutable image ID from synthetic image metadata, while access/refresh credentials and XDG configuration remained in isolated temporary directories. No canonical external provider request was made.
+
+- Preflight returned Docker server version `29.8.0`, with daemon security option `name=rootless`.
+- The whole-runtime container was created with `--pull=never`, read-only root, dropped capabilities, no-new-privileges, bounded PID/memory/CPU limits, bounded `/tmp` and synthetic-home tmpfs, and exactly one writable `/workspace` bind. The image canary observed `/app` as read-only and confirmed write/delete on the project bind.
+- Cleanup left no owned provider or runtime containers in `docker ps -a`.
+- The offline launcher regression `uncertain create waits for stable absence and removes a delayed daemon container` passed: exact name+label reconciliation observed a delayed ID, removed it, verified not-found, and required stable absence.
+
+The test is opt-in because it requires a Docker daemon and prebuilt image. It uses only synthetic credentials/config and a local Docker-network provider; no live OAuth/provider request or real credential was used. Rootless behavior is daemon/kernel dependent. WRC-02 through WRC-21 rows not listed as PASS in `qa/phase1-acceptance-matrix.md` remain unrun or partial, and native macOS remains untested. This evidence is not a claim that the remaining amended WRC-01..20 rows passed.

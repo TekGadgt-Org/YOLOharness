@@ -48,7 +48,7 @@ export function parseArgs(args) {
   return { minutes, json, fixture, prompt: prompt.join(' ') };
 }
 
-export async function main(args = process.argv.slice(2), io = { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr }, { clientFactory } = {}) {
+export async function main(args = process.argv.slice(2), io = { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr }, { clientFactory, launcherFactory } = {}) {
   try {
     if (args[0] === 'setup') return await setupCommand(io);
     if (args[0] === 'auth') return await authCommand(args.slice(1), io, { clientFactory });
@@ -73,7 +73,8 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
       validateRuntimeEndpoint();
       const image = await configuredImage();
       const credentials = await runtimeCredentials(options.minutes);
-      record = await new ContainerLauncher({ image, workspace, responsesUrl: process.env.YOLO_RESPONSES_URL, timeoutMs: options.minutes * 60_000 + 10_000 }).launch({ prompt: options.prompt, model, deadline: Date.now() + options.minutes * 60_000, accessToken: credentials.accessToken, expiresAt: credentials.expiresAt }, { signal: controller.signal });
+      const launcher = launcherFactory ? launcherFactory({ image, workspace, timeoutMs: options.minutes * 60_000 + 10_000 }) : new ContainerLauncher({ image, workspace, responsesUrl: process.env.YOLO_RESPONSES_URL, timeoutMs: options.minutes * 60_000 + 10_000 });
+      record = await launcher.launch({ prompt: options.prompt, model, deadline: Date.now() + options.minutes * 60_000, accessToken: credentials.accessToken, expiresAt: credentials.expiresAt }, { signal: controller.signal });
     }
     process.removeListener('SIGINT', onInterrupt);
     io.stdout.write(`${options.json ? JSON.stringify(record) : `${record.status}: ${record.result ?? record.errors.join('; ')}`}\n`);
@@ -115,8 +116,9 @@ export async function setupCommand(io) {
 
 export async function runtimeSourceIdentity() {
   const packageUrl = new URL('../package.json', import.meta.url);
+  const dockerfileUrl = new URL('../assets/runtime/Dockerfile', import.meta.url);
   const packageJson = JSON.parse(await readFile(packageUrl, 'utf8'));
-  const files = [['package.json', packageUrl], ...(await listRuntimeFiles(new URL('../src/', import.meta.url)))];
+  const files = [['package.json', packageUrl], ['assets/runtime/Dockerfile', dockerfileUrl], ...(await listRuntimeFiles(new URL('../src/', import.meta.url)))];
   const hash = createHash('sha256');
   for (const [name, url] of files.sort(([a], [b]) => a.localeCompare(b))) {
     const path = Buffer.from(name);

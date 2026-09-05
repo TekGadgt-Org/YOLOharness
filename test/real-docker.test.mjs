@@ -43,7 +43,8 @@ test('shipped CLI runs the whole runtime in the configured immutable image again
     const output = [];
     const errors = [];
     const recordCode = await main(['--json', 'whole-runtime nonce synthetic'], { stdin: { isTTY: false }, stdout: { write(value) { output.push(value); } }, stderr: { write(value) { errors.push(value); } } }, {
-      launcherFactory: ({ image: configured, workspace: selected, timeoutMs }) => new ContainerLauncher({ image: configured, workspace: selected, timeoutMs, network, responsesUrl: `http://${network}-provider:8080/responses` }),
+      allowTestSeams: true,
+      launcherFactory: ({ image: configured, workspace: selected, timeoutMs, testOnly }) => new ContainerLauncher({ image: configured, workspace: selected, timeoutMs, network, responsesUrl: `http://${network}-provider:8080/responses`, testOnly }),
     });
     assert.equal(recordCode, 0, `${errors.join('')}${output.join('')}`);
     const record = JSON.parse(output.at(-1));

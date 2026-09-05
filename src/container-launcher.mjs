@@ -10,8 +10,9 @@ const CLEANUP_GRACE_MS = 500;
 const CLEANUP_POLL_MS = 50;
 
 export class ContainerLauncher {
-  constructor({ image, workspace = process.cwd(), command = 'docker', spawn = nodeSpawn, timeoutMs = 600000, responsesUrl, network = 'bridge' } = {}) {
+  constructor({ image, workspace = process.cwd(), command = 'docker', spawn = nodeSpawn, timeoutMs = 600000, responsesUrl = 'https://chatgpt.com/backend-api/codex/responses', network = 'bridge', testOnly = false } = {}) {
     if (!image || !workspace) throw new TypeError('container image and workspace are required');
+    if (!testOnly && (network !== 'bridge' || responsesUrl !== 'https://chatgpt.com/backend-api/codex/responses')) throw new TypeError('network and endpoint overrides are test-only');
     this.image = image; this.workspace = workspace; this.command = command; this.spawn = spawn; this.timeoutMs = timeoutMs; this.responsesUrl = responsesUrl; this.network = network;
   }
 

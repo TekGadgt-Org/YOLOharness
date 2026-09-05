@@ -37,6 +37,20 @@ test('launcher never starts a container after create is cancelled', async () => 
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
+test('production launcher rejects injected network and endpoint overrides', async () => {
+  assert.throws(() => new ContainerLauncher({
+    image: 'sha256:' + 'd'.repeat(64),
+    network: 'synthetic-network',
+    responsesUrl: 'http://synthetic-provider/responses',
+  }), /test-only/);
+  assert.doesNotThrow(() => new ContainerLauncher({
+    image: 'sha256:' + 'd'.repeat(64),
+    testOnly: true,
+    network: 'synthetic-network',
+    responsesUrl: 'http://synthetic-provider/responses',
+  }));
+});
+
 test('uncertain create waits for stable absence and removes a delayed daemon container', async () => {
   const workspace = await mkdtemp('/tmp/yolo-launcher-delayed-create-');
   const operations = [];

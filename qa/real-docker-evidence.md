@@ -17,7 +17,7 @@ Exact real-Docker test names:
 - `shipped CLI runs the whole runtime in the configured immutable image against an isolated synthetic provider` — PASS.
 - `final image has a read-only root and rootless UID0 workspace write/delete canary` — PASS.
 
-Observed through the shipped `main`/`ContainerLauncher` path and the final image:
+Observed through the whole-runtime `main`/`ContainerLauncher` test seam and the final image. This is not yet shipped-executable acceptance evidence: the synthetic provider uses a test-only network/endpoint override so no live provider request is made.
 
 - The synthetic provider ran in a separate container attached only to a per-test Docker network; it captured the request nonce, remote container address, and provider PID.
 - The first provider request produced a tool call; the runtime executed `printf` inside the whole-runtime container; the second provider request contained the paired function-call output and returned `whole-runtime-ok`.

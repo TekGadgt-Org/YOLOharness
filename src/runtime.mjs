@@ -35,7 +35,7 @@ function abortable(promise, signal) {
   });
 }
 
-export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(), provider, executor, maxSteps = 100, signal = new AbortController().signal }) {
+export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(), provider, executor, tools = [], maxSteps = 100, signal = new AbortController().signal }) {
   if (typeof prompt !== 'string' || !prompt.trim()) throw new TypeError('prompt must be non-empty');
   if (!(Number.isFinite(minutes) && minutes > 0)) throw new TypeError('minutes must be positive and finite');
   if (!provider) throw new MissingProviderError();
@@ -52,7 +52,7 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
     await log.append(runId, 'run_started', { prompt, max_steps: maxSteps });
     while (steps < maxSteps) {
       if (timer.signal.aborted) { status = signal.aborted ? 'interrupted' : 'deadline'; break; }
-      const response = await abortable(provider.next({ messages, tools: [], signal: timer.signal }), timer.signal);
+      const response = await abortable(provider.next({ messages, tools, signal: timer.signal }), timer.signal);
       steps += 1;
       const safe = response && typeof response === 'object' ? response : { result: String(response) };
       await log.append(runId, 'step', { step: steps, response: safe });
@@ -65,6 +65,7 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
       }
       if (safe.tool_call) {
         if (!executor) { errors.push('effect dispatch unavailable: no supported executor selected'); status = 'failed'; break; }
+        if (!tools.some(tool => tool?.name === safe.tool_call.name)) { errors.push(`effect denied: undeclared tool ${safe.tool_call.name}`); status = 'failed'; break; }
         const receipt = await abortable(executor.execute({ call: safe.tool_call, signal: timer.signal }), timer.signal);
         evidence.push(receipt);
         messages.push({ type: 'function_call', call_id: safe.tool_call.call_id, name: safe.tool_call.name, arguments: safe.tool_call.arguments });

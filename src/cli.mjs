@@ -49,10 +49,14 @@ export async function main(args = process.argv.slice(2), io = { stdout: process.
 
 async function configuredProvider() {
   if (!process.env.YOLO_RESPONSES_URL || !process.env.YOLO_MODEL) throw new MissingProviderError();
+  const endpoint = new URL(process.env.YOLO_RESPONSES_URL);
+  const loopback = endpoint.hostname === '127.0.0.1' || endpoint.hostname === 'localhost' || endpoint.hostname === '::1';
+  if (endpoint.username || endpoint.password || (endpoint.protocol !== 'https:' && !(loopback && process.env.YOLO_ALLOW_INSECURE_LOCAL === '1'))) throw new TypeError('YOLO_RESPONSES_URL must use HTTPS; HTTP is limited to explicit loopback fixtures');
   const path = process.env.YOLO_AUTH_FILE ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'yoloharness', 'credentials.json');
   const credentials = await new AuthStore(path).load();
   if (!credentials) throw new MissingProviderError();
-  return new ConfiguredProvider({ credentials, url: process.env.YOLO_RESPONSES_URL, model: process.env.YOLO_MODEL });
+  const authClient = process.env.YOLO_CLIENT_ID ? new AuthClient(authConfig(new AuthStore(path))) : undefined;
+  return new ConfiguredProvider({ credentials, url: process.env.YOLO_RESPONSES_URL, model: process.env.YOLO_MODEL, authClient });
 }
 
 function authConfig(store) { return { clientId: process.env.YOLO_CLIENT_ID, issueUrl: process.env.YOLO_AUTH_ISSUE_URL ?? 'https://auth.openai.com/api/accounts/deviceauth/usercode', pollUrl: process.env.YOLO_AUTH_POLL_URL ?? 'https://auth.openai.com/api/accounts/deviceauth/token', tokenUrl: process.env.YOLO_AUTH_TOKEN_URL ?? 'https://auth.openai.com/oauth/token', verificationUrl: process.env.YOLO_AUTH_VERIFY_URL ?? 'https://auth.openai.com/codex/device', redirectUri: process.env.YOLO_AUTH_REDIRECT_URI ?? 'https://auth.openai.com/deviceauth/callback', store }; }

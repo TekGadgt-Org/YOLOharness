@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AuthClient, AuthStore } from '../src/auth.mjs';
 import { ResponsesClient, parseSSE } from '../src/responses.mjs';
-import { DockerExecutor, DockerUnavailableError } from '../src/docker-executor.mjs';
+import { DockerExecutor, DockerUnavailableError, OutputLimitError } from '../src/docker-executor.mjs';
 
 const json = (res, value, status=200) => { res.writeHead(status, {'content-type':'application/json'}); res.end(JSON.stringify(value)); };
 function server(handler) { return new Promise(async resolve => { const s=http.createServer(handler); await new Promise(r=>s.listen(0,'127.0.0.1',r)); resolve({s, base:`http://127.0.0.1:${s.address().port}`}); }); }
@@ -26,3 +26,18 @@ test('responses client parses split SSE text and completed tool roundtrip', asyn
 test('SSE parser handles BOM, comments, CRLF and multiline data', async ()=> { const got=[...parseSSE(new TextEncoder().encode('\ufeff: hi\r\ndata: {"a":\r\ndata: 1}\r\n\r\n'))]; assert.deepEqual(got,['{"a":\n1}']); assert.deepEqual(JSON.parse(got[0]),{a:1}); });
 
 test('docker executor fails closed without docker and never runs host shell', async ()=> { const ex=new DockerExecutor({command:'definitely-not-a-real-docker', spawn:()=>{throw new Error('host execution')}, image:'yolo:test'}); await assert.rejects(ex.preflight(),DockerUnavailableError); });
+
+test('docker executor requests interactive stdin and handles output overflow without a signal', async () => {
+  let seen;
+  const child = { stdin: { end() {} }, stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn('x'.repeat(20))); } }, stderr: { on() {} }, kill() {}, once(event, fn) { if (event === 'close') this.close = fn; } };
+  const ex = new DockerExecutor({ image: 'yolo:test', workspace: '/tmp', maxOutput: 10, spawn: (command, args) => { seen = args; setImmediate(() => child.stdout.on('data', () => {})); return child; }, preflight: async () => true });
+  await assert.rejects(ex.execute({ command: 'printf', args: ['x'] }), OutputLimitError);
+  assert.equal(seen.includes('-i'), true);
+});
+
+test('responses rejects an oversized event', async () => {
+  const body = ReadableStream.from ? ReadableStream.from([new TextEncoder().encode(`data: {"type":"response.output_text.delta","delta":"${'x'.repeat(1024 * 1024 + 1)}"}\n\n`)]) : null;
+  if (!body) return;
+  const c = new ResponsesClient({ url: 'http://127.0.0.1', model: 'fixture', accessToken: 'secret', fetch: async () => ({ ok: true, body }) });
+  await assert.rejects((async () => { for await (const _ of c.respond()) {} })(), /too large/);
+});

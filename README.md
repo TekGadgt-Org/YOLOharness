@@ -35,7 +35,7 @@ npm test
 npm exec -- yolo --fixture "verify the harness"
 ```
 
-No package installation is needed; only Node builtins are used. Runs write bounded, redacted JSONL receipts below `.yolo/runs/`. The fixture is explicitly offline and does not execute tools. Replay is not full agent resumption, and no executor is enabled by default.
+No package installation is needed; only Node builtins are used. Runs write bounded, redacted JSONL receipts below `.yolo/runs/`. A deadline or interrupt stops launching new effects, then waits up to the bounded cleanup grace for an already-running executor; if exact cleanup cannot be proven in that grace, the receipt reports `cleanup_unknown` rather than claiming the effect stopped. Replay is not full agent resumption, and no executor is enabled by default.
 
 ## The design in one minute
 

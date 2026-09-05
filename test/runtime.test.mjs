@@ -48,6 +48,27 @@ test('deadline returns from a non-cooperative provider', async () => {
   assert.equal(record.status, 'deadline'); assert.ok(Date.now() - started < 1000);
 });
 
+test('deadline awaits executor cleanup before returning', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'yolo-'));
+  let cleaned = false;
+  const provider = { async next() { return { tool_call: { call_id: 'cleanup-1', name: 'exec', arguments: JSON.stringify({ command: 'true', args: [] }) } }; } };
+  const executor = { async execute({ signal }) { await new Promise(resolve => signal.addEventListener('abort', () => setTimeout(() => { cleaned = true; resolve(); }, 30), { once: true })); return { version: 1, ok: true, call_id: 'cleanup-1', code: 0, output: '' }; } };
+  const started = Date.now();
+  const record = await runOnce({ prompt: 'cleanup', minutes: 0.0005, workspace, provider, executor, tools: [EXEC_TOOL], cleanupGraceMs: 100 });
+  assert.equal(record.status, 'deadline');
+  assert.equal(cleaned, true);
+  assert.ok(Date.now() - started >= 30);
+});
+
+test('deadline reports unknown cleanup when executor exceeds cleanup grace', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'yolo-'));
+  const provider = { async next() { return { tool_call: { call_id: 'cleanup-2', name: 'exec', arguments: JSON.stringify({ command: 'true', args: [] }) } }; } };
+  const executor = { async execute() { return new Promise(() => {}); } };
+  const record = await runOnce({ prompt: 'cleanup', minutes: 0.0005, workspace, provider, executor, tools: [EXEC_TOOL], cleanupGraceMs: 10 });
+  assert.equal(record.status, 'deadline');
+  assert.ok(record.errors.some(error => error.includes('cleanup_unknown')));
+});
+
 test('invalid inputs are rejected', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'yolo-'));
   await assert.rejects(runOnce({ prompt: '', workspace, minutes: 1 }), /prompt/);

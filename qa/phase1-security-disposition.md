@@ -1,20 +1,19 @@
 # Phase1 security finding disposition
 
-This file records the offline evidence for the final review findings. It is not a release approval for Docker, live auth/provider traffic, or native macOS.
+This file records offline/local evidence for the phase1 security findings. It is not release approval for a real Docker daemon, live OAuth/provider traffic, or native macOS.
 
-1. Container cleanup: fixed in `src/docker-executor.mjs`. A generated identity is treated as potentially created immediately before `docker create`; cancellation/output/start failures run exact-name kill and rm under bounded deadlines. Cleanup failure is reported as `cleanup_unknown`. Process-double coverage is in `test/integration.test.mjs`; real daemon behavior was not run.
-2. Worker receipt contract: fixed in `src/docker-executor.mjs`, `worker.mjs`, and `src/runtime.mjs`. The host requires exactly one non-empty JSON receipt with version 1, boolean `ok`, matching non-empty `call_id`, and a closed key set. The stdin envelope carries version 1 and call_id.
-3. Refresh race and durability: fixed in `src/auth.mjs`. Stored credentials carry a generation; refresh rereads under an owner-token lock and returns a newer generation instead of consuming a rotating token twice. Temporary-file and directory fsync failures are observable; lock release is ownership checked and stale deletion requires a dead owner PID.
-4. Bearer endpoint boundary: fixed in `src/cli.mjs` and README. Production CLI accepts only the canonical HTTPS origin/path and rejects loopback, userinfo, query/path lookalikes, and arbitrary endpoint overrides before loading credentials. Test clients can still inject fetch and synthetic credentials directly.
-5. Receipt retention: existing event redaction/digest behavior remains bounded; arbitrary output is not logged as free text by the runtime receipt path. Final user result remains returned to the caller.
-6. Documentation: README provider setup now states the canonical production endpoint and explicit test-only loopback injection boundary.
+1. Container cleanup: fixed and regression-tested in `src/docker-executor.mjs`. Generated identity is treated as potentially created once create starts; cancellation/failure performs exact-name kill, rm, and inspect reconciliation. A successful absence probe is required; otherwise cleanup is unknown. Process-double coverage is in `test/integration.test.mjs`. Real daemon behavior remains unrun.
+2. Worker receipt contract: fixed in `src/docker-executor.mjs`, `worker.mjs`, and `src/runtime.mjs`. The host requires exactly one receipt with version 1, typed closed fields, matching non-empty call_id, and success/failure invariants. Malformed and extra-key cases are regression-tested.
+3. Refresh race and durability: fixed in `src/auth.mjs`. Generation reread prevents duplicate rotating-token use; owner-token stale reclamation revalidates identity before quarantine; save uses temporary-file and containing-directory fsync with errors observable. Actual two-child-process rotation and persistence-fault regressions pass.
+4. Bearer endpoint boundary: fixed in `src/cli.mjs`. Production configuration accepts only the literal canonical HTTPS URL before credential loading; query, fragment, authority-port, userinfo, path, case, and loopback variants cannot reach the credential store. Test providers use explicit construction with synthetic credentials.
+5. Receipt retention: fixed for default receipt fields. Prompt, result, tool arguments, output, message, and text are SHA-256 digests; short synthetic markers are absent from JSONL while final result remains returned to the caller.
+6. Documentation: README documents the cleanup-grace distinction and canonical endpoint/test-only injection boundary.
 
-Verification performed:
+Verification
+- `npm test`: PASS, 32 tests, 0 failures.
+- Changed-module `node --check`: PASS.
+- `git diff --check`: PASS when final handoff was prepared.
+- `npm pack --dry-run --json`: PASS when final handoff was prepared.
+- Local fixture CLI smoke: PASS in prior remediation and remains offline-only.
 
-- `npm test`: 24 passed, 0 failed on the prior remediation; current regression additions are verified separately in the task handoff.
-- `node --check src/auth.mjs src/docker-executor.mjs src/runtime.mjs src/cli.mjs worker.mjs`: passed.
-- `node src/cli.mjs --fixture --json 'offline smoke'`: completed with valid JSON record.
-- `npm pack --dry-run --json`: passed (npm emitted only the missing .npmignore advisory).
-- `git diff --check`: passed.
-
-Explicitly not run: Docker daemon/image build or isolation, live OAuth/provider traffic, native macOS, package installation, and external registry access.
+Not run by design: real Docker build/run/isolation and daemon lifecycle, live OAuth/provider traffic, native macOS, and package installation. Package installation is excluded by the task constraint; package artifact inspection is covered by npm pack dry-run.

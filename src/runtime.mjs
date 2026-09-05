@@ -46,9 +46,22 @@ function abortable(promise, signal) {
   });
 }
 
-export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(), provider, executor, tools = [], maxSteps = 100, signal = new AbortController().signal }) {
+function awaitExecutorCleanup(promise, signal, graceMs) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer;
+    const finish = (fn, value) => { if (settled) return; settled = true; clearTimeout(timer); signal.removeEventListener('abort', onAbort); fn(value); };
+    const onAbort = () => { timer = setTimeout(() => finish(reject, new Error('cleanup_unknown')), graceMs); };
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(promise).then(value => finish(resolve, value), error => finish(reject, error));
+    if (signal.aborted) onAbort();
+  });
+}
+
+export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(), provider, executor, tools = [], maxSteps = 100, cleanupGraceMs = 5000, signal = new AbortController().signal }) {
   if (typeof prompt !== 'string' || !prompt.trim()) throw new TypeError('prompt must be non-empty');
   if (!(Number.isFinite(minutes) && minutes > 0)) throw new TypeError('minutes must be positive and finite');
+  if (!(Number.isFinite(cleanupGraceMs) && cleanupGraceMs > 0)) throw new TypeError('cleanupGraceMs must be positive and finite');
   if (!provider) throw new MissingProviderError();
   if (signal.aborted) return { version: 1, run_id: null, status: 'interrupted', result: null, evidence: [], artifacts: [], errors: ['interrupted before start'] };
   const runId = `run-${Date.now()}-${randomUUID().slice(0, 8)}`;
@@ -78,7 +91,7 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
         if (!executor) { errors.push('effect dispatch unavailable: no supported executor selected'); status = 'failed'; break; }
         if (tools.length !== 1 || tools[0]?.name !== 'exec' || JSON.stringify(tools[0]?.parameters) !== JSON.stringify(EXEC_TOOL.parameters)) { errors.push('effect denied: executor registry mismatch'); status = 'failed'; break; }
         let call; try { call = normalizeCall(safe.tool_call); } catch (error) { errors.push(`effect denied: ${error.message}`); status = 'failed'; break; }
-        const receipt = await abortable(executor.execute({ call, signal: timer.signal }), timer.signal);
+        const receipt = await awaitExecutorCleanup(executor.execute({ call, signal: timer.signal }), timer.signal, cleanupGraceMs);
         if (!validateReceipt(receipt, call.call_id)) { errors.push('effect denied: invalid executor receipt'); status = 'failed'; break; }
         evidence.push(receipt);
         messages.push({ type: 'function_call', call_id: call.call_id, name: 'exec', arguments: JSON.stringify({ command: call.command, args: call.args }) });
@@ -90,7 +103,7 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
   } catch (error) {
     if (timer.signal.aborted) {
       status = signal.aborted ? 'interrupted' : 'deadline';
-      errors.push(status === 'deadline' ? 'deadline exceeded; partial result may be incomplete' : 'interrupted by SIGINT');
+      errors.push(error?.message === 'cleanup_unknown' ? 'cleanup_unknown: executor cleanup grace expired' : status === 'deadline' ? 'deadline exceeded; partial result may be incomplete' : 'interrupted by SIGINT');
     }
     else { status = 'failed'; errors.push(error instanceof Error ? error.message : String(error)); }
   } finally {

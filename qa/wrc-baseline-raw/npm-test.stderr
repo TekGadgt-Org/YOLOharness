@@ -1,0 +1,2 @@
+npm notice run yoloharness@0.1.0 test
+npm notice run NODE_ENV=test node --test test/*.test.mjs prototype/test/*.test.mjs

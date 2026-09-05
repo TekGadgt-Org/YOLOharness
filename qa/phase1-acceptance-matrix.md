@@ -1,6 +1,6 @@
 # Whole-runtime container acceptance matrix
 
-This matrix is tied to the current local commit and must be rerun against the exact built image digest. Synthetic HOME/XDG/auth/provider fixtures only; no live provider requests or real credentials. Linux evidence below uses rootless Docker 29.8.0 and the local image digest recorded by the build.
+This matrix is tied to the current local commit and exact built image `sha256:52effe7b4a01c05f8c4650321e9f25ee69f065c8d1a9a6b95aaf62ea682ce256`. Synthetic HOME/XDG/auth/provider fixtures only; no live provider requests or real credentials. Linux evidence below uses rootless Docker 29.8.0 and the local image digest recorded by the build.
 
 ID       Retained evidence                                      Status
 WRC-01   Whole-runtime shipped launcher/image synthetic provider roundtrip  PASS (final image synthetic SSE provider roundtrip; provider→parser→exec→provider; artifact written in /workspace)

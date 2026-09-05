@@ -49,9 +49,9 @@ test('real Docker worker enforces the phase1 boundary and cleans up', { skip }, 
     const deadlineMarker = join(workspace, 'deadline-started.txt');
     const delayedArtifact = join(workspace, 'late.txt');
     const deadlineExecutor = new NamedExecutor({ image, workspace, timeoutMs: 1500 });
-    await assert.rejects(deadlineExecutor.execute({ call: { call_id: 'real-deadline', command: 'sh', args: ['-c', 'printf started > /workspace/deadline-started.txt; sleep 5; printf late > /workspace/late.txt'] } }), /deadline exceeded/);
+    await assert.rejects(deadlineExecutor.execute({ call: { call_id: 'real-deadline', command: 'sh', args: ['-c', 'printf started > /workspace/deadline-started.txt; sleep 2; printf late > /workspace/late.txt'] } }), /deadline exceeded/);
     assert.equal(await readFile(deadlineMarker, 'utf8'), 'started');
-    await delay(1500);
+    await delay(3000); // exceeds the worker's 2s delayed-write interval with margin
     await assert.rejects(access(delayedArtifact));
     assert.equal(dockerNames().includes(deadlineExecutor.name), false);
     assert.equal(dockerNames().some(name => name.startsWith('yoloharness-real-')), false);
@@ -102,7 +102,7 @@ test('real runtime bridge handles abort cleanup and prevents delayed writes', { 
   const artifact = join(workspace, 'after-interrupt.txt');
   const controller = new AbortController();
   const executor = new NamedExecutor({ image, workspace, name, timeoutMs: 5000 });
-  const provider = { async next() { return { tool_call: { name: 'exec', call_id: 'real-runtime-interrupt', arguments: JSON.stringify({ command: 'sh', args: ['-c', 'printf started > /workspace/interrupt-started.txt; sleep 5; printf late > /workspace/after-interrupt.txt'] }) } }; } };
+  const provider = { async next() { return { tool_call: { name: 'exec', call_id: 'real-runtime-interrupt', arguments: JSON.stringify({ command: 'sh', args: ['-c', 'printf started > /workspace/interrupt-started.txt; sleep 2; printf late > /workspace/after-interrupt.txt'] }) } }; } };
   try {
     const run = runOnce({ prompt: 'interrupt', minutes: 1, workspace, provider, executor, tools: [EXEC_TOOL], signal: controller.signal, cleanupGraceMs: 5000 });
     const startedAt = Date.now();
@@ -116,7 +116,7 @@ test('real runtime bridge handles abort cleanup and prevents delayed writes', { 
     controller.abort(new Error('abort requested'));
     const record = await run;
     assert.equal(record.status, 'interrupted', JSON.stringify(record));
-    await delay(1500);
+    await delay(3000); // exceeds the worker's 2s delayed-write interval with margin
     await assert.rejects(access(artifact));
     assert.equal(dockerNames().includes(name), false);
   } finally {

@@ -48,7 +48,8 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     process.once('SIGINT', onInterrupt);
     const workspace = process.cwd();
     const cliSignalTest = process.env.YOLO_REAL_DOCKER === '1' && process.env.YOLO_CLI_SIGINT_TEST === '1';
-    const record = await runOnce({ prompt: options.prompt, minutes: options.minutes, workspace, provider: options.fixture ? new FixtureProvider() : cliSignalTest ? new CliSignalTestProvider() : await configuredProvider(), executor: options.fixture || (!process.env.YOLO_DOCKER_IMAGE && !cliSignalTest) ? undefined : cliSignalTest ? new CliSignalTestExecutor({ image: process.env.YOLO_DOCKER_IMAGE, workspace, name: process.env.YOLO_CLI_SIGINT_CONTAINER_NAME }) : new DockerExecutor({ image: process.env.YOLO_DOCKER_IMAGE, workspace }), tools: options.fixture ? [] : [EXEC_TOOL], signal: controller.signal });
+    const dockerSelected = !options.fixture && (Boolean(process.env.YOLO_DOCKER_IMAGE) || cliSignalTest);
+    const record = await runOnce({ prompt: options.prompt, minutes: options.minutes, workspace, provider: options.fixture ? new FixtureProvider() : cliSignalTest ? new CliSignalTestProvider() : await configuredProvider(), executor: !dockerSelected ? undefined : cliSignalTest ? new CliSignalTestExecutor({ image: process.env.YOLO_DOCKER_IMAGE, workspace, name: process.env.YOLO_CLI_SIGINT_CONTAINER_NAME }) : new DockerExecutor({ image: process.env.YOLO_DOCKER_IMAGE, workspace }), tools: dockerSelected ? [EXEC_TOOL] : [], signal: controller.signal });
     process.removeListener('SIGINT', onInterrupt);
     io.stdout.write(`${options.json ? JSON.stringify(record) : `${record.status}: ${record.result ?? record.errors.join('; ')}`}\n`);
     return record.status === 'completed' ? 0 : record.status === 'interrupted' ? 130 : record.status === 'deadline' ? 124 : 1;

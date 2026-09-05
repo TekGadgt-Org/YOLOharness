@@ -450,6 +450,43 @@ test('configured provider refreshes expired credentials before first provider re
   assert.deepEqual(requests, ['refresh', 'provider']);
 });
 
+test('default CLI omits exec capability when Docker execution is not selected', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-cli-no-docker-'));
+  const old = { xdg: process.env.XDG_CONFIG_HOME, model: process.env.YOLO_MODEL, image: process.env.YOLO_DOCKER_IMAGE, url: process.env.YOLO_RESPONSES_URL, auth: process.env.YOLO_AUTH_FILE, fetch: globalThis.fetch };
+  const requests = [];
+  process.env.XDG_CONFIG_HOME = dir;
+  delete process.env.YOLO_MODEL;
+  delete process.env.YOLO_DOCKER_IMAGE;
+  process.env.YOLO_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
+  process.env.YOLO_AUTH_FILE = join(dir, 'credentials.json');
+  await new AuthStore(process.env.YOLO_AUTH_FILE).save({ clientId: 'synthetic-client', accessToken: 'synthetic-token', refreshToken: 'synthetic-refresh' });
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body); requests.push(body);
+    return { ok: true, body: new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('data: {"type":"response.completed","response":{"status":"completed"}}\n\n')); controller.close(); } }) };
+  };
+  try {
+    await new ConfigStore(configPath()).save('synthetic-model');
+    const output = []; const errors = [];
+    assert.equal(await main(['--json', 'text only'], { stdin: { isTTY: false }, stdout: { write(value) { output.push(value); } }, stderr: { write(value) { errors.push(value); } } }), 0);
+    assert.deepEqual(requests.map(request => request.tools), [[]]);
+    assert.equal(JSON.parse(output.at(-1)).status, 'completed');
+    assert.deepEqual(errors, ['starting bounded run (10 minutes)\n']);
+  } finally {
+    if (old.xdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = old.xdg;
+    if (old.model === undefined) delete process.env.YOLO_MODEL; else process.env.YOLO_MODEL = old.model;
+    if (old.image === undefined) delete process.env.YOLO_DOCKER_IMAGE; else process.env.YOLO_DOCKER_IMAGE = old.image;
+    if (old.url === undefined) delete process.env.YOLO_RESPONSES_URL; else process.env.YOLO_RESPONSES_URL = old.url;
+    if (old.auth === undefined) delete process.env.YOLO_AUTH_FILE; else process.env.YOLO_AUTH_FILE = old.auth;
+    globalThis.fetch = old.fetch;
+  }
+});
+
+test('runtime rejects unsolicited tool calls without an executor', async () => {
+  const record = await runOnce({ prompt: 'text only', provider: { async next() { return { tool_call: { name: 'exec', call_id: 'unexpected', arguments: JSON.stringify({ command: 'true', args: [] }) } }; } } });
+  assert.equal(record.status, 'failed');
+  assert.deepEqual(record.errors, ['effect dispatch unavailable: no supported executor selected']);
+});
+
 test('configured provider retries exactly one actual 401', async () => {
   let requests = 0; let refreshes = 0;
   const provider = new ConfiguredProvider({

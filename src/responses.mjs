@@ -32,7 +32,7 @@ async function *frames(stream) {
 export class ResponsesClient {
   constructor(config) { if (!config?.url || !config.model) throw new TypeError('responses url and model required'); this.url = config.url; this.model = config.model; this.fetch = config.fetch ?? fetch; this.accessToken = config.accessToken; this.headers = config.headers ?? {}; }
   async *respond({ input, instructions = 'Complete the task using only declared tools.', tools = [], signal, runId = 'run' } = {}) {
-    const body = { model: this.model, instructions, input, store: false, stream: true };
+    const body = { model: this.model, instructions, input, tools, store: false, stream: true };
     if (tools.length) { body.tools = tools; body.tool_choice = 'auto'; body.parallel_tool_calls = false; }
     const response = await this.fetch(this.url, { method: 'POST', redirect: 'error', signal, headers: { authorization: `Bearer ${this.accessToken}`, 'content-type': 'application/json', accept: 'text/event-stream', originator: 'yoloharness', session_id: runId, 'x-client-request-id': runId.slice(0, 64), ...this.headers }, body: JSON.stringify(body) });
     if (!response.ok) throw Object.assign(new Error(`responses request failed (${response.status})`), { code: response.status === 429 ? 'rate_limited' : 'provider_error', status: response.status });

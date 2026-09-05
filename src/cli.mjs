@@ -7,6 +7,13 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const VERSION = '0.1.0';
+const AUTH_ENDPOINTS = Object.freeze({
+  issueUrl: 'https://auth.openai.com/api/accounts/deviceauth/usercode',
+  pollUrl: 'https://auth.openai.com/api/accounts/deviceauth/token',
+  tokenUrl: 'https://auth.openai.com/oauth/token',
+  verificationUrl: 'https://auth.openai.com/codex/device',
+  redirectUri: 'https://auth.openai.com/deviceauth/callback',
+});
 function usage() { return 'Usage: yolo [-t MINUTES] [--json] [--fixture] <prompt>\n       yolo --help\n       yolo --version'; }
 export function parseArgs(args) {
   let minutes = 10; let json = false; let fixture = false; const prompt = [];
@@ -54,17 +61,22 @@ export async function configuredProvider() {
   const rawEndpoint = process.env.YOLO_RESPONSES_URL;
   const canonicalEndpoint = 'https://chatgpt.com/backend-api/codex/responses';
   if (rawEndpoint !== canonicalEndpoint) throw new TypeError('YOLO_RESPONSES_URL must be the canonical HTTPS Responses endpoint');
+  const authEnvNames = { issueUrl: 'YOLO_AUTH_ISSUE_URL', pollUrl: 'YOLO_AUTH_POLL_URL', tokenUrl: 'YOLO_AUTH_TOKEN_URL', verificationUrl: 'YOLO_AUTH_VERIFY_URL', redirectUri: 'YOLO_AUTH_REDIRECT_URI' };
+  for (const [name, canonical] of Object.entries(AUTH_ENDPOINTS)) {
+    const envName = authEnvNames[name];
+    if (process.env[envName] !== undefined && process.env[envName] !== canonical) throw new TypeError(`${envName} must be the canonical HTTPS auth endpoint`);
+  }
   const endpoint = new URL(rawEndpoint);
   if (endpoint.username || endpoint.password || endpoint.protocol !== 'https:') throw new TypeError('YOLO_RESPONSES_URL must be the canonical HTTPS Responses endpoint');
   const path = process.env.YOLO_AUTH_FILE ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'yoloharness', 'credentials.json');
   const credentials = await new AuthStore(path).load();
   if (!credentials) throw new MissingProviderError();
   if (typeof credentials.clientId !== 'string' || !credentials.clientId) throw new MissingProviderError();
-  const authClient = new AuthClient(authConfig(new AuthStore(path), credentials.clientId));
+  const authClient = new AuthClient(authConfig(new AuthStore(path), credentials.clientId, false));
   return new ConfiguredProvider({ credentials, url: process.env.YOLO_RESPONSES_URL, model: process.env.YOLO_MODEL, authClient });
 }
 
-function authConfig(store, clientId = process.env.YOLO_CLIENT_ID) { return { clientId, issueUrl: process.env.YOLO_AUTH_ISSUE_URL ?? 'https://auth.openai.com/api/accounts/deviceauth/usercode', pollUrl: process.env.YOLO_AUTH_POLL_URL ?? 'https://auth.openai.com/api/accounts/deviceauth/token', tokenUrl: process.env.YOLO_AUTH_TOKEN_URL ?? 'https://auth.openai.com/oauth/token', verificationUrl: process.env.YOLO_AUTH_VERIFY_URL ?? 'https://auth.openai.com/codex/device', redirectUri: process.env.YOLO_AUTH_REDIRECT_URI ?? 'https://auth.openai.com/deviceauth/callback', store }; }
+function authConfig(store, clientId = process.env.YOLO_CLIENT_ID, allowOverrides = true) { return { clientId, ...(allowOverrides ? { issueUrl: process.env.YOLO_AUTH_ISSUE_URL ?? AUTH_ENDPOINTS.issueUrl, pollUrl: process.env.YOLO_AUTH_POLL_URL ?? AUTH_ENDPOINTS.pollUrl, tokenUrl: process.env.YOLO_AUTH_TOKEN_URL ?? AUTH_ENDPOINTS.tokenUrl, verificationUrl: process.env.YOLO_AUTH_VERIFY_URL ?? AUTH_ENDPOINTS.verificationUrl, redirectUri: process.env.YOLO_AUTH_REDIRECT_URI ?? AUTH_ENDPOINTS.redirectUri } : AUTH_ENDPOINTS), store }; }
 async function authCommand(args, io) {
   const path = process.env.YOLO_AUTH_FILE ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'yoloharness', 'credentials.json'); const store=new AuthStore(path);
   if(args[0]==='status'){const c=await store.load();io.stdout.write(c?`authenticated (expires ${c.expiresAt?new Date(c.expiresAt).toISOString():'unknown'})\n`:'not authenticated\n');return 0;}

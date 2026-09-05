@@ -28,7 +28,7 @@ export class DockerExecutor {
       if (error?.dockerExitCode !== 1) return false;
       const output = error.dockerOutput ?? '';
       const quotedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      return new RegExp(`(?:no such container|not found)[: ]+${quotedName}(?:\\b|$)`, 'i').test(output);
+      return new RegExp(`(?:no such container|not found)\\s*:\\s*${quotedName}\\s*$`, 'i').test(output);
     }
   }
   async execute(input = {}) { const { signal } = input; const call = input.call ?? (input.command ? { command: input.command, args: input.args } : undefined); if (!call?.call_id) throw new TypeError('executor requires call_id'); await this.preflight({ signal }); if (signal?.aborted) throw signal.reason; const name = this.containerName(); let maybeCreated = false; let primary; try { maybeCreated = true; await this.#simple(this.args(name), { signal, timeoutMs: this.timeoutMs }); return await this.#run(name, call, signal); } catch (error) { primary = error; throw error; } finally { if (maybeCreated) { try { await this.#simple(['kill', '--signal', 'KILL', name], { timeoutMs: Math.min(this.timeoutMs, 10000) }).catch(() => undefined); await this.#simple(['rm', '--force', name], { timeoutMs: Math.min(this.timeoutMs, 10000) }); if (!(await this.#reconcile(name))) throw new UnknownCleanupError(); } catch { throw new UnknownCleanupError(); } } } }

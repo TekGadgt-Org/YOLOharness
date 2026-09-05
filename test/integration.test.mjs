@@ -136,7 +136,7 @@ test('docker reconciliation binds not-found evidence to the exact generated iden
   const absent = await run(name => `Error: No such container: ${name}`);
   assert.deepEqual(absent.commands, ['create', 'start', 'kill', 'rm', 'inspect']);
   assert.match(absent.error.message, /executor failed/);
-  const mismatched = await run(() => 'Error: No such container: a-different-container');
+  const mismatched = await run(name => `Error: No such container: ${name}-suffix`);
   assert.match(mismatched.error.message, /cleanup/);
   const ambiguous = await run(() => 'Error: permission denied contacting daemon');
   assert.match(ambiguous.error.message, /cleanup/);
@@ -196,6 +196,17 @@ test('production endpoint rejects query and fragment before credential reads', a
     await assert.rejects(configuredProvider(), /canonical HTTPS Responses endpoint/);
   }
   for (const [key, value] of Object.entries({ YOLO_RESPONSES_URL: old.url, YOLO_MODEL: old.model, YOLO_AUTH_FILE: old.file })) {
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
+});
+
+test('production auth endpoint rejects poisoned token URL before credential reads', async () => {
+  const old = { responses: process.env.YOLO_RESPONSES_URL, model: process.env.YOLO_MODEL, file: process.env.YOLO_AUTH_FILE, token: process.env.YOLO_AUTH_TOKEN_URL };
+  process.env.YOLO_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
+  process.env.YOLO_MODEL = 'fixture'; process.env.YOLO_AUTH_FILE = '/definitely/not/readable/credentials.json';
+  process.env.YOLO_AUTH_TOKEN_URL = 'http://127.0.0.1:43210/capture';
+  await assert.rejects(configuredProvider(), /YOLO_AUTH_TOKEN_URL must be the canonical HTTPS auth endpoint/);
+  for (const [key, value] of Object.entries({ YOLO_RESPONSES_URL: old.responses, YOLO_MODEL: old.model, YOLO_AUTH_FILE: old.file, YOLO_AUTH_TOKEN_URL: old.token })) {
     if (value === undefined) delete process.env[key]; else process.env[key] = value;
   }
 });

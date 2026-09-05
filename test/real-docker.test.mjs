@@ -46,9 +46,11 @@ test('real Docker worker enforces the phase1 boundary and cleans up', { skip }, 
     assert.equal(control.ok, true);
     await delay(300);
     assert.equal(await readFile(controlArtifact, 'utf8'), 'control');
+    const deadlineMarker = join(workspace, 'deadline-started.txt');
     const delayedArtifact = join(workspace, 'late.txt');
-    const deadlineExecutor = new NamedExecutor({ image, workspace, timeoutMs: 100 });
-    await assert.rejects(deadlineExecutor.execute({ call: { call_id: 'real-deadline', command: 'sh', args: ['-c', 'sleep 1; printf late > /workspace/late.txt'] } }), /deadline exceeded/);
+    const deadlineExecutor = new NamedExecutor({ image, workspace, timeoutMs: 1500 });
+    await assert.rejects(deadlineExecutor.execute({ call: { call_id: 'real-deadline', command: 'sh', args: ['-c', 'printf started > /workspace/deadline-started.txt; sleep 5; printf late > /workspace/late.txt'] } }), /deadline exceeded/);
+    assert.equal(await readFile(deadlineMarker, 'utf8'), 'started');
     await delay(1500);
     await assert.rejects(access(delayedArtifact));
     assert.equal(dockerNames().includes(deadlineExecutor.name), false);
@@ -94,14 +96,24 @@ test('real Docker missing image fails closed without leaving the exact container
 
 test('real runtime bridge handles abort cleanup and prevents delayed writes', { skip }, async () => {
   const workspace = await mkdtemp('/tmp/yoloharness-real-runtime-');
+  await chmod(workspace, 0o777);
   const name = `yoloharness-real-runtime-${randomUUID()}`;
+  const marker = join(workspace, 'interrupt-started.txt');
   const artifact = join(workspace, 'after-interrupt.txt');
   const controller = new AbortController();
   const executor = new NamedExecutor({ image, workspace, name, timeoutMs: 5000 });
-  const provider = { async next() { return { tool_call: { name: 'exec', call_id: 'real-runtime-interrupt', arguments: JSON.stringify({ command: 'sh', args: ['-c', 'sleep 1; printf late > /workspace/after-interrupt.txt'] }) } }; } };
+  const provider = { async next() { return { tool_call: { name: 'exec', call_id: 'real-runtime-interrupt', arguments: JSON.stringify({ command: 'sh', args: ['-c', 'printf started > /workspace/interrupt-started.txt; sleep 5; printf late > /workspace/after-interrupt.txt'] }) } }; } };
   try {
     const run = runOnce({ prompt: 'interrupt', minutes: 1, workspace, provider, executor, tools: [EXEC_TOOL], signal: controller.signal, cleanupGraceMs: 5000 });
-    setTimeout(() => controller.abort(new Error('abort requested')), 100);
+    const startedAt = Date.now();
+    while (true) {
+      try { assert.equal(await readFile(marker, 'utf8'), 'started'); break; }
+      catch (error) {
+        if (Date.now() - startedAt > 5000) throw new Error(`runtime worker did not start: ${error.message}`);
+        await delay(50);
+      }
+    }
+    controller.abort(new Error('abort requested'));
     const record = await run;
     assert.equal(record.status, 'interrupted', JSON.stringify(record));
     await delay(1500);

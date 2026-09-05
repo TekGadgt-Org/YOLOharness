@@ -14,14 +14,15 @@ export class ContainerLauncher {
   }
 
   async launch(bootstrap, { signal } = {}) {
-    const source = await validateWorkspace(this.workspace);
+    const startedAt = Date.now();
+    const deadline = startedAt + this.timeoutMs;
+    if (signal?.aborted) throw signal.reason;
+    const source = await validateWorkspace(this.workspace, { signal, deadline });
     if (signal?.aborted) throw signal.reason;
     const name = `yoloharness-${randomUUID()}`;
     const label = `yoloharness.run=${randomUUID()}`;
-    const uid = typeof process.getuid === 'function' ? process.getuid() : 10001;
-    const gid = typeof process.getgid === 'function' ? process.getgid() : 10001;
-    if (uid === 0) throw new Error('refusing root container launch');
-    const args = ['create', '--pull=never', '--name', name, '--label', label, '--init', '-i', '--user', `${uid}:${gid}`, '--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--cpus', '1', '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m', '--tmpfs', '/home/worker:rw,noexec,nosuid,size=16m', '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/tmp', '--env', `YOLO_RESPONSES_URL=${this.responsesUrl}`, this.image, 'node', '/app/src/container-runtime.mjs'];
+    const identity = await containerIdentity(this.command, this.spawn, { signal, timeoutMs: this.timeoutMs });
+    const args = ['create', '--pull=never', '--name', name, '--label', label, '--init', '-i', '--user', `${identity.uid}:${identity.gid}`, '--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--cpus', '1', '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m', '--tmpfs', '/home/worker:rw,noexec,nosuid,size=16m', '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/tmp', '--env', `YOLO_RESPONSES_URL=${this.responsesUrl ?? ''}`, this.image, 'node', '/app/src/container-runtime.mjs'];
     let id;
     let attached;
     let creating;
@@ -39,6 +40,7 @@ export class ContainerLauncher {
       attached = this.spawn(this.command, ['start', '--attach', '--interactive', id], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } });
       const result = await attachedOperation(attached, encodeBootstrap(bootstrap));
       if (reason) return { version: 1, run_id: null, status: reason.code === 'deadline' ? 'deadline' : 'interrupted', result: null, evidence: [], artifacts: [], errors: [reason.message] };
+      if (result.overflow) throw Object.assign(new Error('container output limit exceeded'), { code: 'output_limit' });
       if (result.code !== 0) throw new Error(result.err.trim() || `container exited (${result.code})`);
       const lines = result.out.trim().split(/\r?\n/).filter(Boolean);
       if (lines.length !== 1) throw new Error('container returned malformed status');
@@ -46,11 +48,22 @@ export class ContainerLauncher {
     } finally {
       clearTimeout(timer); signal?.removeEventListener('abort', abort);
       if (id) await cleanup(this.command, id, this.spawn);
+      else if (reason) await reconcileUnknownCreate(this.command, name, label, this.spawn);
     }
   }
 }
 
-function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT } = {}) {
+async function containerIdentity(command, spawn, opts) {
+  const result = await operation(command, ['info', '--format', '{{json .SecurityOptions}}'], spawn, opts).promise;
+  let options;
+  try { options = JSON.parse(result.trim()); } catch { throw new Error('unable to verify Docker rootless mode'); }
+  if (!Array.isArray(options) || !options.some(value => value === 'name=rootless')) throw new Error('refusing launch: Docker rootless mode was not verified');
+  // Rootless Docker maps container uid 0 to the invoking host uid. Ryan
+  // explicitly approved this narrow exception to preserve mode-0755 writes.
+  return { uid: 0, gid: 0 };
+}
+
+function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT, signal } = {}) {
   let child;
   const promise = new Promise((resolve, reject) => {
     let out = ''; let done = false;
@@ -61,7 +74,10 @@ function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT } = {}) {
     child.stdout?.on('data', chunk => { out += String(chunk); if (Buffer.byteLength(out) > MAX_OUTPUT) { child.kill('SIGKILL'); finish(reject, new Error('docker output limit exceeded')); } });
     let err = '';
     child.stderr?.on('data', chunk => { err += String(chunk); if (Buffer.byteLength(err) > MAX_OUTPUT) child.kill('SIGKILL'); });
+    const abort = () => child?.kill('SIGKILL');
+    signal?.addEventListener('abort', abort, { once: true });
     child.once('error', error => finish(reject, error)); child.once('close', code => {
+      signal?.removeEventListener('abort', abort);
       // Docker may have created the container before the client was killed. Preserve
       // a returned ID so the caller can still perform exact-ID cleanup.
       if (code !== 0 && /^[a-f0-9]{12,64}$/i.test(out.trim())) return finish(resolve, out);
@@ -73,13 +89,20 @@ function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT } = {}) {
 
 function attachedOperation(child, input) {
   return new Promise((resolve, reject) => {
-    let out = ''; let err = ''; let done = false;
+    let out = ''; let err = ''; let done = false; let overflow = false;
     const finish = (fn, value) => { if (done) return; done = true; fn(value); };
-    const collect = (which, chunk) => { const text = String(chunk); if (which === 'out') out += text; else err += text; if (Buffer.byteLength(which === 'out' ? out : err) > MAX_OUTPUT) child.kill('SIGKILL'); };
+    const collect = (which, chunk) => { const text = String(chunk); if (which === 'out') out += text; else err += text; if (Buffer.byteLength(which === 'out' ? out : err) > MAX_OUTPUT) { overflow = true; child.kill('SIGKILL'); } };
     child.stdout?.on('data', chunk => collect('out', chunk)); child.stderr?.on('data', chunk => collect('err', chunk));
-    child.once('error', error => finish(reject, error)); child.once('close', code => finish(resolve, { code, out, err }));
+    child.once('error', error => finish(reject, error)); child.once('close', code => finish(resolve, { code, out, err, overflow }));
     child.stdin?.end(input);
   });
+}
+
+async function reconcileUnknownCreate(command, name, label, spawn) {
+  let output;
+  try { output = await operation(command, ['ps', '--all', '--quiet', '--filter', `label=${label}`, '--filter', `name=^/${name}$`], spawn).promise; }
+  catch (error) { throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown', cause: error }); }
+  for (const id of output.trim().split(/\s+/).filter(Boolean)) await cleanup(command, id, spawn);
 }
 
 async function cleanup(command, id, spawn) {
@@ -92,13 +115,16 @@ async function cleanup(command, id, spawn) {
   }
 }
 
-export async function validateWorkspace(workspace) {
+export async function validateWorkspace(workspace, { signal, deadline } = {}) {
+  const check = () => { if (signal?.aborted) throw signal.reason; if (deadline && Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' }); };
+  check();
   const source = await realpath(workspace);
   const info = await lstat(source);
   if (!info.isDirectory()) throw new TypeError('workspace must be a directory');
   await rejectNestedMounts(source);
   // Reject regular-file hardlinks: they can alias data outside the selected project.
   async function scan(dir) {
+    check();
     for (const name of await readdir(dir)) {
       const path = join(dir, name); const entry = await lstat(path);
       if (entry.isFile() && entry.nlink > 1) throw new TypeError(`workspace contains a multiply-linked file: ${relative(source, path)}`);

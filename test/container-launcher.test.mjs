@@ -23,6 +23,8 @@ test('launcher never starts a container after create is cancelled', async () => 
   try {
     const launcher = new ContainerLauncher({ image: 'sha256:' + 'a'.repeat(64), workspace, timeoutMs: 1000, spawn: (_command, args) => {
       operations.push(args[0]);
+      if (args[0] === 'info') return { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn('["name=rootless"]')); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn(0)); } };
+      if (args[0] === 'ps') return { stdout: { on() {} }, stderr: { on() {} }, once(event, fn) { if (event === 'close') setImmediate(() => fn(0)); } };
       if (args[0] === 'create') {
         const created = child();
         setImmediate(() => { controller.abort(new Error('cancelled during create')); created.kill('SIGKILL'); });
@@ -31,7 +33,7 @@ test('launcher never starts a container after create is cancelled', async () => 
       throw new Error('start must not run after cancellation');
     } });
     await assert.rejects(launcher.launch({ prompt: 'synthetic' }, { signal: controller.signal }), /cancelled during create|docker operation failed/);
-    assert.deepEqual(operations, ['create']);
+    assert.deepEqual(operations, ['info', 'create', 'ps']);
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 

@@ -30,6 +30,8 @@ Authentication is separate from a run and never starts automatically. Set a perm
 
 ## Run the real code
 
+WARNING: Run in a fresh, disposable directory. The agent can overwrite or delete anything in the working directory without asking. Using it on an existing project is at your own risk; back up or commit your work first. Keep secrets out of the directory: networked generated code can send project contents out, and Docker does not protect files inside the mounted project.
+
 From the project directory, with Node 22+ available:
 
 ```sh

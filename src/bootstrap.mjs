@@ -25,7 +25,7 @@ export function decodeBootstrap(input) {
   let value;
   try { value = JSON.parse(data.subarray(separator + 1).toString()); } catch { throw new TypeError('malformed runtime bootstrap'); }
   if (!value || value.version !== BOOTSTRAP_VERSION || typeof value.prompt !== 'string' || !value.prompt.trim() ||
-      typeof value.model !== 'string' || !value.model || typeof value.deadline !== 'number' ||
-      typeof value.accessToken !== 'string' || !value.accessToken || typeof value.expiresAt !== 'number') throw new TypeError('malformed runtime bootstrap');
+      typeof value.model !== 'string' || !value.model || typeof value.deadline !== 'number' || !Number.isFinite(value.deadline) || value.deadline <= Date.now() ||
+      typeof value.accessToken !== 'string' || !value.accessToken || typeof value.expiresAt !== 'number' || !Number.isFinite(value.expiresAt) || value.expiresAt <= value.deadline) throw new TypeError('malformed runtime bootstrap');
   return value;
 }

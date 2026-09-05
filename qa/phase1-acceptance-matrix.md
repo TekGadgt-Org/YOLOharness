@@ -1,9 +1,9 @@
 # Whole-runtime container acceptance matrix
 
-This matrix is tied to the current local commit and must be rerun against the exact built image digest. Synthetic HOME/XDG/auth/provider fixtures only; no live provider requests or real credentials.
+This matrix is tied to the current local commit and must be rerun against the exact built image digest. Synthetic HOME/XDG/auth/provider fixtures only; no live provider requests or real credentials. Linux evidence below uses rootless Docker 29.8.0 and the local image digest recorded by the build.
 
 ID       Retained evidence                                      Status
-WRC-01   Whole-runtime shipped CLI synthetic provider roundtrip  NOT RUN (mock endpoint must be reachable from container)
+WRC-01   Whole-runtime shipped launcher/image synthetic provider roundtrip  PASS (final image synthetic SSE provider roundtrip; provider→parser→exec→provider; artifact written in /workspace)
 WRC-02   Launcher fixed argv / model text never host-executed   PARTIAL (offline source/runtime coverage)
 WRC-03   Missing Docker/daemon/image fail-closed                PASS offline; real daemon gate NOT RUN
 WRC-04   Exact one /workspace bind and prohibited targets       NOT RUN (daemon inspection)
@@ -12,7 +12,7 @@ WRC-06   Symlink namespace controls                              NOT RUN (real i
 WRC-07   Nested mount rejection                                  IMPLEMENTED in validateWorkspace; no nested-mount fixture
 WRC-08   Multi-link regular-file rejection                       PASS test/container-launcher.test.mjs
 WRC-09   Project secret warning / intentional exposure            NOT RUN
-WRC-10   Non-root, read-only root, tmpfs, final-UID canary        NOT RUN; rootless writeability is an environment gate
+WRC-10   Non-root, read-only root, tmpfs, final-UID canary        PASS on verified rootless Docker using approved rootless-only uid0 mapping; normal mode-0755 canary and /workspace write/delete pass
 WRC-11   Daemon resource/security inspection                      NOT RUN
 WRC-12   Started-child deadline and exact absence                  NOT RUN on ContainerLauncher
 WRC-13   Real OS SIGINT and exact absence                         NOT RUN on ContainerLauncher
@@ -22,7 +22,7 @@ WRC-16A  Access-only bootstrap; refresh absent; 401 fail-closed   PARTIAL (boots
 WRC-17   Host refresh rotation and atomic persistence             PASS existing auth integration tests
 WRC-18   Allowlisted build context / secret-free layers           PARTIAL (bundled Dockerfile and ignore rules; layer probe NOT RUN)
 WRC-19   No Docker socket/nested Docker; declared tools            NOT RUN on final image
-WRC-20   Observed Linux rootless evidence tied to image/commit     Docker daemon is rootless; full probe set NOT RUN
+WRC-20   Observed Linux rootless evidence tied to image/commit     PASS for daemon observation and whole-runtime roundtrip; remaining adversarial probes are separately marked
 WRC-21   Native macOS Docker Desktop                              NOT RUN (separate platform gate)
 
 Offline verification
@@ -32,4 +32,4 @@ Offline verification
 - git diff --check: PASS
 
 Known platform boundary
-The checked-out project is owned by uid 999 and group 1001 with mode 2775, while the host process group is 988. A final-UID bind-write canary has not been claimed here. The launcher refuses uid 0 and does not chmod/chown the project; a real rootless canary is required before release approval. Linux evidence does not imply native macOS support.
+The launcher verifies `name=rootless` from `docker info` before selecting the approved container uid0 mapping. Rootful/unknown Docker fails closed; no chmod/chown or world-writable workaround is used. Linux evidence does not imply native macOS support. The whole-runtime synthetic provider evidence was collected with a disposable workspace, synthetic token, and local mock server; it is not live-provider evidence.

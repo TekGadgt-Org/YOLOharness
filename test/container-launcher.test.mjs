@@ -116,6 +116,24 @@ test('production launcher has no caller-selectable network or endpoint policy', 
   assert.equal(Object.hasOwn(launcher, 'testOnly'), false);
 });
 
+test('launcher rejects a Docker create ID that is not the exact owned name and label', async () => {
+  const workspace = await mkdtemp('/tmp/yolo-foreign-id-');
+  const operations = [];
+  try {
+    const launcher = new ContainerLauncher({ image: 'sha256:' + '9'.repeat(64), workspace, timeoutMs: 1000, spawn: (_command, args) => {
+      operations.push(args[0]);
+      const listeners = new Map();
+      const output = args[0] === 'info' ? '["name=rootless"]' : args[0] === 'create' ? 'abcdefabcdef' : JSON.stringify([{ Id: 'abcdefabcdef', Name: '/foreign', Config: { Labels: { 'yoloharness.run': 'other' } } }]);
+      const error = args[0] === 'inspect' ? '' : '';
+      return { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn(output)); } }, stderr: { on(event, fn) { if (event === 'data' && error) setImmediate(() => fn(error)); } }, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); if (event === 'close') setImmediate(() => fn(args[0] === 'inspect' ? 0 : 0)); } };
+    } });
+    await assert.rejects(launcher.launch({ prompt: 'foreign' }), /ownership|cleanup_unknown|container/i);
+    assert.equal(operations.includes('start'), false);
+    assert.equal(operations.includes('kill'), false);
+    assert.equal(operations.includes('rm'), false);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
 test('uncertain create waits for stable absence and removes a delayed daemon container', async () => {
   const workspace = await mkdtemp('/tmp/yolo-launcher-delayed-create-');
   const operations = [];
@@ -187,15 +205,31 @@ test('configured image requires the complete versioned source-identity metadata'
   process.env.XDG_DATA_HOME = data;
   try {
     await mkdir(join(data, 'yoloharness'), { recursive: true });
-    await writeFile(join(data, 'yoloharness', 'image.json'), JSON.stringify({
-      version: 1,
-      imageId: `sha256:${'a'.repeat(64)}`,
-      sourceDigest: `sha256:${'b'.repeat(64)}`,
-      sourceVersion: '0.1.0',
-    }));
-    assert.equal(await configuredImage(), `sha256:${'a'.repeat(64)}`);
+    const identity = await runtimeSourceIdentity();
+    const imageId = `sha256:${'a'.repeat(64)}`;
+    await writeFile(join(data, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId, ...identity }));
+    assert.equal(await configuredImage({ inspect: async () => JSON.stringify({ Id: imageId, Config: { Labels: { 'org.yoloharness.source-digest': identity.sourceDigest }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }) }), imageId);
   } finally {
     if (old === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = old;
+    await rm(data, { recursive: true, force: true });
+  }
+});
+
+test('configured image rejects an image whose embedded source digest is stale', async () => {
+  const data = await mkdtemp('/tmp/yolo-stale-image-');
+  const oldData = process.env.XDG_DATA_HOME;
+  process.env.XDG_DATA_HOME = data;
+  try {
+    const identity = await runtimeSourceIdentity();
+    await mkdir(join(data, 'yoloharness'), { recursive: true });
+    const imageId = `sha256:${'a'.repeat(64)}`;
+    await writeFile(join(data, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId, ...identity }));
+    await assert.rejects(
+      configuredImage({ inspect: async () => JSON.stringify({ Id: imageId, Config: { Labels: { 'org.yoloharness.source-digest': `sha256:${'b'.repeat(64)}` }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }) }),
+      /source digest/i,
+    );
+  } finally {
+    if (oldData === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = oldData;
     await rm(data, { recursive: true, force: true });
   }
 });

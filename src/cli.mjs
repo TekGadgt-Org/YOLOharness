@@ -12,6 +12,8 @@ import { createHash, randomUUID } from 'node:crypto';
 const execFileAsync = promisify(execFile);
 
 const VERSION = '0.1.0';
+const DOCKER_COMMAND = '/usr/bin/docker';
+const RUNTIME_ENTRYPOINT = ['node', '/app/src/container-runtime.mjs'];
 // Kept local so production launcher errors do not require loading the agent
 // runtime module on the host.
 export class MissingProviderError extends Error {
@@ -27,7 +29,7 @@ const AUTH_ENDPOINTS = Object.freeze({
   verificationUrl: 'https://auth.openai.com/codex/device',
   redirectUri: 'https://auth.openai.com/deviceauth/callback',
 });
-function usage() { return 'Usage: yolo [-t MINUTES] [--json] [--fixture] <prompt>\n       yolo setup\n       yolo config set model <model-id>\n       yolo auth login|status|logout\n       yolo --help\n       yolo --version'; }
+function usage() { return 'Usage: yolo [-t MINUTES] [--json] <prompt>\n       yolo setup\n       yolo config set model <model-id>\n       yolo auth login|status|logout\n       yolo --help\n       yolo --version'; }
 export function parseArgs(args) {
   let minutes = 10; let json = false; let fixture = false; const prompt = [];
   for (let i = 0; i < args.length; i += 1) {
@@ -62,6 +64,9 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     process.once('SIGINT', onInterrupt);
     const workspace = process.cwd();
     let record;
+    if (options.fixture && process.env.NODE_ENV !== 'test' && process.argv[1] && (process.argv[1].endsWith('/cli.mjs') || process.argv[1].endsWith('/yolo'))) {
+      throw new TypeError('--fixture is available only to the non-shipped test harness');
+    }
     if (options.fixture) {
       // The fixture is an explicit offline test path. Keep the production
       // launcher free of the host runtime/provider imports.
@@ -84,15 +89,27 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
   }
 }
 
-export async function configuredImage() {
+export async function configuredImage({ inspect = image => inspectRuntimeImage(image) } = {}) {
   try {
     const value = JSON.parse(await readFile(imageMetadataPath(), 'utf8'));
     if (!value || Object.keys(value).length !== 4 || value.version !== 1 ||
         typeof value.imageId !== 'string' || !/^sha256:[0-9a-f]{64}$/i.test(value.imageId) ||
         typeof value.sourceDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/i.test(value.sourceDigest) ||
         typeof value.sourceVersion !== 'string' || !value.sourceVersion) throw new Error('invalid image metadata');
+    const installed = await runtimeSourceIdentity();
+    if (value.sourceDigest !== installed.sourceDigest || value.sourceVersion !== installed.sourceVersion) throw new Error('configured image metadata does not match installed runtime source');
+    const inspected = JSON.parse(await inspect(value.imageId));
+    const config = inspected?.Config ?? {};
+    if (inspected.Id !== value.imageId) throw new Error('runtime image identity did not match configured immutable ID');
+    if (config.Labels?.['org.yoloharness.source-digest'] !== value.sourceDigest) throw new Error('runtime image source digest does not match configured source digest');
+    if (JSON.stringify(config.Entrypoint) !== JSON.stringify(RUNTIME_ENTRYPOINT)) throw new Error('runtime image entrypoint is not the installation-owned entrypoint');
     return value.imageId;
   } catch (error) { if (error.code === 'ENOENT') throw new MissingProviderError('no runtime image configured; run `yolo setup` before starting a run'); throw error; }
+}
+
+async function inspectRuntimeImage(image) {
+  const { stdout } = await execFileAsync(DOCKER_COMMAND, ['image', 'inspect', '--format', '{{json .}}', image], { maxBuffer: 64 * 1024 });
+  return stdout;
 }
 
 export async function setupCommand(io) {
@@ -100,7 +117,7 @@ export async function setupCommand(io) {
   try {
     await cp(new URL('../package.json', import.meta.url), join(context, 'package.json'));
     await cp(new URL('../src', import.meta.url), join(context, 'src'), { recursive: true });
-    const docker = process.env.YOLO_DOCKER_COMMAND ?? 'docker';
+    const docker = DOCKER_COMMAND;
     const sourceIdentity = await runtimeSourceIdentity();
     const tag = `yoloharness-local:${VERSION}`;
     await execFileAsync(docker, ['build', '--pull', '--build-arg', `YOLO_SOURCE_DIGEST=${sourceIdentity.sourceDigest}`, '-f', new URL('../assets/runtime/Dockerfile', import.meta.url).pathname, '-t', tag, context], { maxBuffer: 1024 * 1024 });

@@ -33,6 +33,7 @@ export class ContainerLauncher {
     let attached;
     let creating;
     let createAttempted = false;
+    let owned = false;
     let reason;
     const abort = () => { reason = signal?.reason ?? Object.assign(new Error('container interrupted'), { code: 'interrupted' }); creating?.kill('SIGKILL'); attached?.kill('SIGKILL'); };
     const timer = setTimeout(() => { reason = Object.assign(new Error('container deadline exceeded'), { code: 'deadline' }); creating?.kill('SIGKILL'); attached?.kill('SIGKILL'); }, remaining());
@@ -46,6 +47,8 @@ export class ContainerLauncher {
       if (reason || signal?.aborted) throw reason ?? signal.reason;
       creating = null;
       if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
+      await verifyOwnedContainer(this.command, id, name, label, this.spawn);
+      owned = true;
       attached = this.spawn(this.command, ['start', '--attach', '--interactive', id], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } });
       const result = await attachedOperation(attached, encodeBootstrap(bootstrap));
       if (reason) return { version: 1, run_id: null, status: reason.code === 'deadline' ? 'deadline' : 'interrupted', result: null, evidence: [], artifacts: [], errors: [reason.message] };
@@ -56,7 +59,7 @@ export class ContainerLauncher {
       return JSON.parse(lines[0]);
     } finally {
       clearTimeout(timer); signal?.removeEventListener('abort', abort);
-      if (id) await cleanup(this.command, id, this.spawn);
+      if (id && owned) await cleanup(this.command, id, name, label, this.spawn);
       else if (createAttempted) await reconcileUnknownCreate(this.command, name, label, this.spawn);
     }
   }
@@ -115,7 +118,7 @@ async function reconcileUnknownCreate(command, name, label, spawn) {
     let output;
     try { output = await operation(command, ['ps', '--all', '--quiet', '--filter', `label=${label}`, '--filter', `name=^/${name}$`], spawn).promise; }
     catch (error) { throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown', cause: error }); }
-    const ids = output.trim().split(/\s+/).filter(Boolean);
+    const ids = output.trim().split(/\s+/).filter(id => /^[a-f0-9]{12,64}$/i.test(id));
     if (ids.length > 0) {
       absentSince = null;
       for (const id of ids) await cleanup(command, id, spawn);
@@ -129,7 +132,19 @@ async function reconcileUnknownCreate(command, name, label, spawn) {
   throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown' });
 }
 
-async function cleanup(command, id, spawn) {
+async function verifyOwnedContainer(command, id, name, label, spawn) {
+  let output;
+  try { output = await operation(command, ['inspect', '--format', '{{json .}}', id], spawn).promise; }
+  catch (error) { throw Object.assign(new Error('container ownership could not be verified'), { code: 'cleanup_unknown', cause: error }); }
+  let inspected;
+  try { inspected = JSON.parse(output.trim()); } catch (error) { throw Object.assign(new Error('container ownership could not be verified'), { code: 'cleanup_unknown', cause: error }); }
+  const labels = inspected?.Config?.Labels ?? {};
+  if (inspected?.Id !== id || inspected?.Name !== `/${name}` || labels['yoloharness.run'] !== label) throw new Error('container ownership mismatch');
+}
+
+async function cleanup(command, id, name, label, spawn) {
+  if (typeof name === 'function') { spawn = name; name = null; label = null; }
+  if (name && label) await verifyOwnedContainer(command, id, name, label, spawn);
   try { await operation(command, ['kill', '--signal', 'KILL', id], spawn).promise; } catch {}
   try { await operation(command, ['rm', '--force', id], spawn).promise; } catch (error) { throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown', cause: error }); }
   try { await operation(command, ['inspect', id], spawn).promise; throw new Error('cleanup_unknown'); } catch (error) {

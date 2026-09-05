@@ -9,7 +9,7 @@ The shipped-path provider row derives a separate ephemeral CA-only image from th
 
 Commands:
 
-- `XDG_CONFIG_HOME=/tmp/yoloharness-build-config-phase1 XDG_DATA_HOME=/tmp/yoloharness-build-data-phase1 YOLO_DOCKER_COMMAND=docker node src/cli.mjs setup`
+- `XDG_CONFIG_HOME=/tmp/yoloharness-build-config-phase1 XDG_DATA_HOME=/tmp/yoloharness-build-data-phase1 node src/cli.mjs setup`
 - `YOLO_REAL_DOCKER=1 YOLO_DOCKER_IMAGE=yoloharness-local:0.1.0 node --test test/real-docker.test.mjs`
 - `npm test`
 

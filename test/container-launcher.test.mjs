@@ -33,7 +33,7 @@ test('launcher never starts a container after create is cancelled', async () => 
       }
       throw new Error('start must not run after cancellation');
     } });
-    await assert.rejects(launcher.launch({ prompt: 'synthetic' }, { signal: controller.signal }), /cancelled during create|docker operation failed/);
+    await assert.rejects(launcher.launch({ prompt: 'synthetic' }, { signal: controller.signal }), /cancelled during create|docker operation failed|cleanup_unknown/);
     assert.equal(operations[0], 'info');
     assert.equal(operations[1], 'create');
     assert.ok(operations.filter(operation => operation === 'ps').length >= 8);

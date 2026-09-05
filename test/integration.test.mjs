@@ -4,7 +4,7 @@ import http from 'node:http';
 import { mkdtemp, readFile, stat, rm, utimes, mkdir, writeFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { Readable } from 'node:stream';
 
 import { execFileSync } from 'node:child_process';
@@ -15,10 +15,14 @@ import { configuredProvider } from '../src/cli.mjs';
 import { runOnce, EXEC_TOOL } from '../src/runtime.mjs';
 import { ConfiguredProvider } from '../src/provider.mjs';
 import { ConfigStore, validateModel, ConfigError, configPath, configRoot } from '../src/config.mjs';
-import { main, resolveModel } from '../src/cli.mjs';
+import { main, parseArgs, resolveModel } from '../src/cli.mjs';
 
 const json = (res, value, status=200) => { res.writeHead(status, {'content-type':'application/json'}); res.end(JSON.stringify(value)); };
 function server(handler) { return new Promise(async resolve => { const s=http.createServer(handler); await new Promise(r=>s.listen(0,'127.0.0.1',r)); resolve({s, base:`http://127.0.0.1:${s.address().port}`}); }); }
+
+test('shipped argument parser rejects the host-runtime fixture option', () => {
+  assert.throws(() => parseArgs(['--fixture', 'offline']), /unknown option|fixture/);
+});
 
 test('model configuration roundtrips in XDG config and preserves exact spelling', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'yolo-config-')); const path = join(dir, 'yoloharness', 'config.json');
@@ -453,16 +457,16 @@ test('configured provider refreshes expired credentials before first provider re
 test('default CLI fails closed with setup guidance when runtime image is unavailable', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'yolo-cli-no-docker-'));
   const envNames = ['YOLO_REAL_DOCKER', 'YOLO_CLI_SIGINT_TEST', 'YOLO_CLI_SIGINT_CONTAINER_NAME', 'YOLO_AUTH_ISSUE_URL', 'YOLO_AUTH_POLL_URL', 'YOLO_AUTH_TOKEN_URL', 'YOLO_AUTH_VERIFY_URL', 'YOLO_AUTH_REDIRECT_URI'];
-  const old = { xdg: process.env.XDG_CONFIG_HOME, model: process.env.YOLO_MODEL, image: process.env.YOLO_DOCKER_IMAGE, url: process.env.YOLO_RESPONSES_URL, auth: process.env.YOLO_AUTH_FILE, fetch: globalThis.fetch, env: Object.fromEntries(envNames.map(name => [name, process.env[name]])) };
+  const old = { xdg: process.env.XDG_CONFIG_HOME, data: process.env.XDG_DATA_HOME, model: process.env.YOLO_MODEL, image: process.env.YOLO_DOCKER_IMAGE, url: process.env.YOLO_RESPONSES_URL, auth: process.env.YOLO_AUTH_FILE, fetch: globalThis.fetch, env: Object.fromEntries(envNames.map(name => [name, process.env[name]])) };
   const requests = [];
   try {
-    process.env.XDG_CONFIG_HOME = dir;
+    process.env.XDG_CONFIG_HOME = dir; process.env.XDG_DATA_HOME = dir;
     delete process.env.YOLO_MODEL;
     delete process.env.YOLO_DOCKER_IMAGE;
     process.env.YOLO_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
     process.env.YOLO_AUTH_FILE = join(dir, 'credentials.json');
     for (const name of envNames) delete process.env[name];
-    await new AuthStore(process.env.YOLO_AUTH_FILE).save({ clientId: 'synthetic-client', accessToken: 'synthetic-token', refreshToken: 'synthetic-refresh' });
+    await new AuthStore(process.env.YOLO_AUTH_FILE).save({ clientId: 'synthetic-client', accessToken: 'synthetic-token', refreshToken: 'synthetic-refresh', expiresAt: Date.now() + 60 * 60_000 });
     await new ConfigStore(configPath()).save('synthetic-model');
     const output = []; const errors = [];
     assert.equal(await main(['--json', 'text only'], { stdin: { isTTY: false }, stdout: { write(value) { output.push(value); } }, stderr: { write(value) { errors.push(value); } } }), 1);
@@ -470,6 +474,7 @@ test('default CLI fails closed with setup guidance when runtime image is unavail
     assert.match(errors.at(-1), /no runtime image configured/);
   } finally {
     if (old.xdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = old.xdg;
+    if (old.data === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = old.data;
     if (old.model === undefined) delete process.env.YOLO_MODEL; else process.env.YOLO_MODEL = old.model;
     if (old.image === undefined) delete process.env.YOLO_DOCKER_IMAGE; else process.env.YOLO_DOCKER_IMAGE = old.image;
     if (old.url === undefined) delete process.env.YOLO_RESPONSES_URL; else process.env.YOLO_RESPONSES_URL = old.url;
@@ -484,10 +489,10 @@ test('default CLI fails closed with setup guidance when runtime image is unavail
 
 test('ordinary runtime ignores inherited image and test-control environment', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'yolo-cli-env-boundary-'));
-  const names = { xdg: 'XDG_CONFIG_HOME', model: 'YOLO_MODEL', image: 'YOLO_DOCKER_IMAGE', url: 'YOLO_RESPONSES_URL', auth: 'YOLO_AUTH_FILE', real: 'YOLO_REAL_DOCKER', sigint: 'YOLO_CLI_SIGINT_TEST' };
+  const names = { xdg: 'XDG_CONFIG_HOME', data: 'XDG_DATA_HOME', model: 'YOLO_MODEL', image: 'YOLO_DOCKER_IMAGE', url: 'YOLO_RESPONSES_URL', auth: 'YOLO_AUTH_FILE', real: 'YOLO_REAL_DOCKER', sigint: 'YOLO_CLI_SIGINT_TEST' };
   const old = Object.fromEntries(Object.values(names).map(name => [name, process.env[name]]));
   try {
-    process.env.XDG_CONFIG_HOME = dir;
+    process.env.XDG_CONFIG_HOME = dir; process.env.XDG_DATA_HOME = dir;
     process.env.YOLO_MODEL = 'synthetic-model';
     process.env.YOLO_DOCKER_IMAGE = `sha256:${'a'.repeat(64)}`;
     process.env.YOLO_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
@@ -646,7 +651,8 @@ test('packed package bin runs offline from an extracted artifact', async () => {
   try {
     const packed = execFileSync('npm', ['pack', '--pack-destination', dir], { cwd: process.cwd(), encoding: 'utf8' }).trim().split(/\r?\n/).at(-1);
     execFileSync('tar', ['-xzf', join(dir, packed), '-C', dir]);
-    const output = execFileSync(process.execPath, [join(dir, 'package', 'src/cli.mjs'), '--fixture', '--json', 'offline smoke'], { encoding: 'utf8' });
-    assert.equal(JSON.parse(output).status, 'completed');
+    const result = spawnSync(process.execPath, [join(dir, 'package', 'src/cli.mjs'), '--fixture', '--json', 'offline smoke'], { encoding: 'utf8' });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /unknown option|fixture/i);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

@@ -6,8 +6,12 @@ import { encodeBootstrap } from './bootstrap.mjs';
 
 const MAX_OUTPUT = 1024 * 1024;
 const OP_TIMEOUT = 10_000;
-const CLEANUP_GRACE_MS = 500;
+const CLEANUP_TOTAL_MS = 1500;
+const CLEANUP_STABLE_ABSENCE_MS = 500;
 const CLEANUP_POLL_MS = 50;
+// Installation-owned Docker context; never inherit caller-selected Docker
+// endpoint or config while the application is using the daemon.
+const DOCKER_ENV = Object.freeze({ PATH: '/usr/bin:/bin', DOCKER_CONFIG: '/opt/hermes/.docker', DOCKER_CONTEXT: 'rootless' });
 
 export class ContainerLauncher {
   constructor({ image, workspace = process.cwd(), command = 'docker', spawn = nodeSpawn, timeoutMs = 600000 } = {}) {
@@ -24,11 +28,11 @@ export class ContainerLauncher {
     if (signal?.aborted) throw signal.reason;
     if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
     const name = `yoloharness-${randomUUID()}`;
-    const label = `yoloharness.run=${randomUUID()}`;
+    const label = randomUUID();
     const identity = await containerIdentity(this.command, this.spawn, { signal, timeoutMs: remaining() });
     if (signal?.aborted) throw signal.reason;
     if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
-    const args = ['create', '--pull=never', '--name', name, '--label', label, '--init', '-i', '--user', `${identity.uid}:${identity.gid}`, '--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--cpus', '1', '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m', '--tmpfs', '/home/worker:rw,noexec,nosuid,size=16m', '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', this.image, 'node', '/app/src/container-runtime.mjs'];
+    const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--init', '-i', '--user', `${identity.uid}:${identity.gid}`, '--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--cpus', '1', '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m', '--tmpfs', '/home/worker:rw,noexec,nosuid,size=16m', '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', this.image, 'node', '/app/src/container-runtime.mjs'];
     let id;
     let attached;
     let creating;
@@ -43,13 +47,13 @@ export class ContainerLauncher {
       const create = operation(this.command, args, this.spawn, { timeoutMs: remaining(), signal });
       creating = create.child;
       id = (await create.promise).trim();
-      if (!/^sha256:|^[a-f0-9]{12,64}$/i.test(id)) throw new Error('docker did not return a container ID');
+      if (!/^[a-f0-9]{12,64}$/i.test(id)) throw new Error('docker did not return a container ID');
       if (reason || signal?.aborted) throw reason ?? signal.reason;
       creating = null;
       if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
-      await verifyOwnedContainer(this.command, id, name, label, this.spawn);
+      id = await verifyOwnedContainer(this.command, id, name, label, this.spawn);
       owned = true;
-      attached = this.spawn(this.command, ['start', '--attach', '--interactive', id], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } });
+      attached = this.spawn(this.command, ['start', '--attach', '--interactive', id], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: DOCKER_ENV });
       const result = await attachedOperation(attached, encodeBootstrap(bootstrap));
       if (reason) return { version: 1, run_id: null, status: reason.code === 'deadline' ? 'deadline' : 'interrupted', result: null, evidence: [], artifacts: [], errors: [reason.message] };
       if (result.overflow) throw Object.assign(new Error('container output limit exceeded'), { code: 'output_limit' });
@@ -83,7 +87,7 @@ function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT, signal } = {}
     const finish = (fn, value) => { if (done) return; done = true; clearTimeout(timer); signal?.removeEventListener('abort', abort); fn(value); };
     const terminate = error => { terminalError = error; child?.kill('SIGKILL'); };
     const timer = setTimeout(() => terminate(new Error('docker operation deadline exceeded')), Math.min(timeoutMs, OP_TIMEOUT));
-    try { child = spawn(command, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } }); }
+    try { child = spawn(command, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: DOCKER_ENV }); }
     catch (error) { finish(reject, error); return; }
     child.stdout?.on('data', chunk => { out += String(chunk); if (Buffer.byteLength(out) > MAX_OUTPUT) terminate(new Error('docker output limit exceeded')); });
     child.stderr?.on('data', chunk => { err += String(chunk); if (Buffer.byteLength(err) > MAX_OUTPUT) terminate(new Error('docker output limit exceeded')); });
@@ -94,7 +98,7 @@ function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT, signal } = {}
       // Docker may have created the container before the client was killed. Preserve
       // a returned ID so the caller can still perform exact-ID cleanup.
       if (code !== 0 && /^[a-f0-9]{12,64}$/i.test(out.trim())) return finish(resolve, out);
-      if (code === 0) finish(resolve, out); else finish(reject, Object.assign(new Error(`docker operation failed (${code})`), { dockerOutput: `${out}${err}`.trim(), dockerExitCode: code }));
+      if (code === 0) finish(resolve, out); else finish(reject, Object.assign(new Error(`docker operation failed (${code}): ${err.trim()}`), { dockerOutput: `${out}${err}`.trim(), dockerExitCode: code }));
     });
   });
   return { promise, get child() { return child; } };
@@ -114,21 +118,21 @@ function attachedOperation(child, input) {
 async function reconcileUnknownCreate(command, name, label, spawn) {
   const startedAt = Date.now();
   let absentSince = null;
-  while (Date.now() - startedAt < CLEANUP_GRACE_MS) {
+  while (Date.now() - startedAt < CLEANUP_TOTAL_MS) {
     let output;
-    try { output = await operation(command, ['ps', '--all', '--quiet', '--filter', `label=${label}`, '--filter', `name=^/${name}$`], spawn).promise; }
+    try { output = await operation(command, ['ps', '--all', '--no-trunc', '--quiet', '--filter', `label=yoloharness.run=${label}`, '--filter', `name=^/${name}$`], spawn).promise; }
     catch (error) { throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown', cause: error }); }
-    const ids = output.trim().split(/\s+/).filter(id => /^[a-f0-9]{12,64}$/i.test(id));
+    const ids = output.trim().split(/\s+/).filter(id => /^[a-f0-9]{64}$/i.test(id));
     if (ids.length > 0) {
       absentSince = null;
       for (const id of ids) await cleanup(command, id, spawn);
     } else {
       absentSince ??= Date.now();
     }
-    const remaining = CLEANUP_GRACE_MS - (Date.now() - startedAt);
+    const remaining = CLEANUP_TOTAL_MS - (Date.now() - startedAt);
     if (remaining > 0) await new Promise(resolve => setTimeout(resolve, Math.min(CLEANUP_POLL_MS, remaining)));
   }
-  if (absentSince !== null && Date.now() - absentSince >= CLEANUP_GRACE_MS) return;
+  if (absentSince !== null && Date.now() - absentSince >= CLEANUP_STABLE_ABSENCE_MS) return;
   throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown' });
 }
 
@@ -139,7 +143,8 @@ async function verifyOwnedContainer(command, id, name, label, spawn) {
   let inspected;
   try { inspected = JSON.parse(output.trim()); } catch (error) { throw Object.assign(new Error('container ownership could not be verified'), { code: 'cleanup_unknown', cause: error }); }
   const labels = inspected?.Config?.Labels ?? {};
-  if (inspected?.Id !== id || inspected?.Name !== `/${name}` || labels['yoloharness.run'] !== label) throw new Error('container ownership mismatch');
+  if (!/^[a-f0-9]{64}$/i.test(inspected?.Id ?? '') || !(inspected.Id === id || inspected.Id.startsWith(id)) || inspected?.Name !== `/${name}` || labels['yoloharness.run'] !== label) throw new Error(`container ownership mismatch (id=${inspected?.Id ?? 'missing'}, name=${inspected?.Name ?? 'missing'}, label=${labels['yoloharness.run'] ?? 'missing'})`);
+  return inspected.Id;
 }
 
 async function cleanup(command, id, name, label, spawn) {

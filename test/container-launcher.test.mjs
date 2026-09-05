@@ -46,7 +46,7 @@ async function uncertainCreateFixture({ failure = 'cancel', appearAfter = 8 } = 
   const operations = [];
   let psCount = 0;
   let removed = 0;
-  const ownedId = 'deadbeefdead';
+  const ownedId = 'deadbeef'.repeat(8);
   const spawn = (_command, args) => {
     const operation = args[0]; operations.push(operation);
     const listeners = new Map();
@@ -123,7 +123,8 @@ test('launcher rejects a Docker create ID that is not the exact owned name and l
     const launcher = new ContainerLauncher({ image: 'sha256:' + '9'.repeat(64), workspace, timeoutMs: 1000, spawn: (_command, args) => {
       operations.push(args[0]);
       const listeners = new Map();
-      const output = args[0] === 'info' ? '["name=rootless"]' : args[0] === 'create' ? 'abcdefabcdef' : JSON.stringify([{ Id: 'abcdefabcdef', Name: '/foreign', Config: { Labels: { 'yoloharness.run': 'other' } } }]);
+      const foreignId = 'abcdef'.repeat(10) + 'ab';
+      const output = args[0] === 'info' ? '["name=rootless"]' : args[0] === 'create' ? foreignId : JSON.stringify([{ Id: foreignId, Name: '/foreign', Config: { Labels: { 'yoloharness.run': 'other' } } }]);
       const error = args[0] === 'inspect' ? '' : '';
       return { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn(output)); } }, stderr: { on(event, fn) { if (event === 'data' && error) setImmediate(() => fn(error)); } }, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); if (event === 'close') setImmediate(() => fn(args[0] === 'inspect' ? 0 : 0)); } };
     } });
@@ -148,13 +149,13 @@ test('uncertain create waits for stable absence and removes a delayed daemon con
         const listeners = new Map();
         const result = { stdout: { on() {} }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); } };
         psCount += 1;
-        result.stdout.on = (event, fn) => { if (event === 'data' && psCount === 2) setImmediate(() => fn('deadbeefdead')); };
+        result.stdout.on = (event, fn) => { if (event === 'data' && psCount === 2) setImmediate(() => fn(`${'deadbeef'.repeat(8)}\n`)); };
         setTimeout(() => listeners.get('close')?.(0), 5); return result;
       }
       if (args[0] === 'kill' || args[0] === 'rm') return quick();
       if (args[0] === 'inspect') {
         const listeners = new Map();
-        const result = { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn('Error: No such container: deadbeefdead')); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); } };
+        const result = { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn(`Error: No such container: ${'deadbeef'.repeat(8)}`)); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); } };
         setImmediate(() => listeners.get('close')?.(1)); return result;
       }
       throw new Error(`unexpected docker operation: ${args[0]}`);
@@ -165,7 +166,7 @@ test('uncertain create waits for stable absence and removes a delayed daemon con
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
-test('uncertain create does not declare absence before the full reconciliation grace', async () => {
+test('uncertain create proves stable absence after the bounded reconciliation budget', async () => {
   const workspace = await mkdtemp('/tmp/yolo-launcher-full-grace-');
   let firstPsAt;
   let lastPsAt;
@@ -178,8 +179,11 @@ test('uncertain create does not declare absence before the full reconciliation g
       if (args[0] === 'ps') { const now = Date.now(); firstPsAt ??= now; lastPsAt = now; return quick(); }
       throw new Error(`unexpected docker operation: ${args[0]}`);
     } });
-    await assert.rejects(launcher.launch({ prompt: 'grace' }), /cleanup_unknown|docker operation failed|cancelled|deadline/);
-    assert.ok(lastPsAt - firstPsAt >= 450, `reconciliation lasted ${lastPsAt - firstPsAt}ms`);
+    await assert.rejects(launcher.launch({ prompt: 'grace' }), error => {
+      assert.notEqual(error.code, 'cleanup_unknown');
+      return /docker operation failed|cancelled|deadline/.test(error.message);
+    });
+    assert.ok(lastPsAt - firstPsAt >= 950, `reconciliation lasted ${lastPsAt - firstPsAt}ms`);
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 

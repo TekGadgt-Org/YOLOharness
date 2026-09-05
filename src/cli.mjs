@@ -13,11 +13,12 @@ const execFileAsync = promisify(execFile);
 
 const VERSION = '0.1.0';
 const DOCKER_COMMAND = '/usr/bin/docker';
+const DOCKER_CONTEXT = 'rootless';
 const RUNTIME_ENTRYPOINT = ['node', '/app/src/container-runtime.mjs'];
 // Kept local so production launcher errors do not require loading the agent
 // runtime module on the host.
 export class MissingProviderError extends Error {
-  constructor(message = 'No provider is configured; use --fixture for deterministic offline execution') {
+  constructor(message = 'No provider is configured; run `yolo setup` and authenticate before starting a run') {
     super(message);
     this.name = 'MissingProviderError';
   }
@@ -31,13 +32,12 @@ const AUTH_ENDPOINTS = Object.freeze({
 });
 function usage() { return 'Usage: yolo [-t MINUTES] [--json] <prompt>\n       yolo setup\n       yolo config set model <model-id>\n       yolo auth login|status|logout\n       yolo --help\n       yolo --version'; }
 export function parseArgs(args) {
-  let minutes = 10; let json = false; let fixture = false; const prompt = [];
+  let minutes = 10; let json = false; const prompt = [];
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     if (arg === '--help' || arg === '-h') return { help: true };
     if (arg === '--version' || arg === '-v') return { version: true };
     if (arg === '--json') { json = true; continue; }
-    if (arg === '--fixture') { fixture = true; continue; }
     if (arg === '-t' || arg === '--time') {
       const value = Number(args[++i]);
       if (!(Number.isFinite(value) && value > 0)) throw new TypeError('time must be a positive finite number of minutes');
@@ -47,7 +47,7 @@ export function parseArgs(args) {
     prompt.push(arg);
   }
   if (!prompt.join(' ').trim()) throw new TypeError('prompt must be non-empty');
-  return { minutes, json, fixture, prompt: prompt.join(' ') };
+  return { minutes, json, prompt: prompt.join(' ') };
 }
 
 export async function main(args = process.argv.slice(2), io = { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr }, { clientFactory } = {}) {
@@ -63,23 +63,11 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     const onInterrupt = () => { io.stderr.write('interrupt requested; stopping run\n'); controller.abort(new Error('SIGINT')); };
     process.once('SIGINT', onInterrupt);
     const workspace = process.cwd();
-    let record;
-    if (options.fixture && process.env.NODE_ENV !== 'test' && process.argv[1] && (process.argv[1].endsWith('/cli.mjs') || process.argv[1].endsWith('/yolo'))) {
-      throw new TypeError('--fixture is available only to the non-shipped test harness');
-    }
-    if (options.fixture) {
-      // The fixture is an explicit offline test path. Keep the production
-      // launcher free of the host runtime/provider imports.
-      const { runFixture } = await import('./fixture-runtime.mjs');
-      record = await runFixture({ prompt: options.prompt, minutes: options.minutes, workspace, signal: controller.signal });
-    }
-    else {
-      const model = await resolveModel();
-      const image = await configuredImage();
-      const credentials = await runtimeCredentials(options.minutes);
-      const launcher = new ContainerLauncher({ image, workspace, timeoutMs: options.minutes * 60_000 + 10_000 });
-      record = await launcher.launch({ prompt: options.prompt, model, deadline: Date.now() + options.minutes * 60_000, accessToken: credentials.accessToken, expiresAt: credentials.expiresAt }, { signal: controller.signal });
-    }
+    const model = await resolveModel();
+    const image = await configuredImage();
+    const credentials = await runtimeCredentials(options.minutes);
+    const launcher = new ContainerLauncher({ image, workspace, timeoutMs: options.minutes * 60_000 + 10_000 });
+    const record = await launcher.launch({ prompt: options.prompt, model, deadline: Date.now() + options.minutes * 60_000, accessToken: credentials.accessToken, expiresAt: credentials.expiresAt }, { signal: controller.signal });
     process.removeListener('SIGINT', onInterrupt);
     io.stdout.write(`${options.json ? JSON.stringify(record) : `${record.status}: ${record.result ?? record.errors.join('; ')}`}\n`);
     return record.status === 'completed' ? 0 : record.status === 'interrupted' ? 130 : record.status === 'deadline' ? 124 : 1;
@@ -108,8 +96,12 @@ export async function configuredImage({ inspect = image => inspectRuntimeImage(i
 }
 
 async function inspectRuntimeImage(image) {
-  const { stdout } = await execFileAsync(DOCKER_COMMAND, ['image', 'inspect', '--format', '{{json .}}', image], { maxBuffer: 64 * 1024 });
+  const { stdout } = await execFileAsync(DOCKER_COMMAND, ['image', 'inspect', '--format', '{{json .}}', image], { maxBuffer: 64 * 1024, env: dockerEnvironment() });
   return stdout;
+}
+
+function dockerEnvironment() {
+  return { PATH: '/usr/bin:/bin', DOCKER_CONFIG: '/opt/hermes/.docker', DOCKER_CONTEXT };
 }
 
 export async function setupCommand(io) {
@@ -120,8 +112,8 @@ export async function setupCommand(io) {
     const docker = DOCKER_COMMAND;
     const sourceIdentity = await runtimeSourceIdentity();
     const tag = `yoloharness-local:${VERSION}`;
-    await execFileAsync(docker, ['build', '--pull', '--build-arg', `YOLO_SOURCE_DIGEST=${sourceIdentity.sourceDigest}`, '-f', new URL('../assets/runtime/Dockerfile', import.meta.url).pathname, '-t', tag, context], { maxBuffer: 1024 * 1024 });
-    const { stdout } = await execFileAsync(docker, ['image', 'inspect', '--format', '{{.Id}}', tag], { maxBuffer: 16 * 1024 });
+    await execFileAsync(docker, ['build', '--pull', '--build-arg', `YOLO_SOURCE_DIGEST=${sourceIdentity.sourceDigest}`, '-f', new URL('../assets/runtime/Dockerfile', import.meta.url).pathname, '-t', tag, context], { maxBuffer: 1024 * 1024, env: dockerEnvironment() });
+    const { stdout } = await execFileAsync(docker, ['image', 'inspect', '--format', '{{.Id}}', tag], { maxBuffer: 16 * 1024, env: dockerEnvironment() });
     const imageId = stdout.trim();
     if (!/^sha256:[0-9a-f]{64}$/i.test(imageId)) throw new Error('Docker returned an invalid immutable image ID');
     await mkdir(dirname(imageMetadataPath()), { recursive: true, mode: 0o700 });

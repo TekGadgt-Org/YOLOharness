@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { EventLog } from './events.mjs';
 import { validateReceipt } from './docker-executor.mjs';
 
-export class MissingProviderError extends Error { constructor(message = 'No provider is configured; use --fixture for deterministic offline execution') { super(message); this.name = 'MissingProviderError'; } }
+export class MissingProviderError extends Error { constructor(message = 'No provider is configured; run `yolo setup` and authenticate before starting a run') { super(message); this.name = 'MissingProviderError'; } }
 export const EXEC_TOOL = Object.freeze({ type: 'function', name: 'exec', description: 'Run one command in the isolated worker.', parameters: Object.freeze({ type: 'object', additionalProperties: false, required: ['command', 'args'], properties: { command: { type: 'string', minLength: 1, maxLength: 256 }, args: { type: 'array', maxItems: 64, items: { type: 'string', maxLength: 4096 } } } }) });
 
 function normalizeCall(call) {

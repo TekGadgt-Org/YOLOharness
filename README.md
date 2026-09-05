@@ -6,7 +6,7 @@ A ten-minute experiment in the harness Astra would choose for itself: a small, i
 
 ## Current direction
 
-A thin, container-first, one-shot agent: `yolo "<prompt>"` or `yolo -t <minutes> "<prompt>"`. Ordinary runs execute the provider, planner, parser, dispatch, and generated commands inside one rootless Docker container using the approved rootless-only UID/GID 0:0 mapping; rootful or unknown Docker is rejected. The host process is only a bounded launcher/supervisor; `yolo --fixture` remains an explicit offline test path. No host chmod/chown or ACL preparation is performed; the launcher never chmods or chowns the project.
+A thin, container-first, one-shot agent: `yolo "<prompt>"` or `yolo -t <minutes> "<prompt>"`. Ordinary runs execute the provider, planner, parser, dispatch, and generated commands inside one rootless Docker container using the approved rootless-only UID/GID 0:0 mapping; rootful or unknown Docker is rejected. The host process is only a bounded launcher/supervisor; deterministic fixtures exist only in the non-shipped test harness. No host chmod/chown or ACL preparation is performed; the launcher never chmods or chowns the project.
 
 Run `yolo setup` to build the installation-owned runtime image and store its immutable local image ID plus source digest/version (`{version:1,imageId,sourceDigest,sourceVersion}`) under `$XDG_DATA_HOME/yoloharness/image.json` (or `$HOME/.local/share/yoloharness/image.json`). Ordinary runs use that exact ID with `--pull=never`. The selected project is the only host bind at `/workspace`; the runtime has a read-only root, dropped capabilities, bounded tmpfs/resource limits, and network egress for provider traffic. Project contents and the in-container access token are intentionally not treated as confidential from generated code.
 
@@ -19,10 +19,10 @@ Authentication is separate from a run and never starts automatically. Set a perm
 - **[DESIGN.md](DESIGN.md):** the opinionated architecture and build plan. Start here.
 - **[research/findings.md](research/findings.md):** source-first comparison of public Codex, Hermes, and OpenClaw; Codex OAuth integration feasibility.
 - **[prototype/](prototype/):** historical dependency-free fixture kernel, runnable demo, and tests. **Not a live AI agent.**
-- **[src/](src/):** bounded one-shot CLI/runtime. `yolo --fixture "prompt"` is offline and deterministic; without `--fixture`, it reports that no provider is configured.
+- **[src/](src/):** bounded one-shot CLI/runtime. Ordinary runs are container-only and fail closed when setup, credentials, or the immutable image is unavailable.
 - **[memory/memory-design.md](memory/memory-design.md):** provenance, scope, expiry, contradictions, compaction, and forgetting.
 - **[security/threat-model.md](security/threat-model.md):** adversarial design review and concrete negative tests, not a security certification.
-- **[ux/interaction-design.md](ux/interaction-design.md):** proposed `yolo` CLI and explicitly mocked operator screens. The shipped CLI currently supports the bounded fixture and explicitly configured provider paths.
+- **[ux/interaction-design.md](ux/interaction-design.md):** proposed `yolo` CLI and explicitly mocked operator screens. The shipped CLI supports only the bounded container path and explicitly configured provider paths.
 - **[qa/maintainability.md](qa/maintainability.md):** the argument against rebuilding what Codex/Hermes already do.
 - **[qa/qa-report.md](qa/qa-report.md):** independent initial QA (historical FAIL; both reproduced bugs were repaired).
 - **[qa/final-verification.md](qa/final-verification.md):** coordinator's post-repair rerun: **7 tests pass**, repeated same-log demos succeed, and both bug probes pass; raw output retained.
@@ -36,7 +36,7 @@ From the project directory, with Node 22+ available:
 
 ```sh
 npm test
-npm exec -- yolo --fixture "verify the harness"
+npm exec -- yolo "verify the harness"
 ```
 
 The opt-in real-Docker gate requires the installation-owned whole-runtime image and a Docker daemon: `npm run test:docker`. The retained WRC suite is the source of truth for shipped-CLI/provider, workspace-boundary, token-secrecy, resource, deadline, SIGINT, and cleanup evidence; see [qa/phase1-acceptance-matrix.md](qa/phase1-acceptance-matrix.md). The default `npm test` remains offline and skips real Docker. Native macOS is a separate, explicitly unrun gate.

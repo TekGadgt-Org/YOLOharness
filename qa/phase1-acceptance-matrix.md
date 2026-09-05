@@ -14,7 +14,7 @@ WRC-08   Multi-link regular-file rejection                       PASS test/conta
 WRC-09   Project secret warning / intentional exposure            NOT RUN
 WRC-10   Rootless-only UID0 mapping, read-only root, tmpfs, canary PARTIAL (provider path and configured-image canary pass; complete daemon-observed shipped-path row NOT RUN)
 WRC-11   Daemon resource/security inspection                      NOT RUN
-WRC-12   Started-child deadline and exact absence                  PARTIAL (offline launcher cancellation/timeout cleanup; real shipped deadline gate NOT RUN)
+WRC-12   Started-child deadline and exact absence                  PARTIAL (offline launcher cancellation/timeout cleanup; real shipped deadline gate NOT RUN; bounded reconciliation now separates total budget from stable absence)
 WRC-13   Real OS SIGINT and exact absence                         NOT RUN on ContainerLauncher
 WRC-14   Independent stdout/stderr overflow cleanup               NOT RUN on ContainerLauncher
 WRC-15   Environment/metadata secret exclusion                    PARTIAL (explicit launcher env; daemon inspection NOT RUN)
@@ -22,13 +22,13 @@ WRC-16A  Access-only bootstrap; refresh absent; 401 fail-closed   PARTIAL (boots
 WRC-17   Host refresh rotation and atomic persistence             PASS existing auth integration tests
 WRC-18   Allowlisted build context / secret-free layers           PARTIAL (bundled Dockerfile and ignore rules; layer probe NOT RUN)
 WRC-19   No Docker socket/nested Docker; declared tools            NOT RUN on final image
-WRC-20   Observed Linux rootless evidence tied to image/commit     PARTIAL (Docker 29.8.0 rootless, exact configured-image ID and source-digest label verified in shipped test; derivative is test-only and ephemeral; WRC-03..19 rows not all complete)
+WRC-20   Observed Linux rootless evidence tied to image/commit     PARTIAL (Docker 29.8.0 rootless, current configured-image ID/source label, and fixed installation-owned context verified; WRC-03..19 rows not all complete)
 WRC-21   Native macOS Docker Desktop                              NOT RUN (separate platform gate)
 
 Offline verification
-- npm test: PASS (80 pass, 2 skipped; 82 total)
+- npm test: PASS (83 pass, 2 skipped; 85 total)
 - node --test test/container-launcher.test.mjs: PASS (14 pass)
-- `YOLO_REAL_DOCKER=1 YOLO_DOCKER_IMAGE=yoloharness-local:0.1.0 node --test test/real-docker.test.mjs`: PASS (2 pass, 0 fail)
+- `YOLO_REAL_DOCKER=1 node --test test/real-docker.test.mjs`: FAIL (1 pass, 1 fail; provider row cannot use the removed PATH network-routing seam; rootless image canary passes)
 - node --check src/cli.mjs src/container-launcher.mjs: PASS
 - git diff --check: PASS
 

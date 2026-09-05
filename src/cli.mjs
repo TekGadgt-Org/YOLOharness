@@ -87,7 +87,10 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
 export async function configuredImage() {
   try {
     const value = JSON.parse(await readFile(imageMetadataPath(), 'utf8'));
-    if (!value || Object.keys(value).length !== 2 || value.version !== 1 || typeof value.imageId !== 'string' || !/^sha256:[0-9a-f]{64}$/i.test(value.imageId)) throw new Error('invalid image metadata');
+    if (!value || Object.keys(value).length !== 4 || value.version !== 1 ||
+        typeof value.imageId !== 'string' || !/^sha256:[0-9a-f]{64}$/i.test(value.imageId) ||
+        typeof value.sourceDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/i.test(value.sourceDigest) ||
+        typeof value.sourceVersion !== 'string' || !value.sourceVersion) throw new Error('invalid image metadata');
     return value.imageId;
   } catch (error) { if (error.code === 'ENOENT') throw new MissingProviderError('no runtime image configured; run `yolo setup` before starting a run'); throw error; }
 }
@@ -98,16 +101,14 @@ export async function setupCommand(io) {
     await cp(new URL('../package.json', import.meta.url), join(context, 'package.json'));
     await cp(new URL('../src', import.meta.url), join(context, 'src'), { recursive: true });
     const docker = process.env.YOLO_DOCKER_COMMAND ?? 'docker';
-    await runtimeSourceIdentity();
+    const sourceIdentity = await runtimeSourceIdentity();
     const tag = `yoloharness-local:${VERSION}`;
     await execFileAsync(docker, ['build', '--pull', '-f', new URL('../assets/runtime/Dockerfile', import.meta.url).pathname, '-t', tag, context], { maxBuffer: 1024 * 1024 });
     const { stdout } = await execFileAsync(docker, ['image', 'inspect', '--format', '{{.Id}}', tag], { maxBuffer: 16 * 1024 });
     const imageId = stdout.trim();
     if (!/^sha256:[0-9a-f]{64}$/i.test(imageId)) throw new Error('Docker returned an invalid immutable image ID');
     await mkdir(dirname(imageMetadataPath()), { recursive: true, mode: 0o700 });
-    // The local image ID is the only runtime selection authority. Source
-    // identity is calculated for build observability, but is not a selector.
-    await saveImageMetadata({ version: 1, imageId });
+    await saveImageMetadata({ version: 1, imageId, ...sourceIdentity });
     io.stdout.write(`runtime image ready: ${imageId}\n`); return 0;
   } finally { await rm(context, { recursive: true, force: true }); }
 }

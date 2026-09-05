@@ -65,28 +65,27 @@ async function containerIdentity(command, spawn, opts) {
   let options;
   try { options = JSON.parse(result.trim()); } catch { throw new Error('unable to verify Docker rootless mode'); }
   if (!Array.isArray(options) || !options.some(value => value === 'name=rootless')) throw new Error('refusing launch: Docker rootless mode was not verified');
-  // Do not rely on rootless UID 0. The image and launcher must execute the
-  // runtime as an explicit non-root identity; projects that do not permit
-  // that identity are rejected by the runtime canary rather than repaired by
-  // silently chmod'ing or chown'ing host files.
-  return { uid: 10001, gid: 10001 };
+  // The approved compatibility exception uses the rootless daemon's UID 0
+  // mapping. This is not acceptable for rootful or unknown Docker, which was
+  // rejected above; no host chmod/chown is needed for normal project binds.
+  return { uid: 0, gid: 0 };
 }
 
 function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT, signal } = {}) {
   let child;
   const promise = new Promise((resolve, reject) => {
-    let out = ''; let done = false;
-    const finish = (fn, value) => { if (done) return; done = true; clearTimeout(timer); fn(value); };
-    const timer = setTimeout(() => { child?.kill('SIGKILL'); finish(reject, new Error('docker operation deadline exceeded')); }, Math.min(timeoutMs, OP_TIMEOUT));
+    let out = ''; let err = ''; let done = false; let terminalError; let abort = () => {};
+    const finish = (fn, value) => { if (done) return; done = true; clearTimeout(timer); signal?.removeEventListener('abort', abort); fn(value); };
+    const terminate = error => { terminalError = error; child?.kill('SIGKILL'); };
+    const timer = setTimeout(() => terminate(new Error('docker operation deadline exceeded')), Math.min(timeoutMs, OP_TIMEOUT));
     try { child = spawn(command, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } }); }
     catch (error) { finish(reject, error); return; }
-    child.stdout?.on('data', chunk => { out += String(chunk); if (Buffer.byteLength(out) > MAX_OUTPUT) { child.kill('SIGKILL'); finish(reject, new Error('docker output limit exceeded')); } });
-    let err = '';
-    child.stderr?.on('data', chunk => { err += String(chunk); if (Buffer.byteLength(err) > MAX_OUTPUT) child.kill('SIGKILL'); });
-    const abort = () => child?.kill('SIGKILL');
+    child.stdout?.on('data', chunk => { out += String(chunk); if (Buffer.byteLength(out) > MAX_OUTPUT) terminate(new Error('docker output limit exceeded')); });
+    child.stderr?.on('data', chunk => { err += String(chunk); if (Buffer.byteLength(err) > MAX_OUTPUT) terminate(new Error('docker output limit exceeded')); });
+    abort = () => terminate(signal?.reason ?? new Error('docker operation cancelled'));
     signal?.addEventListener('abort', abort, { once: true });
-    child.once('error', error => finish(reject, error)); child.once('close', code => {
-      signal?.removeEventListener('abort', abort);
+    child.once('error', error => finish(reject, terminalError ?? error)); child.once('close', code => {
+      if (terminalError) return finish(reject, Object.assign(terminalError, { dockerOutput: `${out}${err}`.trim() }));
       // Docker may have created the container before the client was killed. Preserve
       // a returned ID so the caller can still perform exact-ID cleanup.
       if (code !== 0 && /^[a-f0-9]{12,64}$/i.test(out.trim())) return finish(resolve, out);

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, link, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ContainerLauncher, validateWorkspace } from '../src/container-launcher.mjs';
-import { runtimeSourceIdentity } from '../src/cli.mjs';
+import { configuredImage, runtimeSourceIdentity } from '../src/cli.mjs';
 
 const child = (onCreate) => {
   const listeners = new Map();
@@ -51,6 +51,25 @@ test('runtime source identity is a versioned sha256 digest', async () => {
   const identity = await runtimeSourceIdentity();
   assert.match(identity.sourceDigest, /^sha256:[0-9a-f]{64}$/);
   assert.equal(identity.sourceVersion, '0.1.0');
+});
+
+test('configured image requires the complete versioned source-identity metadata', async () => {
+  const data = await mkdtemp('/tmp/yolo-image-metadata-');
+  const old = process.env.XDG_DATA_HOME;
+  process.env.XDG_DATA_HOME = data;
+  try {
+    await mkdir(join(data, 'yoloharness'), { recursive: true });
+    await writeFile(join(data, 'yoloharness', 'image.json'), JSON.stringify({
+      version: 1,
+      imageId: `sha256:${'a'.repeat(64)}`,
+      sourceDigest: `sha256:${'b'.repeat(64)}`,
+      sourceVersion: '0.1.0',
+    }));
+    assert.equal(await configuredImage(), `sha256:${'a'.repeat(64)}`);
+  } finally {
+    if (old === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = old;
+    await rm(data, { recursive: true, force: true });
+  }
 });
 
 test('launcher uses one absolute deadline and does not create after slow preflight', async () => {

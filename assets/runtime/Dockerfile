@@ -6,5 +6,4 @@ RUN apt-get update \
 WORKDIR /app
 COPY package.json /app/package.json
 COPY src /app/src
-USER worker
 ENTRYPOINT ["node", "/app/src/container-runtime.mjs"]

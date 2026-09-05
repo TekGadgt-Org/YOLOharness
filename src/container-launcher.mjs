@@ -1,6 +1,6 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { realpath, readdir, lstat, readFile } from 'node:fs/promises';
+import { realpath, readdir, lstat, readFile, readlink } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { encodeBootstrap } from './bootstrap.mjs';
 
@@ -9,6 +9,9 @@ const OP_TIMEOUT = 10_000;
 const CLEANUP_TOTAL_MS = 1500;
 const CLEANUP_STABLE_ABSENCE_MS = 500;
 const CLEANUP_POLL_MS = 50;
+// These paths are materialized by Docker inside every container and therefore
+// cannot be resolved from the host before the workspace bind is created.
+const KNOWN_CONTAINER_SYMLINK_TARGETS = new Set(['/etc/hosts', '/etc/hostname', '/etc/resolv.conf']);
 // The invoker-selected Docker client/context is trusted host setup.  The
 // environment is used only by the Docker client and never passed to the
 // runtime container.
@@ -40,8 +43,16 @@ export class ContainerLauncher {
     let createAttempted = false;
     let owned = false;
     let reason;
-    const abort = () => { reason = signal?.reason ?? Object.assign(new Error('container interrupted'), { code: 'interrupted' }); creating?.kill('SIGKILL'); attached?.kill('SIGKILL'); };
-    const timer = setTimeout(() => { reason = Object.assign(new Error('container deadline exceeded'), { code: 'deadline' }); creating?.kill('SIGKILL'); attached?.kill('SIGKILL'); }, remaining());
+    let abortCleanup;
+    const abort = (abortReason = signal?.reason ?? Object.assign(new Error('container interrupted'), { code: 'interrupted' })) => {
+      reason = abortReason;
+      creating?.kill('SIGKILL'); attached?.kill('SIGKILL');
+      // Do not wait for docker attach to observe EOF: a descendant can keep
+      // that pipe open after the attach client is killed. Stop the owned
+      // container immediately so it cannot write to the workspace later.
+      if (id && owned && !abortCleanup) abortCleanup = cleanup(this.command, id, name, label, this.spawn);
+    };
+    const timer = setTimeout(() => abort(Object.assign(new Error('container deadline exceeded'), { code: 'deadline' })), remaining());
     signal?.addEventListener('abort', abort, { once: true });
     try {
       createAttempted = true;
@@ -64,7 +75,8 @@ export class ContainerLauncher {
       return JSON.parse(lines[0]);
     } finally {
       clearTimeout(timer); signal?.removeEventListener('abort', abort);
-      if (id && owned) await cleanup(this.command, id, name, label, this.spawn);
+      if (abortCleanup) await abortCleanup;
+      else if (id && owned) await cleanup(this.command, id, name, label, this.spawn);
       else if (createAttempted) await reconcileUnknownCreate(this.command, name, label, this.spawn);
     }
   }
@@ -173,8 +185,19 @@ export async function validateWorkspace(workspace, { signal, deadline } = {}) {
     check();
     for (const name of await readdir(dir)) {
       const path = join(dir, name); const entry = await lstat(path);
+      if (entry.isSymbolicLink()) {
+        const linkTarget = await readlink(path);
+        if (KNOWN_CONTAINER_SYMLINK_TARGETS.has(linkTarget)) continue;
+        let target;
+        try { target = await realpath(path); } catch {
+          throw new TypeError(`workspace contains an unresolved symlink: ${relative(source, path)}`);
+        }
+        const outside = relative(source, target);
+        if (outside === '..' || outside.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || outside.startsWith('/')) throw new TypeError(`workspace symlink resolves outside workspace: ${relative(source, path)}`);
+        continue;
+      }
       if (entry.isFile() && entry.nlink > 1) throw new TypeError(`workspace contains a multiply-linked file: ${relative(source, path)}`);
-      if (entry.isDirectory() && !entry.isSymbolicLink()) await scan(path);
+      if (entry.isDirectory()) await scan(path);
     }
   }
   await scan(source);

@@ -1,1 +1,3 @@
-prompt must be non-empty
+starting bounded run (10 minutes)
+Warning: files in the selected project are intentionally exposed to the agent and may be disclosed
+no model configured; run `yolo config set model <model-id>`

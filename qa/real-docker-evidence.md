@@ -1,19 +1,19 @@
 # Real Docker phase1 gate evidence
 
-Run date: 2026-09-05 22:17 UTC
+Run date: 2026-09-05 23:27 UTC
 Docker server: 29.8.0, context `rootless`
 Kernel: `6.8.0-138-generic`; cgroup version 2; rootless security option observed; storage `overlayfs`.
-Base image: `yoloharness-local:0.1.0`, immutable ID `sha256:82a2570d54ef119b57d0abfd1ae9b36e4648fbe64dbdc3244caa290b19ebf432` (RepoTags includes the installation-owned tag).
-Embedded source label: `sha256:5cf967d71564dc79b0b1e961b6b5885298b85de2e8ea85d3e38512d9eb35b13b`, verified against the current deterministic checkout digest by `yolo setup` and the shipped test; stale labels and untagged substituted images are rejected before credentials/bootstrap.
+Base image: `yoloharness-local:0.1.0`, immutable ID `sha256:e243d2c9cb9c123478f68a05a29ee0262d4b9593f35237362185c9a5d862dbee` (RepoTags includes the installation-owned tag).
+Embedded source label: `sha256:c5e880a2223fc885df754789235e404da89bf2a383ee5f22fcc30ad8670f3402`, verified against the current deterministic checkout digest by `yolo setup` and the shipped test; stale labels and untagged substituted images are rejected before credentials/bootstrap.
 The shipped-path provider row derives a separate ephemeral CA-only image from that base. Its ID is intentionally ephemeral and is not configured as the production image; the test asserts the base label before deriving it.
 
 Commands:
 
-- `XDG_CONFIG_HOME=$PWD/.evidence-setup.Szvllb/config XDG_DATA_HOME=$PWD/.evidence-setup.Szvllb/data node src/cli.mjs setup` (exit 0; image `sha256:82a2570d54ef119b57d0abfd1ae9b36e4648fbe64dbdc3244caa290b19ebf432`)
+- `XDG_CONFIG_HOME=<disposable>/config XDG_DATA_HOME=<disposable>/data node src/cli.mjs setup` (exit 0; image `sha256:e243d2c9cb9c123478f68a05a29ee0262d4b9593f35237362185c9a5d862dbee`)
 - `YOLO_EVIDENCE_DIR=qa/wrc-baseline-raw YOLO_REAL_DOCKER=1 node --test test/real-docker.test.mjs` (exit 0)
 - `npm test`
 
-The current candidate result is 2 passed, 0 failed, 0 skipped, with full suite 84 passed, 0 failed, 2 skipped. Raw commands, stdout, stderr, exit status, and timestamps are retained under `qa/wrc-baseline-raw/`.
+The current candidate result is 2 passed, 0 failed, 0 skipped, with full suite 86 passed, 0 failed, 6 skipped (92 total). The focused WRC-03 preflight result is 4 passed, 0 failed. Raw commands, stdout, stderr, status, and timestamps are retained under `qa/wrc-baseline-raw/`.
 
 After the trusted-client policy was changed to resolve Docker once from the invoker's PATH and preserve normal Docker context/host selection, `yolo setup` rebuilt the image and `npm run test:docker` was rerun. Both shipped subprocess tests passed (2/2): the CA-only internal-network provider roundtrip and the read-only-root/rootless UID0 write/delete canary. The image was rebuilt before execution and its embedded source digest matched the current runtime source.
 
@@ -26,8 +26,13 @@ Exact real-Docker test names:
 
 - The synthetic HTTPS provider ran in a separate container attached only to a pre-created `--internal` network, with alias `chatgpt.com`, no published ports, and SAN `chatgpt.com`; it captured the request nonce, remote container address, and provider PID.
 - The first provider request produced a tool call; the runtime executed `printf` inside the whole-runtime container; the second provider request contained the paired function-call output and returned `whole-runtime-ok`.
+- The same shipped-CLI row then ran `yolo --json -t 0.05 deadline-probe`. It synchronized on a `/workspace/deadline-started` marker, exited 124 after the deadline, verified that the descendant's delayed `/workspace/deadline-late` write never appeared, and observed an empty exact-owned runtime inventory after cleanup.
+- The same shipped-CLI row then sent OS SIGINT after `/workspace/sigint-started`; the child exited 130, `/workspace/sigint-late` never appeared, and the exact generated runtime name was absent after cleanup. It also ran independent stdout-only and stderr-only 1 MiB+ overflow commands (bounded failure receipt, exit 124, exact cleanup) plus matching short-delay controls that wrote markers and completed.
 - The shipped CLI path selected the configured immutable tagged base image ID from synthetic image metadata. An external test-only wrapper rewrote only the create image/network to the ephemeral CA-only derivative; production image selection therefore remained bound to the verified base. Access/refresh credentials and XDG configuration remained in isolated temporary directories, and the CA/key/server-key were never copied into the derivative. No canonical external provider request was made.
 - The shipped subprocess received a test-owned empty Docker config and the verified local daemon endpoint (`unix:///run/user/999/docker.sock`); it did not consume the invoker's Docker config, credential helpers, or context files.
+- WRC-09 shipped warning/readability control passed: the CLI emitted the intentional-exposure warning and the in-container provider tool read synthetic `.env`, key, and token fixtures through `/workspace` only.
+- WRC-16A shipped access-only/401 control passed: the synthetic access token was bootstrapped via stdin, refresh material was absent from runtime argv/env/logs, and one provider 401 produced the machine-readable `reauth_required` receipt without in-container refresh.
+- WRC-18 derivative build control passed: test-owned ignored/nested synthetic secrets were absent from image history and `docker save` output; the allowlisted CA artifact remained usable.
 - A hostile XDG metadata fixture pointing at the untagged CA derivative failed with `runtime image is not the installation-owned image tag` while its credential path was intentionally absent; the tagged base metadata then restored the positive control.
 - A disposable cwd containing a literal newline failed closed with `workspace path contains unsupported control characters`; the ordinary disposable cwd completed successfully.
 
@@ -38,4 +43,4 @@ Exact real-Docker test names:
 - The offline launcher regression `uncertain create waits for stable absence and removes a delayed daemon container` passed: exact name+label reconciliation observed a delayed ID, removed it, verified not-found, and required stable absence.
 - The mountinfo regression `mountinfo decoding preserves escaped newline targets for nested-mount checks` passed; Linux `\\012` escapes now decode before nested-target comparison.
 
-The test is opt-in because it requires a rootless Docker daemon, OpenSSL, and prebuilt image. It uses only synthetic credentials/config; no live OAuth/provider request or real credential was used. Rootless behavior is daemon/kernel dependent. WRC-03..WRC-19 rows not listed as PASS in `qa/phase1-acceptance-matrix.md` remain unrun or partial; WRC-21/native macOS remains untested. This evidence is not a claim that the remaining amended WRC-01..20 rows passed.
+The test is opt-in because it requires a rootless Docker daemon, OpenSSL, and prebuilt image. It uses only synthetic credentials/config; no live OAuth/provider request or real credential was used. Rootless behavior is daemon/kernel dependent. Rows not listed as PASS in `qa/phase1-acceptance-matrix.md` remain unrun or partial; WRC-20 remains partial and WRC-21/native macOS remains untested. This evidence does not claim complete amended WRC-01..20 acceptance.

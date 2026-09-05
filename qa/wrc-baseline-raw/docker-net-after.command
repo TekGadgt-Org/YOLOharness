@@ -1,1 +1,1 @@
-/usr/bin/docker network ls --format {{.Name}}
+/usr/bin/docker network ls --filter name=^yoloharness-internal- --format {{.Name}}

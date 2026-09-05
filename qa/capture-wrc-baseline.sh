@@ -17,9 +17,9 @@ run shipped-fixture env -i PATH=/usr/bin:/bin HOME=/tmp/yoloharness-baseline-hom
 run shipped-empty env -i PATH=/usr/bin:/bin HOME=/tmp/yoloharness-baseline-home XDG_CONFIG_HOME=/tmp/yoloharness-baseline-home/.config XDG_DATA_HOME=/tmp/yoloharness-baseline-home/.local/share node src/cli.mjs 'synthetic baseline probe'
 run docker-info /usr/bin/docker info --format '{{json .}}'
 run docker-owned-before /usr/bin/docker ps -a --no-trunc --filter label=yoloharness.run --format '{{.ID}} {{.Names}} {{.Label "yoloharness.run"}}'
-run docker-net-before /usr/bin/docker network ls --format '{{.Name}}' | grep '^yoloharness-internal-' || true
-run docker-images-before /usr/bin/docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | grep '^yoloharness-test-derivative:' || true
+run docker-net-before /usr/bin/docker network ls --filter name='^yoloharness-internal-' --format '{{.Name}}'
+run docker-images-before /usr/bin/docker image ls --filter reference='yoloharness-test-derivative:*' --format '{{.Repository}}:{{.Tag}} {{.ID}}'
 run image-inspect /usr/bin/docker image inspect --format '{{json .}}' yoloharness-local:0.1.0
 run docker-owned-after /usr/bin/docker ps -a --no-trunc --filter label=yoloharness.run --format '{{.ID}} {{.Names}} {{.Label "yoloharness.run"}}'
-run docker-net-after /usr/bin/docker network ls --format '{{.Name}}' | grep '^yoloharness-internal-' || true
-run docker-images-after /usr/bin/docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | grep '^yoloharness-test-derivative:' || true
+run docker-net-after /usr/bin/docker network ls --filter name='^yoloharness-internal-' --format '{{.Name}}'
+run docker-images-after /usr/bin/docker image ls --filter reference='yoloharness-test-derivative:*' --format '{{.Repository}}:{{.Tag}} {{.ID}}'

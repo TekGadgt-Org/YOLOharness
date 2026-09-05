@@ -93,6 +93,11 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
         let call; try { call = normalizeCall(safe.tool_call); } catch (error) { errors.push(`effect denied: ${error.message}`); status = 'failed'; break; }
         const receipt = await awaitExecutorCleanup(executor.execute({ call, signal: timer.signal }), timer.signal, cleanupGraceMs);
         if (!validateReceipt(receipt, call.call_id)) { errors.push('effect denied: invalid executor receipt'); status = 'failed'; break; }
+        if (!receipt.ok) {
+          errors.push(receipt.error);
+          status = timer.signal.aborted ? (signal.aborted ? 'interrupted' : 'deadline') : receipt.code === 124 ? 'deadline' : 'failed';
+          break;
+        }
         evidence.push(receipt);
         messages.push({ type: 'function_call', call_id: call.call_id, name: 'exec', arguments: JSON.stringify({ command: call.command, args: call.args }) });
         messages.push({ type: 'function_call_output', call_id: call.call_id, output: JSON.stringify(receipt) });
@@ -105,7 +110,7 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
       status = signal.aborted ? 'interrupted' : 'deadline';
       errors.push(error?.message === 'cleanup_unknown' ? 'cleanup_unknown: executor cleanup grace expired' : status === 'deadline' ? 'deadline exceeded; partial result may be incomplete' : 'interrupted by SIGINT');
     }
-    else { status = 'failed'; errors.push(error instanceof Error ? error.message : String(error)); }
+    else { status = 'failed'; errors.push(error?.code === 'reauth_required' ? 'reauth_required' : error instanceof Error ? error.message : String(error)); }
   } finally {
     timer.cancel();
     try { await log.append(runId, status === 'completed' ? 'run_completed' : 'run_stopped', { status, steps }); } catch (error) { errors.push(`receipt write failed: ${error.message}`); if (status === 'completed') status = 'failed'; }

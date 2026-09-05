@@ -59,6 +59,7 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     if (options.help) { io.stdout.write(`${usage()}\n`); return 0; }
     if (options.version) { io.stdout.write(`${VERSION}\n`); return 0; }
     io.stderr.write(`starting bounded run (${options.minutes} minutes)\n`);
+    io.stderr.write('Warning: files in the selected project are intentionally exposed to the agent and may be disclosed\n');
     const controller = new AbortController();
     const onInterrupt = () => { io.stderr.write('interrupt requested; stopping run\n'); controller.abort(new Error('SIGINT')); };
     process.once('SIGINT', onInterrupt);

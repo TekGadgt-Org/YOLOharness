@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, link, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, link, symlink, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { ContainerLauncher, validateWorkspace, decodeMountInfoTargets } from '../src/container-launcher.mjs';
@@ -209,6 +209,14 @@ test('workspace validation rejects nested mount points and multiply-linked files
     await link(file, join(workspace, 'alias.txt'));
     await assert.rejects(validateWorkspace(workspace), /multiply-linked/);
   } finally { await rm(workspace, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
+});
+
+test('workspace validation allows Docker-managed known container symlink targets', async () => {
+  const workspace = await mkdtemp('/tmp/yolo-workspace-container-target-');
+  try {
+    await symlink('/etc/hosts', join(workspace, 'container-known-target'));
+    assert.equal(await validateWorkspace(workspace), workspace);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
 test('mountinfo decoding preserves escaped newline targets for nested-mount checks', () => {

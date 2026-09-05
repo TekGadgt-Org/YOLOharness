@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventLog, redact, recoverEvents } from '../src/events.mjs';
 import { runOnce, FixtureProvider, MissingProviderError, EXEC_TOOL } from '../src/runtime.mjs';
+import { validateWorkspace } from '../src/container-launcher.mjs';
 
 test('event log writes ordered bounded redacted JSONL and reopens', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'yolo-')); const path = join(dir, 'events.jsonl');
@@ -87,4 +88,31 @@ test('exec bridge validates the exact registry and passes normalized argv with p
   const executor = { async execute({ call }) { calls.push(call); return { version: 1, ok: true, call_id: call.call_id, code: 0, output: 'safe' }; } };
   const record = await runOnce({ prompt: 'run it', workspace, provider, executor, tools: [EXEC_TOOL] });
   assert.equal(record.status, 'completed'); assert.deepEqual(calls, [{ command: 'printf', args: ['safe'], call_id: 'c1' }]);
+});
+
+test('failed executor receipts stop the run instead of allowing a false provider completion', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'yolo-')); let steps = 0;
+  const provider = { async next() { steps += 1; return steps === 1
+    ? { tool_call: { call_id: 'failed-1', name: 'exec', arguments: JSON.stringify({ command: 'sh', args: [] }) } }
+    : { done: true, result: 'must-not-complete' }; } };
+  const executor = { async execute() { return { version: 1, ok: false, call_id: 'failed-1', code: 124, output: '', error: 'command deadline or output limit exceeded' }; } };
+  const record = await runOnce({ prompt: 'stop', workspace, provider, executor, tools: [EXEC_TOOL] });
+  assert.equal(record.status, 'deadline'); assert.equal(steps, 1); assert.match(record.errors[0], /command deadline/);
+});
+
+test('workspace validation rejects symlinks that resolve outside the workspace', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'yoloharness-symlink-'));
+  const workspace = join(root, 'workspace');
+  try {
+    await mkdir(workspace);
+    await writeFile(join(root, 'outside.txt'), 'outside sentinel');
+    await symlink(join(root, 'outside.txt'), join(workspace, 'escape.txt'));
+    await assert.rejects(() => validateWorkspace(workspace), /symlink resolves outside workspace/);
+    await rm(join(workspace, 'escape.txt'));
+    await writeFile(join(workspace, 'inside.txt'), 'inside');
+    await symlink(join(workspace, 'inside.txt'), join(workspace, 'safe-link.txt'));
+    assert.equal(await validateWorkspace(workspace), workspace);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

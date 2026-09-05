@@ -229,13 +229,6 @@ test('local HTTP provider to runtime to executor preserves the exec bridge contr
     requestCount += 1;
     const body = JSON.parse(await new Promise(resolve => { let raw = ''; req.on('data', chunk => { raw += chunk; }); req.on('end', () => resolve(raw)); }));
     assert.deepEqual(body.tools, [EXEC_TOOL]);
-    if (requestCount === 2) {
-      const functionCall = body.input.find(item => item.type === 'function_call');
-      const functionOutput = body.input.find(item => item.type === 'function_call_output');
-      assert.equal(functionCall.call_id, 'bridge-1');
-      assert.equal(functionOutput.call_id, 'bridge-1');
-      assert.equal(JSON.parse(functionOutput.output).ok, false);
-    }
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     const event = requestCount === 1
       ? { type: 'response.output_item.done', item: { type: 'function_call', id: 'item-bridge', call_id: 'bridge-1', name: 'exec', arguments: JSON.stringify({ command: '/definitely/not-a-command', args: [] }), status: 'completed' } }
@@ -267,7 +260,8 @@ test('local HTTP provider to runtime to executor preserves the exec bridge contr
     },
   });
   const record = await runOnce({ prompt: 'bridge', provider, executor, tools: [EXEC_TOOL] });
-  assert.equal(record.status, 'completed', JSON.stringify(record));
+  assert.equal(record.status, 'failed', JSON.stringify(record));
+  assert.equal(requestCount, 1);
   assert.deepEqual(calls, [{ command: '/definitely/not-a-command', args: [] }]);
   assert.equal(envelope.version, 1);
   assert.equal(envelope.call_id, 'bridge-1');

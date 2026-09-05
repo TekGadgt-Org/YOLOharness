@@ -1,9 +1,9 @@
 # Real Docker phase1 gate evidence
 
-Run date: 2026-09-05 20:30 UTC
+Run date: 2026-09-05 20:47 UTC
 Docker server: 29.8.0, context `rootless`
 Kernel: `6.8.0-138-generic`; cgroup version 2; rootless security option observed; storage `overlayfs`.
-Base image: `yoloharness-local:0.1.0`, immutable ID `sha256:8c9d33c30fb2807c4cc7241b16336730cabe38f7f1f57d6a4af02114cec4a840`.
+Base image: `yoloharness-local:0.1.0`, immutable ID `sha256:cdd7a1a321d6c1096277b0dc333420fcff3c6dfd9474e451e98384cd9c95f4ae`.
 Embedded source label: verified by the shipped test against the current deterministic checkout digest; stale labels are rejected before credentials/bootstrap.
 The shipped-path provider row derives a separate ephemeral CA-only image from that base. Its ID is intentionally ephemeral and is not configured as the production image; the test asserts the base label before deriving it.
 
@@ -15,11 +15,11 @@ Commands:
 
 Result from the prior candidate: real-Docker gate 1 passed, 1 failed, 0 skipped; full suite 83 passed, 0 failed, 2 skipped. The final image provenance and rootless canary passed. The shipped provider row was blocked by the test-only internal-network routing seam being incompatible with the hardened launcher.
 
-After the trusted-client policy was changed to resolve Docker once from the invoker's PATH and preserve normal Docker context/host selection, `npm run test:docker` was rerun on this working tree. The canary passed, while the provider fixture failed closed before execution because the prebuilt image label (`sha256:4b38f67287cd6299d38d5ecab34e60645c8a7d8da79bf5e3f2ba76d178ec16b1`) did not match the current source digest (`sha256:cf49c407775b0895229f2068e1a723e5de992cec6f086d7843546bb61ee671a2`). The image must be rebuilt by `yolo setup` before this candidate's provider gate can be rerun; this is retained as a failed, not waived, result.
+After the trusted-client policy was changed to resolve Docker once from the invoker's PATH and preserve normal Docker context/host selection, `yolo setup` rebuilt the image and `npm run test:docker` was rerun. Both shipped subprocess tests passed (2/2): the CA-only internal-network provider roundtrip and the read-only-root/rootless UID0 write/delete canary. The image was rebuilt before execution and its embedded source digest matched the current runtime source.
 
 Exact real-Docker test names:
 
-- `shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network` — FAIL (test harness cannot route the fixed production bridge to its internal mock; runtime failed closed with `reauth_required`; no provider request was observed).
+- `shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network` — PASS (the test-owned PATH wrapper routes only the synthetic derivative's bridge network; production selection APIs remain fixed).
 - `configured final image has read-only root and rootless UID0 workspace write/delete canary` — PASS.
 
 - The first row invokes `src/cli.mjs` as an OS subprocess from a disposable workspace. It does not call `main` with a launcher factory, instantiate `ContainerLauncher` directly, or mount the repository. The Docker client is resolved once from the invoker's PATH and the normal Docker context/host configuration is preserved; the test-owned PATH wrapper remains a declared synthetic routing fixture only.

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { runOnce, FixtureProvider, MissingProviderError, EXEC_TOOL } from './runtime.mjs';
+import { runOnce, FixtureProvider, MissingProviderError } from './runtime.mjs';
 import { AuthClient, AuthStore } from './auth.mjs';
 import { ConfiguredProvider } from './provider.mjs';
-import { DockerExecutor } from './docker-executor.mjs';
+
 import { ConfigStore, configPath, configRoot, validateModel, imageMetadataPath } from './config.mjs';
 import { ContainerLauncher } from './container-launcher.mjs';
 import { readFile, mkdir, cp, rm, open, rename, readdir } from 'node:fs/promises';
@@ -56,11 +56,8 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     const onInterrupt = () => { io.stderr.write('interrupt requested; stopping run\n'); controller.abort(new Error('SIGINT')); };
     process.once('SIGINT', onInterrupt);
     const workspace = process.cwd();
-    const cliSignalTest = process.env.YOLO_REAL_DOCKER === '1' && process.env.YOLO_CLI_SIGINT_TEST === '1';
-    const dockerSelected = !options.fixture && (Boolean(process.env.YOLO_DOCKER_IMAGE) || cliSignalTest);
     let record;
     if (options.fixture) record = await runOnce({ prompt: options.prompt, minutes: options.minutes, workspace, provider: new FixtureProvider(), signal: controller.signal });
-    else if (cliSignalTest) record = await runOnce({ prompt: options.prompt, minutes: options.minutes, workspace, provider: new CliSignalTestProvider(), executor: new CliSignalTestExecutor({ image: process.env.YOLO_DOCKER_IMAGE, workspace, name: process.env.YOLO_CLI_SIGINT_CONTAINER_NAME }), tools: [EXEC_TOOL], signal: controller.signal });
     else {
       const model = await resolveModel();
       validateRuntimeEndpoint();
@@ -78,10 +75,6 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
 }
 
 export async function configuredImage() {
-  if (process.env.YOLO_DOCKER_IMAGE) {
-    if (!/^sha256:[0-9a-f]{64}$/i.test(process.env.YOLO_DOCKER_IMAGE)) throw new MissingProviderError('runtime image must be an immutable local image ID; run `yolo setup`');
-    return process.env.YOLO_DOCKER_IMAGE;
-  }
   try {
     const value = JSON.parse(await readFile(imageMetadataPath(), 'utf8'));
     if (value?.version !== 1 || typeof value.imageId !== 'string' || !/^sha256:[0-9a-f]{64}$/i.test(value.imageId) || typeof value.sourceDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/i.test(value.sourceDigest) || value.sourceVersion !== VERSION) throw new Error('invalid image metadata');
@@ -162,20 +155,6 @@ export async function runtimeCredentials(minutes) {
 
 export function validateRuntimeEndpoint() {
   if (process.env.YOLO_RESPONSES_URL !== 'https://chatgpt.com/backend-api/codex/responses') throw new MissingProviderError('YOLO_RESPONSES_URL must be the canonical HTTPS Responses endpoint');
-}
-
-class CliSignalTestProvider {
-  #step = 0;
-  async next({ signal }) {
-    if (signal.aborted) throw signal.reason;
-    if (this.#step++ === 0) return { tool_call: { name: 'exec', call_id: 'cli-sigint', arguments: JSON.stringify({ command: 'sh', args: ['-c', 'printf started > /workspace/cli-interrupt-started.txt; sleep 2; printf late > /workspace/cli-after-interrupt.txt'] }) } };
-    return { done: true, result: 'cli signal test completed' };
-  }
-}
-
-class CliSignalTestExecutor extends DockerExecutor {
-  constructor(options) { super(options); if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(options.name ?? '')) throw new TypeError('YOLO_CLI_SIGINT_CONTAINER_NAME must be a valid container name'); this.name = options.name; }
-  containerName() { return this.name; }
 }
 
 export async function configuredProvider() {

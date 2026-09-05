@@ -482,6 +482,31 @@ test('default CLI fails closed with setup guidance when runtime image is unavail
   }
 });
 
+test('ordinary runtime ignores inherited image and test-control environment', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-cli-env-boundary-'));
+  const names = { xdg: 'XDG_CONFIG_HOME', model: 'YOLO_MODEL', image: 'YOLO_DOCKER_IMAGE', url: 'YOLO_RESPONSES_URL', auth: 'YOLO_AUTH_FILE', real: 'YOLO_REAL_DOCKER', sigint: 'YOLO_CLI_SIGINT_TEST' };
+  const old = Object.fromEntries(Object.values(names).map(name => [name, process.env[name]]));
+  try {
+    process.env.XDG_CONFIG_HOME = dir;
+    process.env.YOLO_MODEL = 'synthetic-model';
+    process.env.YOLO_DOCKER_IMAGE = `sha256:${'a'.repeat(64)}`;
+    process.env.YOLO_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
+    process.env.YOLO_AUTH_FILE = join(dir, 'credentials.json');
+    process.env.YOLO_REAL_DOCKER = '1';
+    process.env.YOLO_CLI_SIGINT_TEST = '1';
+    await new AuthStore(process.env.YOLO_AUTH_FILE).save({ clientId: 'synthetic-client', accessToken: 'synthetic-token', refreshToken: 'synthetic-refresh', expiresAt: Date.now() + 60 * 60_000 });
+    const output = []; const errors = [];
+    assert.equal(await main(['--json', 'text only'], { stdin: { isTTY: false }, stdout: { write(value) { output.push(value); } }, stderr: { write(value) { errors.push(value); } } }), 1);
+    assert.match(errors.at(-1), /no runtime image configured|not configured|Docker/);
+    assert.equal(output.some(value => value.includes('cli signal test')), false);
+  } finally {
+    for (const name of Object.values(names)) {
+      if (old[name] === undefined) delete process.env[name]; else process.env[name] = old[name];
+    }
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('runtime rejects unsolicited tool calls without an executor', async () => {
   const record = await runOnce({ prompt: 'text only', provider: { async next() { return { tool_call: { name: 'exec', call_id: 'unexpected', arguments: JSON.stringify({ command: 'true', args: [] }) } }; } } });
   assert.equal(record.status, 'failed');

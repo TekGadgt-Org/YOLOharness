@@ -34,6 +34,7 @@ async function fixture() {
   const configHome = join(root, 'home', '.config');
   const dataHome = join(root, 'home', '.local', 'share');
   const wrapperDir = join(root, 'bin');
+  const runtimeInspectPath = join(root, 'runtime-inspect.json');
   const derivativeContext = join(root, 'derivative');
   await Promise.all([mkdir(workspace, { recursive: true }), mkdir(newlineWorkspace, { recursive: true }), mkdir(capture, { recursive: true }), mkdir(configHome, { recursive: true }), mkdir(dataHome, { recursive: true }), mkdir(wrapperDir, { recursive: true }), mkdir(derivativeContext, { recursive: true })]);
   const baseId = docker('image', 'inspect', '--format', '{{.Id}}', configuredImage).trim();
@@ -74,7 +75,7 @@ async function fixture() {
     await waitFor(join(capture, 'ready'));
     const expectedLabel = `yoloharness.run=`;
     const wrapperPath = join(wrapperDir, 'docker');
-    await writeFile(wrapperPath, `#!/usr/bin/env node\nconst cp=require('child_process'),fs=require('fs');const a=process.argv.slice(2);if(a[0]==='create'){const name=a[a.indexOf('--name')+1],label=a[a.indexOf('--label')+1],ni=a.indexOf('--network'),ii=a.lastIndexOf(${JSON.stringify(baseId)});if(!name||!name.startsWith('yoloharness-')||!label||!label.startsWith(${JSON.stringify(expectedLabel)})||ni<0||a[ni+1]!=='bridge'||a.filter(x=>x==='--network').length!==1||ii<0) process.exit(91);a[ni+1]=${JSON.stringify(network)};a[ii]=${JSON.stringify(derivativeId)};fs.appendFileSync(${JSON.stringify(join(root, 'docker-argv.jsonl'))},JSON.stringify(a)+'\\n');}process.exit(cp.spawnSync(${JSON.stringify(dockerPath)},a,{stdio:'inherit'}).status??92);\n`, { mode: 0o755 });
+    await writeFile(wrapperPath, `#!/usr/bin/env node\nconst cp=require('child_process'),fs=require('fs');const a=process.argv.slice(2);if(a[0]==='create'){const name=a[a.indexOf('--name')+1],label=a[a.indexOf('--label')+1],ni=a.indexOf('--network'),ii=a.lastIndexOf(${JSON.stringify(baseId)});if(!name||!name.startsWith('yoloharness-')||!label||!label.startsWith(${JSON.stringify(expectedLabel)})||ni<0||a[ni+1]!=='bridge'||a.filter(x=>x==='--network').length!==1||ii<0) process.exit(91);a[ni+1]=${JSON.stringify(network)};a[ii]=${JSON.stringify(derivativeId)};fs.appendFileSync(${JSON.stringify(join(root, 'docker-argv.jsonl'))},JSON.stringify(a)+'\\n');}const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{stdio:'inherit'});if(a[0]==='start'&&result.status===0){const inspected=cp.spawnSync(${JSON.stringify(dockerPath)},['inspect',a.at(-1)],{encoding:'utf8'});if(inspected.status===0)fs.writeFileSync(${JSON.stringify(runtimeInspectPath)},inspected.stdout);}process.exit(result.status??92);\n`, { mode: 0o755 });
     await mkdir(join(configHome, 'yoloharness'), { recursive: true }); await mkdir(join(dataHome, 'yoloharness'), { recursive: true });
     await writeFile(join(dataHome, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId: baseId, ...sourceIdentity }));
     await writeFile(join(configHome, 'yoloharness', 'credentials.json'), JSON.stringify({ accessToken: 'synthetic-access-token', refreshToken: 'synthetic-refresh-token', clientId: 'synthetic-client', expiresAt: Date.now() + 1_800_000 }));
@@ -105,6 +106,22 @@ async function fixture() {
     assert.equal(runtimeArgs.filter(value => value === '--mount').length, 1);
     assert.match(runtimeArgs[runtimeArgs.indexOf('--mount') + 1], /^type=bind,src=.*\/workspace,dst=\/workspace,readonly=false,bind-propagation=rprivate$/s);
     assert.equal(runtimeArgs.some(value => /docker\.sock|DOCKER_CONFIG|ACCESS_TOKEN|REFRESH_TOKEN/i.test(value)), false);
+    const runtimeInspect = JSON.parse(await readFile(runtimeInspectPath, 'utf8'))[0];
+    if (process.env.YOLO_EVIDENCE_DIR) {
+      await mkdir(process.env.YOLO_EVIDENCE_DIR, { recursive: true });
+      await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'runtime-inspect.stdout'), `${JSON.stringify(runtimeInspect)}\n`);
+    }
+    assert.equal(runtimeInspect.HostConfig.ReadonlyRootfs, true);
+    assert.deepEqual(runtimeInspect.HostConfig.CapDrop, ['ALL']);
+    assert.equal(runtimeInspect.HostConfig.SecurityOpt.includes('no-new-privileges'), true);
+    assert.equal(runtimeInspect.HostConfig.PidsLimit, 128);
+    assert.equal(runtimeInspect.HostConfig.Memory, 512 * 1024 * 1024);
+    assert.equal(runtimeInspect.HostConfig.NanoCpus, 1 * 1e9);
+    assert.equal(runtimeInspect.Mounts.filter(mount => mount.Destination === '/workspace').length, 1);
+    assert.equal(runtimeInspect.Mounts.some(mount => /(?:docker\.sock|\/\.ssh|\/\.config|\/\.local\/share)/i.test(mount.Source ?? '')), false);
+    assert.equal(runtimeInspect.Config.Env.some(value => /DOCKER_CONFIG|ACCESS_TOKEN|REFRESH_TOKEN|TOKEN/i.test(value)), false);
+    assert.equal(runtimeInspect.HostConfig.NetworkMode, network);
+    assert.equal(runtimeInspect.NetworkSettings.Networks[network] !== undefined, true);
     const inspect = JSON.parse(docker('inspect', providerName))[0]; assert.equal(Object.keys(inspect.NetworkSettings.Networks).length, 1); assert.ok(inspect.NetworkSettings.Networks[network]);
     // The shipped subprocess must reject an XDG-selected derivative before it
     // attempts to read credentials. Keep the credential path intentionally

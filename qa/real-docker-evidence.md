@@ -1,16 +1,16 @@
 # Real Docker phase1 gate evidence
 
-Run date: 2026-09-05 22:01 UTC
+Run date: 2026-09-05 22:17 UTC
 Docker server: 29.8.0, context `rootless`
 Kernel: `6.8.0-138-generic`; cgroup version 2; rootless security option observed; storage `overlayfs`.
-Base image: `yoloharness-local:0.1.0`, immutable ID `sha256:e57f1cfaee62295f8b006fe71a6441c3f15ca0f13f52c9bc4d6c4d24056127d1` (RepoTags includes the installation-owned tag).
-Embedded source label: verified against the current deterministic checkout digest by `yolo setup` and the shipped test; stale labels and untagged substituted images are rejected before credentials/bootstrap.
+Base image: `yoloharness-local:0.1.0`, immutable ID `sha256:82a2570d54ef119b57d0abfd1ae9b36e4648fbe64dbdc3244caa290b19ebf432` (RepoTags includes the installation-owned tag).
+Embedded source label: `sha256:5cf967d71564dc79b0b1e961b6b5885298b85de2e8ea85d3e38512d9eb35b13b`, verified against the current deterministic checkout digest by `yolo setup` and the shipped test; stale labels and untagged substituted images are rejected before credentials/bootstrap.
 The shipped-path provider row derives a separate ephemeral CA-only image from that base. Its ID is intentionally ephemeral and is not configured as the production image; the test asserts the base label before deriving it.
 
 Commands:
 
-- `XDG_CONFIG_HOME=/tmp/yoloharness-build-config-phase1 XDG_DATA_HOME=/tmp/yoloharness-build-data-phase1 node src/cli.mjs setup`
-- `YOLO_REAL_DOCKER=1 node --test test/real-docker.test.mjs`
+- `XDG_CONFIG_HOME=$PWD/.evidence-setup.Szvllb/config XDG_DATA_HOME=$PWD/.evidence-setup.Szvllb/data node src/cli.mjs setup` (exit 0; image `sha256:82a2570d54ef119b57d0abfd1ae9b36e4648fbe64dbdc3244caa290b19ebf432`)
+- `YOLO_EVIDENCE_DIR=qa/wrc-baseline-raw YOLO_REAL_DOCKER=1 node --test test/real-docker.test.mjs` (exit 0)
 - `npm test`
 
 The current candidate result is 2 passed, 0 failed, 0 skipped, with full suite 84 passed, 0 failed, 2 skipped. Raw commands, stdout, stderr, exit status, and timestamps are retained under `qa/wrc-baseline-raw/`.
@@ -33,6 +33,7 @@ Exact real-Docker test names:
 
 - Preflight returned Docker server version `29.8.0`, with daemon security option `name=rootless`.
 - The whole-runtime container was created with `--pull=never`, read-only root, dropped capabilities, no-new-privileges, bounded PID/memory/CPU limits, bounded `/tmp` and synthetic-home tmpfs, and exactly one writable `/workspace` bind. The image canary observed `/app` as read-only and confirmed write/delete on the project bind.
+- `runtime-inspect.stdout` is the daemon's post-start inspection of the shipped runtime before cleanup; assertions cover read-only root, dropped capabilities, no-new-privileges, PID/memory/CPU limits, exactly one `/workspace` bind, absence of host secret/socket mounts, explicit network attachment, and absence of token/Docker selector variables from the container environment.
 - Cleanup removed the exact owned provider, runtime IDs, network, temporary CA/key/capture/workspace roots, and wrapper root. The remaining stopped Docker container on the daemon (`objective_chatelet`) is pre-existing and not owned by this test.
 - The offline launcher regression `uncertain create waits for stable absence and removes a delayed daemon container` passed: exact name+label reconciliation observed a delayed ID, removed it, verified not-found, and required stable absence.
 - The mountinfo regression `mountinfo decoding preserves escaped newline targets for nested-mount checks` passed; Linux `\\012` escapes now decode before nested-target comparison.

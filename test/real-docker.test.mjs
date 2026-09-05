@@ -41,9 +41,14 @@ test('real Docker worker enforces the phase1 boundary and cleans up', { skip }, 
     assert.match(failed.error, /failure/);
     const capabilities = await executor.execute({ call: { call_id: 'real-capabilities', command: 'sh', args: ['-c', "test \"$(awk '/CapEff/ {print $2}' /proc/self/status)\" = 0000000000000000"] } });
     assert.equal(capabilities.ok, true);
+    const controlArtifact = join(workspace, 'delayed-control.txt');
+    const control = await executor.execute({ call: { call_id: 'real-delayed-control', command: 'sh', args: ['-c', 'sleep 0.2; printf control > /workspace/delayed-control.txt'] } });
+    assert.equal(control.ok, true);
+    await delay(300);
+    assert.equal(await readFile(controlArtifact, 'utf8'), 'control');
     const delayedArtifact = join(workspace, 'late.txt');
     const deadlineExecutor = new NamedExecutor({ image, workspace, timeoutMs: 100 });
-    await assert.rejects(deadlineExecutor.execute({ call: { call_id: 'real-deadline', command: 'sh', args: ['-c', `sleep 1; printf late > ${delayedArtifact}`] } }), /deadline exceeded/);
+    await assert.rejects(deadlineExecutor.execute({ call: { call_id: 'real-deadline', command: 'sh', args: ['-c', 'sleep 1; printf late > /workspace/late.txt'] } }), /deadline exceeded/);
     await delay(1500);
     await assert.rejects(access(delayedArtifact));
     assert.equal(dockerNames().includes(deadlineExecutor.name), false);
@@ -87,16 +92,16 @@ test('real Docker missing image fails closed without leaving the exact container
   }
 });
 
-test('real runtime bridge handles SIGINT cleanup and prevents delayed writes', { skip }, async () => {
+test('real runtime bridge handles abort cleanup and prevents delayed writes', { skip }, async () => {
   const workspace = await mkdtemp('/tmp/yoloharness-real-runtime-');
   const name = `yoloharness-real-runtime-${randomUUID()}`;
   const artifact = join(workspace, 'after-interrupt.txt');
   const controller = new AbortController();
   const executor = new NamedExecutor({ image, workspace, name, timeoutMs: 5000 });
-  const provider = { async next() { return { tool_call: { name: 'exec', call_id: 'real-runtime-interrupt', arguments: JSON.stringify({ command: 'sh', args: ['-c', `sleep 1; printf late > ${artifact}`] }) } }; } };
+  const provider = { async next() { return { tool_call: { name: 'exec', call_id: 'real-runtime-interrupt', arguments: JSON.stringify({ command: 'sh', args: ['-c', 'sleep 1; printf late > /workspace/after-interrupt.txt'] }) } }; } };
   try {
     const run = runOnce({ prompt: 'interrupt', minutes: 1, workspace, provider, executor, tools: [EXEC_TOOL], signal: controller.signal, cleanupGraceMs: 5000 });
-    setTimeout(() => controller.abort(new Error('SIGINT')), 100);
+    setTimeout(() => controller.abort(new Error('abort requested')), 100);
     const record = await run;
     assert.equal(record.status, 'interrupted', JSON.stringify(record));
     await delay(1500);

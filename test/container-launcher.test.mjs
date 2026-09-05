@@ -33,7 +33,9 @@ test('launcher never starts a container after create is cancelled', async () => 
       throw new Error('start must not run after cancellation');
     } });
     await assert.rejects(launcher.launch({ prompt: 'synthetic' }, { signal: controller.signal }), /cancelled during create|docker operation failed/);
-    assert.deepEqual(operations, ['info', 'create', 'ps', 'ps']);
+    assert.equal(operations[0], 'info');
+    assert.equal(operations[1], 'create');
+    assert.ok(operations.filter(operation => operation === 'ps').length >= 8);
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
@@ -79,6 +81,24 @@ test('uncertain create waits for stable absence and removes a delayed daemon con
     await assert.rejects(launcher.launch({ prompt: 'delayed' }), /docker operation failed|cleanup_unknown|cancelled|deadline/);
     assert.ok(psCount >= 2);
     assert.ok(operations.includes('rm'), operations.join(','));
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
+test('uncertain create does not declare absence before the full reconciliation grace', async () => {
+  const workspace = await mkdtemp('/tmp/yolo-launcher-full-grace-');
+  let firstPsAt;
+  let lastPsAt;
+  try {
+    const launcher = new ContainerLauncher({ image: 'sha256:' + 'e'.repeat(64), workspace, timeoutMs: 1000, spawn: (_command, args) => {
+      const listeners = new Map();
+      const quick = (code = 0, output = '') => ({ stdout: { on(event, fn) { if (event === 'data' && output) setImmediate(() => fn(output)); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); if (event === 'close') setImmediate(() => fn(code)); } });
+      if (args[0] === 'info') return quick(0, '["name=rootless"]');
+      if (args[0] === 'create') return { stdout: { on() {} }, stderr: { on() {} }, stdin: { end() {} }, kill() { setImmediate(() => listeners.get('close')?.(137)); }, once(event, fn) { listeners.set(event, fn); } };
+      if (args[0] === 'ps') { const now = Date.now(); firstPsAt ??= now; lastPsAt = now; return quick(); }
+      throw new Error(`unexpected docker operation: ${args[0]}`);
+    } });
+    await assert.rejects(launcher.launch({ prompt: 'grace' }), /cleanup_unknown|docker operation failed|cancelled|deadline/);
+    assert.ok(lastPsAt - firstPsAt >= 450, `reconciliation lasted ${lastPsAt - firstPsAt}ms`);
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 

@@ -112,21 +112,22 @@ function attachedOperation(child, input) {
 
 async function reconcileUnknownCreate(command, name, label, spawn) {
   const startedAt = Date.now();
-  let absentPolls = 0;
+  let absentSince = null;
   while (Date.now() - startedAt < CLEANUP_GRACE_MS) {
     let output;
     try { output = await operation(command, ['ps', '--all', '--quiet', '--filter', `label=${label}`, '--filter', `name=^/${name}$`], spawn).promise; }
     catch (error) { throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown', cause: error }); }
     const ids = output.trim().split(/\s+/).filter(Boolean);
     if (ids.length > 0) {
-      absentPolls = 0;
+      absentSince = null;
       for (const id of ids) await cleanup(command, id, spawn);
     } else {
-      absentPolls += 1;
-      if (absentPolls >= 2) return;
+      absentSince ??= Date.now();
     }
-    await new Promise(resolve => setTimeout(resolve, CLEANUP_POLL_MS));
+    const remaining = CLEANUP_GRACE_MS - (Date.now() - startedAt);
+    if (remaining > 0) await new Promise(resolve => setTimeout(resolve, Math.min(CLEANUP_POLL_MS, remaining)));
   }
+  if (absentSince !== null && Date.now() - absentSince >= CLEANUP_GRACE_MS) return;
   throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown' });
 }
 

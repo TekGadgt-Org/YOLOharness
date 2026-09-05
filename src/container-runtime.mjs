@@ -6,6 +6,7 @@ import { runOnce, EXEC_TOOL } from './runtime.mjs';
 import { ContainerProcessExecutor } from './container-executor.mjs';
 
 const MAX_INPUT = 128 * 1024;
+const RESPONSES_ENDPOINT = 'https://chatgpt.com/backend-api/codex/responses';
 let input = Buffer.alloc(0);
 for await (const chunk of process.stdin) {
   input = Buffer.concat([input, Buffer.from(chunk)]);
@@ -15,9 +16,7 @@ let record;
 try {
   const boot = decodeBootstrap(input);
   if (boot.expiresAt <= boot.deadline) throw new Error('access token does not cover run deadline');
-  const endpoint = process.env.YOLO_RESPONSES_URL;
-  if (!endpoint) throw new Error('container provider endpoint is not configured');
-  const provider = new ConfiguredProvider({ credentials: { accessToken: boot.accessToken, expiresAt: boot.expiresAt }, url: endpoint, model: boot.model });
+  const provider = new ConfiguredProvider({ credentials: { accessToken: boot.accessToken, expiresAt: boot.expiresAt }, url: RESPONSES_ENDPOINT, model: boot.model });
   const remaining = Math.max(1, (boot.deadline - Date.now()) / 60000);
   const executor = new ContainerProcessExecutor({ timeoutMs: Math.max(1_000, boot.deadline - Date.now()) });
   record = await runOnce({ prompt: boot.prompt, minutes: remaining, workspace: '/workspace', provider, executor, tools: [EXEC_TOOL], maxSteps: 100 });

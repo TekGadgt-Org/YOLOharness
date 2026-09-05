@@ -71,7 +71,6 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     }
     else {
       const model = await resolveModel();
-      validateRuntimeEndpoint();
       const image = await configuredImage();
       const credentials = await runtimeCredentials(options.minutes);
       const launcher = launcherFactory ? launcherFactory({ image, workspace, timeoutMs: options.minutes * 60_000 + 10_000, testOnly: true }) : new ContainerLauncher({ image, workspace, timeoutMs: options.minutes * 60_000 + 10_000 });

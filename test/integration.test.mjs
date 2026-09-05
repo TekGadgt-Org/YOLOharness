@@ -125,13 +125,15 @@ test('interactive auth reports unfinished model setup on SIGINT without erasing 
 
 test('shipped default I/O handles PTY SIGINT after auth and preserves config and credentials', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'yolo-auth-pty-'));
+  const config = new ConfigStore(configPath({ XDG_CONFIG_HOME: dir }));
+  await config.save('Existing/Exact-Case');
   const script = `import { main } from ${JSON.stringify(new URL('../src/cli.mjs', import.meta.url).href)}; const clientFactory = store => ({ async begin() { return { verificationUrl: 'https://example.test/device', userCode: 'CODE' }; }, async finish() { await store.save({ accessToken: 'synthetic-access', refreshToken: 'synthetic-refresh', clientId: 'synthetic-client' }); } }); await main(['auth', 'login'], undefined, { clientFactory });`;
   const relay = `import os, pty, select, sys, time\npid, fd = pty.fork()\nif pid == 0:\n os.execvpe(${JSON.stringify(process.execPath)}, ${JSON.stringify([process.execPath, '--input-type=module', '-e', script])}, os.environ)\nsent = False\ndeadline = time.time() + 5\nwhile time.time() < deadline:\n r, _, _ = select.select([fd, sys.stdin], [], [], 0.1)\n if fd in r:\n  try: data = os.read(fd, 4096)\n  except OSError:\n   waited, status = os.waitpid(pid, 0); sys.exit(os.waitstatus_to_exitcode(status))\n  if not data:\n   waited, status = os.waitpid(pid, 0); sys.exit(os.waitstatus_to_exitcode(status))\n  os.write(sys.stdout.fileno(), data)\n  if b'Model name?' in data and not sent:\n   os.write(fd, b'\\x03'); sent = True\n if sys.stdin in r:\n  data = os.read(sys.stdin.fileno(), 4096)\n  if data: os.write(fd, data)\n try: waited, status = os.waitpid(pid, os.WNOHANG)\n except ChildProcessError: break\n if waited: sys.exit(os.waitstatus_to_exitcode(status))\ntry: os.kill(pid, 9)\nexcept ProcessLookupError: pass\nsys.exit(124)`;
   const child = spawn('python3', ['-c', relay], { cwd: process.cwd(), env: { ...process.env, XDG_CONFIG_HOME: dir, YOLO_AUTH_FILE: join(dir, 'credentials.json') }, stdio: ['pipe', 'pipe', 'pipe'] });
   let output = ''; let error = ''; child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { error += chunk; });
   const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
   assert.equal(code, 0, error || output); assert.match(output, /Model name\?/); assert.match(output, /model setup unfinished/);
-  assert.equal(await new ConfigStore(configPath({ XDG_CONFIG_HOME: dir })).load(), null);
+  assert.deepEqual(await config.load(), { version: 1, model: 'Existing/Exact-Case' });
   assert.deepEqual(JSON.parse(await readFile(join(dir, 'credentials.json'), 'utf8')), { accessToken: 'synthetic-access', refreshToken: 'synthetic-refresh', clientId: 'synthetic-client' });
 });
 

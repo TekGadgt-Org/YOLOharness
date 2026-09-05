@@ -10,10 +10,9 @@ const CLEANUP_GRACE_MS = 500;
 const CLEANUP_POLL_MS = 50;
 
 export class ContainerLauncher {
-  constructor({ image, workspace = process.cwd(), command = 'docker', spawn = nodeSpawn, timeoutMs = 600000, responsesUrl = 'https://chatgpt.com/backend-api/codex/responses', network = 'bridge', testOnly = false } = {}) {
+  constructor({ image, workspace = process.cwd(), command = 'docker', spawn = nodeSpawn, timeoutMs = 600000 } = {}) {
     if (!image || !workspace) throw new TypeError('container image and workspace are required');
-    if (!testOnly && (network !== 'bridge' || responsesUrl !== 'https://chatgpt.com/backend-api/codex/responses')) throw new TypeError('network and endpoint overrides are test-only');
-    this.image = image; this.workspace = workspace; this.command = command; this.spawn = spawn; this.timeoutMs = timeoutMs; this.responsesUrl = responsesUrl; this.network = network;
+    this.image = image; this.workspace = workspace; this.command = command; this.spawn = spawn; this.timeoutMs = timeoutMs;
   }
 
   async launch(bootstrap, { signal } = {}) {
@@ -29,8 +28,7 @@ export class ContainerLauncher {
     const identity = await containerIdentity(this.command, this.spawn, { signal, timeoutMs: remaining() });
     if (signal?.aborted) throw signal.reason;
     if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
-    if (typeof this.network !== 'string' || !this.network || this.network.includes('\0') || this.network.length > 128) throw new TypeError('invalid container network');
-    const args = ['create', '--pull=never', '--name', name, '--label', label, '--init', '-i', '--user', `${identity.uid}:${identity.gid}`, '--network', this.network, '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--cpus', '1', '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m', '--tmpfs', '/home/worker:rw,noexec,nosuid,size=16m', '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', '--env', `YOLO_RESPONSES_URL=${this.responsesUrl ?? ''}`, this.image, 'node', '/app/src/container-runtime.mjs'];
+    const args = ['create', '--pull=never', '--name', name, '--label', label, '--init', '-i', '--user', `${identity.uid}:${identity.gid}`, '--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--cpus', '1', '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m', '--tmpfs', '/home/worker:rw,noexec,nosuid,size=16m', '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', this.image, 'node', '/app/src/container-runtime.mjs'];
     let id;
     let attached;
     let creating;

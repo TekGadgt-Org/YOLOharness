@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, link, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { EventEmitter } from 'node:events';
 import { ContainerLauncher, validateWorkspace } from '../src/container-launcher.mjs';
 import { configuredImage, runtimeSourceIdentity } from '../src/cli.mjs';
 
@@ -39,18 +40,80 @@ test('launcher never starts a container after create is cancelled', async () => 
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
-test('production launcher rejects injected network and endpoint overrides', async () => {
-  assert.throws(() => new ContainerLauncher({
-    image: 'sha256:' + 'd'.repeat(64),
-    network: 'synthetic-network',
-    responsesUrl: 'http://synthetic-provider/responses',
-  }), /test-only/);
-  assert.doesNotThrow(() => new ContainerLauncher({
-    image: 'sha256:' + 'd'.repeat(64),
-    testOnly: true,
-    network: 'synthetic-network',
-    responsesUrl: 'http://synthetic-provider/responses',
-  }));
+async function uncertainCreateFixture({ failure = 'cancel', appearAfter = 8 } = {}) {
+  const workspace = await mkdtemp('/tmp/yolo-launcher-uncertain-');
+  const controller = new AbortController();
+  const operations = [];
+  let psCount = 0;
+  let removed = 0;
+  const ownedId = 'deadbeefdead';
+  const spawn = (_command, args) => {
+    const operation = args[0]; operations.push(operation);
+    const listeners = new Map();
+    const stdout = new EventEmitter();
+    const stderr = new EventEmitter();
+    const result = {
+      stdout, stderr, stdin: { end() {} },
+      kill() { setImmediate(() => listeners.get('close')?.(137)); },
+      once(event, fn) { listeners.set(event, fn); },
+    };
+    if (operation === 'info') {
+      setImmediate(() => stdout.emit('data', '["name=rootless"]'));
+      setImmediate(() => listeners.get('close')?.(0));
+    } else if (operation === 'create') {
+      if (failure === 'stdout') setImmediate(() => stdout.emit('data', 'x'.repeat(1024 * 1024 + 1)));
+      if (failure === 'stderr') setImmediate(() => stderr.emit('data', 'x'.repeat(1024 * 1024 + 1)));
+      if (failure === 'nonzero') setImmediate(() => listeners.get('close')?.(17));
+      if (failure === 'cancel') setImmediate(() => { controller.abort(new Error('cancelled during create')); result.kill(); });
+      // timeout intentionally leaves create open until launch's deadline kills it.
+    } else if (operation === 'ps') {
+      psCount += 1;
+      if (removed === 0 && psCount >= appearAfter) setImmediate(() => stdout.emit('data', `${ownedId}\n`));
+      setImmediate(() => listeners.get('close')?.(0));
+    } else if (operation === 'kill' || operation === 'rm') {
+      if (operation === 'rm') removed += 1;
+      setImmediate(() => listeners.get('close')?.(0));
+    } else if (operation === 'inspect') {
+      setImmediate(() => stderr.emit('data', `Error: No such container: ${ownedId}`));
+      setImmediate(() => listeners.get('close')?.(1));
+    } else {
+      throw new Error(`unexpected docker operation: ${operation}`);
+    }
+    return result;
+  };
+  const launcher = new ContainerLauncher({ image: 'sha256:' + 'f'.repeat(64), workspace, timeoutMs: failure === 'timeout' ? 30 : 1000, spawn });
+  try {
+    await assert.rejects(launcher.launch({ prompt: `uncertain-${failure}` }, { signal: controller.signal }), /cleanup_unknown|docker operation failed|cancelled|deadline|output limit/);
+    assert.ok(psCount >= appearAfter, `${failure} reconciled before delayed appearance`);
+    assert.equal(removed, 1, `${failure} did not remove the exact discovered ID`);
+    assert.equal(operations.includes('start'), false, `${failure} unexpectedly started a container`);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+}
+
+test('uncertain create cancellation reconciles a delayed daemon appearance with no returned ID', async () => {
+  await uncertainCreateFixture({ failure: 'cancel' });
+});
+
+test('uncertain create timeout reconciles a delayed daemon appearance with no returned ID', async () => {
+  await uncertainCreateFixture({ failure: 'timeout' });
+});
+
+test('uncertain create stdout overflow reconciles a delayed daemon appearance with no returned ID', async () => {
+  await uncertainCreateFixture({ failure: 'stdout' });
+});
+
+test('uncertain create stderr overflow and nonzero create reconcile delayed daemon appearances with no returned ID', async (t) => {
+  await t.test('stderr overflow', () => uncertainCreateFixture({ failure: 'stderr' }));
+  await t.test('nonzero create', () => uncertainCreateFixture({ failure: 'nonzero' }));
+});
+
+test('production launcher has no caller-selectable network or endpoint policy', () => {
+  const launcher = new ContainerLauncher({ image: 'sha256:' + 'd'.repeat(64), network: 'synthetic-network', responsesUrl: 'http://synthetic-provider/responses', testOnly: true });
+  assert.equal(Object.hasOwn(launcher, 'network'), false);
+  assert.equal(Object.hasOwn(launcher, 'responsesUrl'), false);
+  assert.equal(Object.hasOwn(launcher, 'testOnly'), false);
 });
 
 test('uncertain create waits for stable absence and removes a delayed daemon container', async () => {

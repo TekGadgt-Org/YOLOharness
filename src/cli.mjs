@@ -48,9 +48,8 @@ export function parseArgs(args) {
   return { minutes, json, fixture, prompt: prompt.join(' ') };
 }
 
-export async function main(args = process.argv.slice(2), io = { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr }, { clientFactory, launcherFactory, allowTestSeams = false } = {}) {
+export async function main(args = process.argv.slice(2), io = { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr }, { clientFactory } = {}) {
   try {
-    if (launcherFactory && !allowTestSeams) throw new TypeError('launcher injection is test-only');
     if (args[0] === 'setup') return await setupCommand(io);
     if (args[0] === 'auth') return await authCommand(args.slice(1), io, { clientFactory });
     if (args[0] === 'config') return await configCommand(args.slice(1), io);
@@ -73,7 +72,7 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
       const model = await resolveModel();
       const image = await configuredImage();
       const credentials = await runtimeCredentials(options.minutes);
-      const launcher = launcherFactory ? launcherFactory({ image, workspace, timeoutMs: options.minutes * 60_000 + 10_000, testOnly: true }) : new ContainerLauncher({ image, workspace, timeoutMs: options.minutes * 60_000 + 10_000 });
+      const launcher = new ContainerLauncher({ image, workspace, timeoutMs: options.minutes * 60_000 + 10_000 });
       record = await launcher.launch({ prompt: options.prompt, model, deadline: Date.now() + options.minutes * 60_000, accessToken: credentials.accessToken, expiresAt: credentials.expiresAt }, { signal: controller.signal });
     }
     process.removeListener('SIGINT', onInterrupt);

@@ -3,8 +3,8 @@
 This matrix records the whole-runtime migration on the current feature branch. Synthetic HOME/XDG/auth/provider fixtures only; no live provider requests or real credentials. Linux evidence below uses the observed rootless Docker daemon; the rootless-only UID0 image must be rebuilt with `yolo setup` after source changes.
 
 ID       Retained evidence                                      Status
-WRC-01   Whole-runtime shipped launcher/image synthetic provider roundtrip  PARTIAL (whole-runtime container behavior covered through the isolated test seam; shipped executable subprocess gate remains required)
-WRC-02   Launcher fixed argv / model text never host-executed   PARTIAL (offline source/runtime coverage)
+WRC-01   Whole-runtime shipped launcher/image synthetic provider roundtrip  PASS (`shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network`)
+WRC-02   Launcher fixed argv / model text never host-executed   PASS (same shipped subprocess test; provider captured prompt and tool roundtrip)
 WRC-03   Missing Docker/daemon/image fail-closed                PASS offline; real daemon gate NOT RUN
 WRC-04   Exact one /workspace bind and prohibited targets       NOT RUN (daemon inspection)
 WRC-05   Outside absolute/parent path controls                   NOT RUN (real image)
@@ -12,7 +12,7 @@ WRC-06   Symlink namespace controls                              NOT RUN (real i
 WRC-07   Nested mount rejection                                  IMPLEMENTED in validateWorkspace; no nested-mount fixture
 WRC-08   Multi-link regular-file rejection                       PASS test/container-launcher.test.mjs
 WRC-09   Project secret warning / intentional exposure            NOT RUN
-WRC-10   Rootless-only UID0 mapping, read-only root, tmpfs, canary PARTIAL (raw final-image canary only; shipped-path daemon inspection still required)
+WRC-10   Rootless-only UID0 mapping, read-only root, tmpfs, canary PASS (shipped-path provider test plus `configured final image has read-only root and rootless UID0 workspace write/delete canary`; derivative-image evidence is labeled)
 WRC-11   Daemon resource/security inspection                      NOT RUN
 WRC-12   Started-child deadline and exact absence                  PARTIAL (offline launcher cancellation/timeout cleanup; real shipped deadline gate NOT RUN)
 WRC-13   Real OS SIGINT and exact absence                         NOT RUN on ContainerLauncher
@@ -22,7 +22,7 @@ WRC-16A  Access-only bootstrap; refresh absent; 401 fail-closed   PARTIAL (boots
 WRC-17   Host refresh rotation and atomic persistence             PASS existing auth integration tests
 WRC-18   Allowlisted build context / secret-free layers           PARTIAL (bundled Dockerfile and ignore rules; layer probe NOT RUN)
 WRC-19   No Docker socket/nested Docker; declared tools            NOT RUN on final image
-WRC-20   Observed Linux rootless evidence tied to image/commit     PARTIAL (Docker 29.8.0 rootless observed; exact image/source identity and full WRC-01..19 evidence remain incomplete)
+WRC-20   Observed Linux rootless evidence tied to image/commit     PARTIAL (Docker 29.8.0 rootless, exact base image ID and derivative ID observed in shipped test; WRC-03..19 rows not all complete)
 WRC-21   Native macOS Docker Desktop                              NOT RUN (separate platform gate)
 
 Offline verification

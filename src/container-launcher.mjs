@@ -9,9 +9,10 @@ const OP_TIMEOUT = 10_000;
 const CLEANUP_TOTAL_MS = 1500;
 const CLEANUP_STABLE_ABSENCE_MS = 500;
 const CLEANUP_POLL_MS = 50;
-// Installation-owned Docker context; never inherit caller-selected Docker
-// endpoint or config while the application is using the daemon.
-const DOCKER_ENV = Object.freeze({ PATH: '/usr/bin:/bin', DOCKER_CONFIG: '/opt/hermes/.docker', DOCKER_CONTEXT: 'rootless' });
+// The invoker-selected Docker client/context is trusted host setup.  The
+// environment is used only by the Docker client and never passed to the
+// runtime container.
+const DOCKER_ENV = () => ({ ...process.env });
 
 export class ContainerLauncher {
   constructor({ image, workspace = process.cwd(), command = 'docker', spawn = nodeSpawn, timeoutMs = 600000 } = {}) {
@@ -53,7 +54,7 @@ export class ContainerLauncher {
       if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
       id = await verifyOwnedContainer(this.command, id, name, label, this.spawn);
       owned = true;
-      attached = this.spawn(this.command, ['start', '--attach', '--interactive', id], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: DOCKER_ENV });
+      attached = this.spawn(this.command, ['start', '--attach', '--interactive', id], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: DOCKER_ENV() });
       const result = await attachedOperation(attached, encodeBootstrap(bootstrap));
       if (reason) return { version: 1, run_id: null, status: reason.code === 'deadline' ? 'deadline' : 'interrupted', result: null, evidence: [], artifacts: [], errors: [reason.message] };
       if (result.overflow) throw Object.assign(new Error('container output limit exceeded'), { code: 'output_limit' });
@@ -87,7 +88,7 @@ function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT, signal } = {}
     const finish = (fn, value) => { if (done) return; done = true; clearTimeout(timer); signal?.removeEventListener('abort', abort); fn(value); };
     const terminate = error => { terminalError = error; child?.kill('SIGKILL'); };
     const timer = setTimeout(() => terminate(new Error('docker operation deadline exceeded')), Math.min(timeoutMs, OP_TIMEOUT));
-    try { child = spawn(command, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: DOCKER_ENV }); }
+    try { child = spawn(command, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: DOCKER_ENV() }); }
     catch (error) { finish(reject, error); return; }
     child.stdout?.on('data', chunk => { out += String(chunk); if (Buffer.byteLength(out) > MAX_OUTPUT) terminate(new Error('docker output limit exceeded')); });
     child.stderr?.on('data', chunk => { err += String(chunk); if (Buffer.byteLength(err) > MAX_OUTPUT) terminate(new Error('docker output limit exceeded')); });

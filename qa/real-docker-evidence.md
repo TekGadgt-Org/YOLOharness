@@ -13,14 +13,16 @@ Commands:
 - `YOLO_REAL_DOCKER=1 node --test test/real-docker.test.mjs`
 - `npm test`
 
-Result: real-Docker gate 1 passed, 1 failed, 0 skipped; full suite 83 passed, 0 failed, 2 skipped. The final image provenance and rootless canary passed. The shipped provider row is blocked by the test-only internal-network routing seam being incompatible with the hardened fixed `/usr/bin/docker` launcher; no PATH or environment Docker override was restored.
+Result from the prior candidate: real-Docker gate 1 passed, 1 failed, 0 skipped; full suite 83 passed, 0 failed, 2 skipped. The final image provenance and rootless canary passed. The shipped provider row was blocked by the test-only internal-network routing seam being incompatible with the hardened launcher.
+
+After the trusted-client policy was changed to resolve Docker once from the invoker's PATH and preserve normal Docker context/host selection, `npm run test:docker` was rerun on this working tree. The canary passed, while the provider fixture failed closed before execution because the prebuilt image label (`sha256:4b38f67287cd6299d38d5ecab34e60645c8a7d8da79bf5e3f2ba76d178ec16b1`) did not match the current source digest (`sha256:cf49c407775b0895229f2068e1a723e5de992cec6f086d7843546bb61ee671a2`). The image must be rebuilt by `yolo setup` before this candidate's provider gate can be rerun; this is retained as a failed, not waived, result.
 
 Exact real-Docker test names:
 
 - `shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network` — FAIL (test harness cannot route the fixed production bridge to its internal mock; runtime failed closed with `reauth_required`; no provider request was observed).
 - `configured final image has read-only root and rootless UID0 workspace write/delete canary` — PASS.
 
-The first row invokes `src/cli.mjs` as an OS subprocess from a disposable workspace. It does not call `main` with a launcher factory, instantiate `ContainerLauncher` directly, or mount the repository. The historical test-owned PATH wrapper is retained in the test source for diagnosis but is no longer reached by production, which uses the installation-owned `/usr/bin/docker` and fixed rootless context.
+- The first row invokes `src/cli.mjs` as an OS subprocess from a disposable workspace. It does not call `main` with a launcher factory, instantiate `ContainerLauncher` directly, or mount the repository. The Docker client is resolved once from the invoker's PATH and the normal Docker context/host configuration is preserved; the test-owned PATH wrapper remains a declared synthetic routing fixture only.
 
 - The synthetic HTTPS provider ran in a separate container attached only to a pre-created `--internal` network, with alias `chatgpt.com`, no published ports, and SAN `chatgpt.com`; it captured the request nonce, remote container address, and provider PID.
 - The first provider request produced a tool call; the runtime executed `printf` inside the whole-runtime container; the second provider request contained the paired function-call output and returned `whole-runtime-ok`.

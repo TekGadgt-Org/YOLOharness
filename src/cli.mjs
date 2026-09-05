@@ -2,7 +2,8 @@
 import { AuthClient, AuthStore } from './auth.mjs';
 import { ConfigStore, configPath, configRoot, validateModel, imageMetadataPath } from './config.mjs';
 import { ContainerLauncher } from './container-launcher.mjs';
-import { readFile, mkdir, cp, rm, open, rename, readdir } from 'node:fs/promises';
+import { readFile, mkdir, cp, rm, open, rename, readdir, access } from 'node:fs/promises';
+import { X_OK } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -12,8 +13,6 @@ import { createHash, randomUUID } from 'node:crypto';
 const execFileAsync = promisify(execFile);
 
 const VERSION = '0.1.0';
-const DOCKER_COMMAND = '/usr/bin/docker';
-const DOCKER_CONTEXT = 'rootless';
 const RUNTIME_ENTRYPOINT = ['node', '/app/src/container-runtime.mjs'];
 // Kept local so production launcher errors do not require loading the agent
 // runtime module on the host.
@@ -64,9 +63,13 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     process.once('SIGINT', onInterrupt);
     const workspace = process.cwd();
     const model = await resolveModel();
-    const image = await configuredImage();
+    // Resolve the trusted invoker-selected Docker client once.  The same
+    // executable and normal Docker context/host configuration are used for
+    // image inspection and the subsequent container lifecycle.
+    const dockerCommand = await resolveDockerCommand();
+    const image = await configuredImage({ dockerCommand });
     const credentials = await runtimeCredentials(options.minutes);
-    const launcher = new ContainerLauncher({ image, workspace, timeoutMs: options.minutes * 60_000 + 10_000 });
+    const launcher = new ContainerLauncher({ image, workspace, command: dockerCommand, timeoutMs: options.minutes * 60_000 + 10_000 });
     const record = await launcher.launch({ prompt: options.prompt, model, deadline: Date.now() + options.minutes * 60_000, accessToken: credentials.accessToken, expiresAt: credentials.expiresAt }, { signal: controller.signal });
     process.removeListener('SIGINT', onInterrupt);
     io.stdout.write(`${options.json ? JSON.stringify(record) : `${record.status}: ${record.result ?? record.errors.join('; ')}`}\n`);
@@ -77,7 +80,7 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
   }
 }
 
-export async function configuredImage({ inspect = image => inspectRuntimeImage(image) } = {}) {
+export async function configuredImage({ inspect, dockerCommand } = {}) {
   try {
     const value = JSON.parse(await readFile(imageMetadataPath(), 'utf8'));
     if (!value || Object.keys(value).length !== 4 || value.version !== 1 ||
@@ -86,7 +89,8 @@ export async function configuredImage({ inspect = image => inspectRuntimeImage(i
         typeof value.sourceVersion !== 'string' || !value.sourceVersion) throw new Error('invalid image metadata');
     const installed = await runtimeSourceIdentity();
     if (value.sourceDigest !== installed.sourceDigest || value.sourceVersion !== installed.sourceVersion) throw new Error('configured image metadata does not match installed runtime source');
-    const inspected = JSON.parse(await inspect(value.imageId));
+    const inspectImage = inspect ?? (image => inspectRuntimeImage(image, dockerCommand));
+    const inspected = JSON.parse(await inspectImage(value.imageId));
     const config = inspected?.Config ?? {};
     if (inspected.Id !== value.imageId) throw new Error('runtime image identity did not match configured immutable ID');
     if (config.Labels?.['org.yoloharness.source-digest'] !== value.sourceDigest) throw new Error('runtime image source digest does not match configured source digest');
@@ -95,13 +99,27 @@ export async function configuredImage({ inspect = image => inspectRuntimeImage(i
   } catch (error) { if (error.code === 'ENOENT') throw new MissingProviderError('no runtime image configured; run `yolo setup` before starting a run'); throw error; }
 }
 
-async function inspectRuntimeImage(image) {
-  const { stdout } = await execFileAsync(DOCKER_COMMAND, ['image', 'inspect', '--format', '{{json .}}', image], { maxBuffer: 64 * 1024, env: dockerEnvironment() });
+async function inspectRuntimeImage(image, dockerCommand = undefined) {
+  const docker = dockerCommand ?? await resolveDockerCommand();
+  const { stdout } = await execFileAsync(docker, ['image', 'inspect', '--format', '{{json .}}', image], { maxBuffer: 64 * 1024, env: dockerEnvironment() });
   return stdout;
 }
 
+export async function resolveDockerCommand() {
+  const path = typeof process.env.PATH === 'string' ? process.env.PATH : '';
+  for (const directory of path.split(':')) {
+    if (!directory) continue;
+    const candidate = `${directory}/docker`;
+    try { await access(candidate, X_OK); return candidate; } catch {}
+  }
+  throw new Error('Docker executable was not found on PATH');
+}
+
 function dockerEnvironment() {
-  return { PATH: '/usr/bin:/bin', DOCKER_CONFIG: '/opt/hermes/.docker', DOCKER_CONTEXT };
+  // Docker context/host selection is trusted invoker configuration.  Do not
+  // replace it with a product-selected socket or context.  This environment
+  // is used only by the Docker client, never inherited by the runtime.
+  return { ...process.env };
 }
 
 export async function setupCommand(io) {
@@ -109,7 +127,7 @@ export async function setupCommand(io) {
   try {
     await cp(new URL('../package.json', import.meta.url), join(context, 'package.json'));
     await cp(new URL('../src', import.meta.url), join(context, 'src'), { recursive: true });
-    const docker = DOCKER_COMMAND;
+    const docker = await resolveDockerCommand();
     const sourceIdentity = await runtimeSourceIdentity();
     const tag = `yoloharness-local:${VERSION}`;
     await execFileAsync(docker, ['build', '--pull', '--build-arg', `YOLO_SOURCE_DIGEST=${sourceIdentity.sourceDigest}`, '-f', new URL('../assets/runtime/Dockerfile', import.meta.url).pathname, '-t', tag, context], { maxBuffer: 1024 * 1024, env: dockerEnvironment() });

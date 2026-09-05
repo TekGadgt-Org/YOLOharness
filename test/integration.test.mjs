@@ -243,14 +243,16 @@ test('actual child replacement owner survives a stale-lock reclaim interleaving'
   await writeFile(join(lock, 'owner.json'), JSON.stringify({ owner: 'dead-owner', pid: 999999 }));
   const old = new Date(Date.now() - 30000); await utimes(lock, old, old);
   const modulePath = new URL('../src/auth.mjs', import.meta.url).href;
-  const script = `import { AuthClient, AuthStore } from ${JSON.stringify(modulePath)}; import { writeFile, access } from 'node:fs/promises'; const store = new AuthStore(process.env.STORE); const config = { clientId: 'fixture', issueUrl: 'https://example.invalid/i', pollUrl: 'https://example.invalid/p', tokenUrl: process.env.TOKEN_URL, redirectUri: 'https://example.invalid/cb', store, lockTimeoutMs: 10000, fetch }; if (process.env.PAUSE) config.beforeReclaimRename = async () => { await writeFile(process.env.SIGNAL, 'ready'); while (true) { try { await access(process.env.RELEASE); break; } catch { await new Promise(r => setTimeout(r, 5)); } } }; const value = await new AuthClient(config).refresh(await store.load()); process.stdout.write(JSON.stringify(value));`;
+  const script = `import { AuthClient, AuthStore } from ${JSON.stringify(modulePath)}; import { writeFile, access } from 'node:fs/promises'; const store = new AuthStore(process.env.STORE); const config = { clientId: 'fixture', issueUrl: 'https://example.invalid/i', pollUrl: 'https://example.invalid/p', tokenUrl: process.env.TOKEN_URL, redirectUri: 'https://example.invalid/cb', store, lockTimeoutMs: 10000, fetch }; if (process.env.PAUSE) config.beforeReclaimRename = async () => { await writeFile(process.env.SIGNAL, 'ready'); while (true) { try { await access(process.env.RELEASE); break; } catch { await new Promise(r => setTimeout(r, 5)); } } }; if (process.env.CONTENDER) config.onLockContended = async () => { await writeFile(process.env.CONTENDER, 'entered'); }; const value = await new AuthClient(config).refresh(await store.load()); process.stdout.write(JSON.stringify(value));`;
   const run = (extra = {}) => new Promise((resolve, reject) => { const child = spawn(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, ...extra, STORE: store.path, TOKEN_URL: `${base}/token` } }); let out = ''; let err = ''; child.stdout.on('data', chunk => { out += chunk; }); child.stderr.on('data', chunk => { err += chunk; }); child.on('close', code => code === 0 ? resolve(JSON.parse(out)) : reject(new Error(err || `child exit ${code}`))); });
   const signal = join(dir, 'reclaimer-ready');
   const first = run({ PAUSE: '1', SIGNAL: signal, RELEASE: join(dir, 'reclaimer-release') });
   for (let i = 0; i < 100 && !(await stat(signal).catch(() => null)); i += 1) await new Promise(resolve => setTimeout(resolve, 5));
   assert.notEqual(await stat(signal).catch(() => null), null);
-  const second = run();
-  await new Promise(resolve => setTimeout(resolve, 50));
+  const contender = join(dir, 'replacement-contender');
+  const second = run({ CONTENDER: contender });
+  for (let i = 0; i < 100 && !(await stat(contender).catch(() => null)); i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.notEqual(await stat(contender).catch(() => null), null);
   await writeFile(join(dir, 'reclaimer-release'), 'go');
   const [reclaimed, replacement] = await Promise.all([first, second]);
   assert.equal(refreshes, 1);
@@ -316,6 +318,24 @@ test('worker receipts use a closed, typed success/failure schema', () => {
   assert.equal(validateReceipt({ version: 1, ok: true, call_id: 'c', code: 0, output: [] }, 'c'), false);
   assert.equal(validateReceipt({ version: 1, ok: true, call_id: 'c', code: 1, output: '' }, 'c'), false);
   assert.equal(validateReceipt({ version: 1, ok: false, call_id: 'c', code: 1, output: '', error: 'failed', extra: 1 }, 'c'), false);
+});
+
+test('DockerExecutor accepts the shipped worker validation failure through its receipt parser', async () => {
+  const operations = [];
+  const ex = new DockerExecutor({ image: 'yolo:test', workspace: '/tmp', spawn: (command, args, options) => {
+    operations.push(args[0]);
+    const child = { stdin: { end() {} }, stdout: { on(event, fn) {
+      if (event !== 'data') return;
+      if (args[0] === 'create') setImmediate(() => fn(`${args[3]}\n`));
+      if (args[0] === 'inspect') setImmediate(() => fn(`Error: No such container: ${args.at(-1)}`));
+    } }, stderr: { on() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn(args[0] === 'inspect' ? 1 : 0)); } };
+    if (args[0] === 'start') return spawn(process.execPath, ['worker.mjs'], { ...options, cwd: process.cwd() });
+    return child;
+  }, preflight: async () => true });
+  const receipt = await ex.execute({ call: { command: '', args: [], call_id: 'invalid-call' } });
+  assert.equal(validateReceipt(receipt, 'invalid-call'), true);
+  assert.equal(receipt.ok, false);
+  assert.deepEqual(operations, ['create', 'start', 'kill', 'rm', 'inspect']);
 });
 
 test('worker emits paired typed failure receipts for spawn and validation errors', async () => {

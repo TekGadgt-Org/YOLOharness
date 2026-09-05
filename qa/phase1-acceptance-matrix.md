@@ -18,7 +18,7 @@ Malicious arguments / no host fallback             Existing runtime validation a
 Package artifact / extracted-bin smoke              npm pack plus extracted package `src/cli.mjs --fixture --json`; PASS, no install or registry access.
 
 Verification commands
-- npm test: PASS, 47 tests, 0 failures.
+- npm test: PASS, 48 tests, 0 failures.
 - node --check src/auth.mjs src/docker-executor.mjs src/runtime.mjs src/cli.mjs worker.mjs test/integration.test.mjs: PASS.
 - git diff --check: PASS.
 - npm pack --dry-run --json: PASS, 37 package entries; packed/extracted bin smoke is a reusable npm test and PASS.

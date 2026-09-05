@@ -46,7 +46,8 @@ export async function main(args = process.argv.slice(2), io = { stdout: process.
     const onInterrupt = () => { io.stderr.write('interrupt requested; stopping run\n'); controller.abort(new Error('SIGINT')); };
     process.once('SIGINT', onInterrupt);
     const workspace = process.cwd();
-    const record = await runOnce({ prompt: options.prompt, minutes: options.minutes, workspace, provider: options.fixture ? new FixtureProvider() : await configuredProvider(), executor: options.fixture || !process.env.YOLO_DOCKER_IMAGE ? undefined : new DockerExecutor({ image: process.env.YOLO_DOCKER_IMAGE, workspace }), tools: options.fixture ? [] : [EXEC_TOOL], signal: controller.signal });
+    const cliSignalTest = process.env.YOLO_REAL_DOCKER === '1' && process.env.YOLO_CLI_SIGINT_TEST === '1';
+    const record = await runOnce({ prompt: options.prompt, minutes: options.minutes, workspace, provider: options.fixture ? new FixtureProvider() : cliSignalTest ? new CliSignalTestProvider() : await configuredProvider(), executor: options.fixture || (!process.env.YOLO_DOCKER_IMAGE && !cliSignalTest) ? undefined : cliSignalTest ? new CliSignalTestExecutor({ image: process.env.YOLO_DOCKER_IMAGE, workspace, name: process.env.YOLO_CLI_SIGINT_CONTAINER_NAME }) : new DockerExecutor({ image: process.env.YOLO_DOCKER_IMAGE, workspace }), tools: options.fixture ? [] : [EXEC_TOOL], signal: controller.signal });
     process.removeListener('SIGINT', onInterrupt);
     io.stdout.write(`${options.json ? JSON.stringify(record) : `${record.status}: ${record.result ?? record.errors.join('; ')}`}\n`);
     return record.status === 'completed' ? 0 : record.status === 'interrupted' ? 130 : record.status === 'deadline' ? 124 : 1;
@@ -54,6 +55,20 @@ export async function main(args = process.argv.slice(2), io = { stdout: process.
     const message = error instanceof MissingProviderError ? error.message : error.message;
     io.stderr.write(`${message}\n`); return 1;
   }
+}
+
+class CliSignalTestProvider {
+  #step = 0;
+  async next({ signal }) {
+    if (signal.aborted) throw signal.reason;
+    if (this.#step++ === 0) return { tool_call: { name: 'exec', call_id: 'cli-sigint', arguments: JSON.stringify({ command: 'sh', args: ['-c', 'printf started > /workspace/cli-interrupt-started.txt; sleep 2; printf late > /workspace/cli-after-interrupt.txt'] }) } };
+    return { done: true, result: 'cli signal test completed' };
+  }
+}
+
+class CliSignalTestExecutor extends DockerExecutor {
+  constructor(options) { super(options); if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(options.name ?? '')) throw new TypeError('YOLO_CLI_SIGINT_CONTAINER_NAME must be a valid container name'); this.name = options.name; }
+  containerName() { return this.name; }
 }
 
 export async function configuredProvider() {

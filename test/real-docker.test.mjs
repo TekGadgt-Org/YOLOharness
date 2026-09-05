@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, chmod, readFile, rm, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { DockerExecutor } from '../src/docker-executor.mjs';
 import { EXEC_TOOL, runOnce } from '../src/runtime.mjs';
 
@@ -120,6 +121,54 @@ test('real runtime bridge handles abort cleanup and prevents delayed writes', { 
     await assert.rejects(access(artifact));
     assert.equal(dockerNames().includes(name), false);
   } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test('real shipped CLI handles an OS SIGINT through Docker and cleans up', { skip }, async () => {
+  const workspace = await mkdtemp(join(process.cwd(), '.yolo-real-cli-'));
+  await chmod(workspace, 0o777);
+  const name = `yoloharness-real-cli-${randomUUID()}`;
+  const marker = join(workspace, 'cli-interrupt-started.txt');
+  const artifact = join(workspace, 'cli-after-interrupt.txt');
+  const controlArtifact = join(workspace, 'cli-control.txt');
+  const controlExecutor = new NamedExecutor({ image, workspace, timeoutMs: 5000 });
+  let child;
+  let childClosed;
+  let childOutput = '';
+  try {
+    const control = await controlExecutor.execute({ call: { call_id: 'real-cli-control', command: 'sh', args: ['-c', 'printf control > /workspace/cli-control.txt'] } });
+    assert.equal(control.ok, true);
+    assert.equal(await readFile(controlArtifact, 'utf8'), 'control');
+    const baseline = new Set(dockerNames());
+    child = spawn(process.execPath, [join(process.cwd(), 'src/cli.mjs'), '--json', 'cli sigint'], { cwd: workspace, env: { ...process.env, YOLO_REAL_DOCKER: '1', YOLO_CLI_SIGINT_TEST: '1', YOLO_DOCKER_IMAGE: image, YOLO_CLI_SIGINT_CONTAINER_NAME: name }, stdio: ['ignore', 'pipe', 'pipe'] });
+    childClosed = once(child, 'close');
+    child.stdout.on('data', chunk => { childOutput += String(chunk); });
+    child.stderr.on('data', chunk => { childOutput += String(chunk); });
+    const startedAt = Date.now();
+    while (true) {
+      try { assert.equal(await readFile(marker, 'utf8'), 'started'); break; }
+      catch (error) {
+        if (Date.now() - startedAt > 10000) throw new Error(`CLI worker did not start: ${error.message}`);
+        await delay(50);
+      }
+    }
+    assert.equal(dockerNames().includes(name), true);
+    child.kill('SIGINT');
+    const [code] = await childClosed;
+    child = undefined;
+    assert.equal(code, 130, childOutput);
+    assert.match(childOutput, /interrupt requested; stopping run/);
+    assert.match(childOutput, /"status":"interrupted"/);
+    assert.match(childOutput, /interrupted by SIGINT/);
+    await delay(3000);
+    await assert.rejects(access(artifact));
+    assert.equal(dockerNames().includes(name), false);
+    assert.deepEqual([...baseline].filter(candidate => candidate === name), []);
+  } finally {
+    if (child) { child.kill('SIGKILL'); await childClosed.catch(() => undefined); }
+    if (dockerNames().includes(name)) execFileSync('docker', ['rm', '--force', name], { stdio: 'ignore' });
+    assert.equal(dockerNames().includes(name), false);
     await rm(workspace, { recursive: true, force: true });
   }
 });

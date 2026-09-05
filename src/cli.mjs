@@ -103,7 +103,7 @@ export async function setupCommand(io) {
     const docker = process.env.YOLO_DOCKER_COMMAND ?? 'docker';
     const sourceIdentity = await runtimeSourceIdentity();
     const tag = `yoloharness-local:${VERSION}`;
-    await execFileAsync(docker, ['build', '--pull', '-f', new URL('../assets/runtime/Dockerfile', import.meta.url).pathname, '-t', tag, context], { maxBuffer: 1024 * 1024 });
+    await execFileAsync(docker, ['build', '--pull', '--build-arg', `YOLO_SOURCE_DIGEST=${sourceIdentity.sourceDigest}`, '-f', new URL('../assets/runtime/Dockerfile', import.meta.url).pathname, '-t', tag, context], { maxBuffer: 1024 * 1024 });
     const { stdout } = await execFileAsync(docker, ['image', 'inspect', '--format', '{{.Id}}', tag], { maxBuffer: 16 * 1024 });
     const imageId = stdout.trim();
     if (!/^sha256:[0-9a-f]{64}$/i.test(imageId)) throw new Error('Docker returned an invalid immutable image ID');

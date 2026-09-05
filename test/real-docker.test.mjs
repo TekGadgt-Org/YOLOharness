@@ -34,6 +34,8 @@ async function fixture() {
   const baseId = docker('image', 'inspect', '--format', '{{.Id}}', configuredImage).trim();
   assert.match(baseId, /^sha256:[0-9a-f]{64}$/i);
   const sourceIdentity = await runtimeSourceIdentity();
+  const embeddedSourceDigest = docker('image', 'inspect', '--format', '{{ index .Config.Labels "org.yoloharness.source-digest" }}', configuredImage).trim();
+  assert.equal(embeddedSourceDigest, sourceIdentity.sourceDigest, 'configured image must embed the source digest it was built from');
   const network = `yoloharness-internal-${process.pid}`;
   const providerName = `${network}-provider`;
   const runtimeNames = [];

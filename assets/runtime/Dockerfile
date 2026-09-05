@@ -1,4 +1,6 @@
 FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
+ARG YOLO_SOURCE_DIGEST
+LABEL org.yoloharness.source-digest="${YOLO_SOURCE_DIGEST}"
 RUN apt-get update \
  && apt-get install --no-install-recommends --yes git \
  && rm -rf /var/lib/apt/lists/* \

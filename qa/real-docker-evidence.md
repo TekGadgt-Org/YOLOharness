@@ -1,18 +1,19 @@
 # Real Docker phase1 gate evidence
 
-Run date: 2026-09-05 19:52 UTC
+Run date: 2026-09-05 20:02 UTC
 Docker server: 29.8.0, context `rootless`
 Kernel: `6.8.0-138-generic`; cgroup version 2; rootless security option observed; storage `overlayfs`.
-Base image: `yoloharness-local:0.1.0`, immutable ID `sha256:773eab4841e1317848532952e039247faa9fa7fcaacdef899c36ebaa9a3d7917`.
-The shipped-path provider row derives a separate ephemeral CA-only image from that base; the verified derivative immutable ID for the recorded run was `sha256:7f326faac32de7bbc5d1eb757d79980f409cd1d9e407ebf183d90e0c9675f14d` and is intentionally not configured as the production image.
+Base image: `yoloharness-local:0.1.0`, immutable ID `sha256:e1108dbd2d039e708c0e4e357254265d606425e2e42f212ed31ad8c3978d27df`.
+Embedded source label: `org.yoloharness.source-digest=sha256:d3bf64be694a472f83a0cae8ec22346fd5c7e90f8ecb079a60d063c743440f8e`; the shipped test recomputed the same digest from the checkout and rejected images without an exact match.
+The shipped-path provider row derives a separate ephemeral CA-only image from that base. Its ID is intentionally ephemeral and is not configured as the production image; the test asserts the base label before deriving it.
 
 Commands:
 
-- `docker build -f assets/runtime/Dockerfile -t yoloharness-local:0.1.0 .`
+- `XDG_CONFIG_HOME=/tmp/yoloharness-build-config-phase1 XDG_DATA_HOME=/tmp/yoloharness-build-data-phase1 YOLO_DOCKER_COMMAND=docker node src/cli.mjs setup`
 - `YOLO_REAL_DOCKER=1 YOLO_DOCKER_IMAGE=yoloharness-local:0.1.0 node --test test/real-docker.test.mjs`
 - `npm test`
 
-Result: real-Docker gate 2 passed, 0 failed, 0 skipped; full suite 80 passed, 0 failed, 2 skipped.
+Result: real-Docker gate 2 passed, 0 failed, 0 skipped; full suite 80 passed, 0 failed, 2 skipped. The real gate also rejected the previously unlabelled image before this rebuild.
 
 Exact real-Docker test names:
 

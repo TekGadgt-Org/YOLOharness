@@ -1,30 +1,35 @@
-Phase1 acceptance matrix
+# Whole-runtime container acceptance matrix
 
-Offline implementation evidence for the current phase1 remediation. This is not release approval for a real Docker daemon, live OAuth/provider traffic, or native macOS.
+This matrix is tied to the current local commit and must be rerun against the exact built image digest. Synthetic HOME/XDG/auth/provider fixtures only; no live provider requests or real credentials.
 
-Requirement                                      Evidence / result
-Local HTTP provider -> runtime -> worker           test/integration.test.mjs: local HTTP provider to runtime to DockerExecutor launches the shipped worker through a safe process double; PASS (version-1 stdin envelope, paired typed failure receipt, and continuation are asserted).
-Runtime cancellation waits for cleanup             test/runtime.test.mjs: deadline awaits executor cleanup before returning; PASS.
-Cleanup grace expiry is truthful                   test/runtime.test.mjs: deadline reports unknown cleanup when executor exceeds cleanup grace; PASS.
-Docker create/start lifecycle                     test/integration.test.mjs: pre-abort, create cancel, create timeout, create output overflow, and start cancellation; PASS with delayed-close process doubles and exact cleanup ordering.
-Cleanup reconciliation identity binding             test/integration.test.mjs: matching, mismatched, and ambiguous inspect evidence; PASS (unproven absence is cleanup_unknown).
-Worker receipt closed schema                       test/integration.test.mjs: typed success/failure variants, extra-key rejection, and spawned-worker failure pairing; PASS.
-Production endpoint exact spelling                 test/integration.test.mjs: query/fragment/noncanonical endpoint rejection before credential read; PASS. Raw endpoint comparison is literal canonical spelling.
-Cross-process refresh rotation                     test/integration.test.mjs: two independent node processes consume one rotating refresh token; PASS (one token request). Actual-child replacement-owner stale-lock interleaving and dead-owner reclaim also PASS.
-Expired credential preflight                        test/integration.test.mjs: expired credentials refresh before first provider request; PASS; CLI test proves stored client identity is used without transient env.
-Persistence fault visibility                       test/integration.test.mjs: real temporary-file and containing-directory fsync paths with injected faults, including temporary-file cleanup; PASS.
-Short prompt/result/tool-output retention           test/integration.test.mjs: short receipt text is digested; PASS (markers absent from JSONL).
-Malicious arguments / no host fallback             Existing runtime validation and Docker fail-closed tests; PASS.
-Package artifact / extracted-bin smoke              npm pack plus extracted package `src/cli.mjs --fixture --json`; PASS, no install or registry access.
+ID       Retained evidence                                      Status
+WRC-01   Whole-runtime shipped CLI synthetic provider roundtrip  NOT RUN (mock endpoint must be reachable from container)
+WRC-02   Launcher fixed argv / model text never host-executed   PARTIAL (offline source/runtime coverage)
+WRC-03   Missing Docker/daemon/image fail-closed                PASS offline; real daemon gate NOT RUN
+WRC-04   Exact one /workspace bind and prohibited targets       NOT RUN (daemon inspection)
+WRC-05   Outside absolute/parent path controls                   NOT RUN (real image)
+WRC-06   Symlink namespace controls                              NOT RUN (real image)
+WRC-07   Nested mount rejection                                  IMPLEMENTED in validateWorkspace; no nested-mount fixture
+WRC-08   Multi-link regular-file rejection                       PASS test/container-launcher.test.mjs
+WRC-09   Project secret warning / intentional exposure            NOT RUN
+WRC-10   Non-root, read-only root, tmpfs, final-UID canary        NOT RUN; rootless writeability is an environment gate
+WRC-11   Daemon resource/security inspection                      NOT RUN
+WRC-12   Started-child deadline and exact absence                  NOT RUN on ContainerLauncher
+WRC-13   Real OS SIGINT and exact absence                         NOT RUN on ContainerLauncher
+WRC-14   Independent stdout/stderr overflow cleanup               NOT RUN on ContainerLauncher
+WRC-15   Environment/metadata secret exclusion                    PARTIAL (explicit launcher env; daemon inspection NOT RUN)
+WRC-16A  Access-only bootstrap; refresh absent; 401 fail-closed   PARTIAL (bootstrap/provider unit coverage; daemon probes NOT RUN)
+WRC-17   Host refresh rotation and atomic persistence             PASS existing auth integration tests
+WRC-18   Allowlisted build context / secret-free layers           PARTIAL (bundled Dockerfile and ignore rules; layer probe NOT RUN)
+WRC-19   No Docker socket/nested Docker; declared tools            NOT RUN on final image
+WRC-20   Observed Linux rootless evidence tied to image/commit     Docker daemon is rootless; full probe set NOT RUN
+WRC-21   Native macOS Docker Desktop                              NOT RUN (separate platform gate)
 
-Verification commands
-- npm test: PASS, 48 tests, 0 failures.
-- node --check src/auth.mjs src/docker-executor.mjs src/runtime.mjs src/cli.mjs worker.mjs test/integration.test.mjs: PASS.
-- git diff --check: PASS.
-- npm pack --dry-run --json: PASS, 37 package entries; packed/extracted bin smoke is a reusable npm test and PASS.
+Offline verification
+- npm test: PASS (65 pass, 5 skipped; 70 total)
+- node --test test/container-launcher.test.mjs: PASS (3 pass)
+- node --check src/cli.mjs src/container-launcher.mjs: PASS
+- git diff --check: PASS
 
-Explicitly not run
-- Real Docker build/run/isolation/daemon lifecycle
-- Live OAuth/provider traffic
-- Native macOS
-- Registry package installation (task constraint; extracted packed artifact smoke was run)
+Known platform boundary
+The checked-out project is owned by uid 999 and group 1001 with mode 2775, while the host process group is 988. A final-UID bind-write canary has not been claimed here. The launcher refuses uid 0 and does not chmod/chown the project; a real rootless canary is required before release approval. Linux evidence does not imply native macOS support.

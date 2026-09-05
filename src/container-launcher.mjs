@@ -1,6 +1,6 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { realpath, readdir, lstat } from 'node:fs/promises';
+import { realpath, readdir, lstat, readFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { encodeBootstrap } from './bootstrap.mjs';
 
@@ -24,13 +24,18 @@ export class ContainerLauncher {
     const args = ['create', '--pull=never', '--name', name, '--label', label, '--init', '-i', '--user', `${uid}:${gid}`, '--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--cpus', '1', '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m', '--tmpfs', '/home/worker:rw,noexec,nosuid,size=16m', '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/tmp', '--env', `YOLO_RESPONSES_URL=${this.responsesUrl}`, this.image, 'node', '/app/src/container-runtime.mjs'];
     let id;
     let attached;
+    let creating;
     let reason;
-    const abort = () => { reason = signal?.reason ?? Object.assign(new Error('container interrupted'), { code: 'interrupted' }); attached?.kill('SIGKILL'); };
-    const timer = setTimeout(() => { reason = Object.assign(new Error('container deadline exceeded'), { code: 'deadline' }); attached?.kill('SIGKILL'); }, this.timeoutMs);
+    const abort = () => { reason = signal?.reason ?? Object.assign(new Error('container interrupted'), { code: 'interrupted' }); creating?.kill('SIGKILL'); attached?.kill('SIGKILL'); };
+    const timer = setTimeout(() => { reason = Object.assign(new Error('container deadline exceeded'), { code: 'deadline' }); creating?.kill('SIGKILL'); attached?.kill('SIGKILL'); }, this.timeoutMs);
     signal?.addEventListener('abort', abort, { once: true });
     try {
-      id = (await operation(this.command, args, this.spawn, { timeoutMs: this.timeoutMs })).trim();
+      const create = operation(this.command, args, this.spawn, { timeoutMs: this.timeoutMs });
+      creating = create.child;
+      id = (await create.promise).trim();
       if (!/^sha256:|^[a-f0-9]{12,64}$/i.test(id)) throw new Error('docker did not return a container ID');
+      if (reason || signal?.aborted) throw reason ?? signal.reason;
+      creating = null;
       attached = this.spawn(this.command, ['start', '--attach', '--interactive', id], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } });
       const result = await attachedOperation(attached, encodeBootstrap(bootstrap));
       if (reason) return { version: 1, run_id: null, status: reason.code === 'deadline' ? 'deadline' : 'interrupted', result: null, evidence: [], artifacts: [], errors: [reason.message] };
@@ -45,9 +50,10 @@ export class ContainerLauncher {
   }
 }
 
-async function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT } = {}) {
-  return new Promise((resolve, reject) => {
-    let out = ''; let child; let done = false;
+function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT } = {}) {
+  let child;
+  const promise = new Promise((resolve, reject) => {
+    let out = ''; let done = false;
     const finish = (fn, value) => { if (done) return; done = true; clearTimeout(timer); fn(value); };
     const timer = setTimeout(() => { child?.kill('SIGKILL'); finish(reject, new Error('docker operation deadline exceeded')); }, Math.min(timeoutMs, OP_TIMEOUT));
     try { child = spawn(command, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } }); }
@@ -55,8 +61,14 @@ async function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT } = {}) 
     child.stdout?.on('data', chunk => { out += String(chunk); if (Buffer.byteLength(out) > MAX_OUTPUT) { child.kill('SIGKILL'); finish(reject, new Error('docker output limit exceeded')); } });
     let err = '';
     child.stderr?.on('data', chunk => { err += String(chunk); if (Buffer.byteLength(err) > MAX_OUTPUT) child.kill('SIGKILL'); });
-    child.once('error', error => finish(reject, error)); child.once('close', code => { if (code === 0) finish(resolve, out); else finish(reject, Object.assign(new Error(`docker operation failed (${code})`), { dockerOutput: `${out}${err}`.trim(), dockerExitCode: code })); });
+    child.once('error', error => finish(reject, error)); child.once('close', code => {
+      // Docker may have created the container before the client was killed. Preserve
+      // a returned ID so the caller can still perform exact-ID cleanup.
+      if (code !== 0 && /^[a-f0-9]{12,64}$/i.test(out.trim())) return finish(resolve, out);
+      if (code === 0) finish(resolve, out); else finish(reject, Object.assign(new Error(`docker operation failed (${code})`), { dockerOutput: `${out}${err}`.trim(), dockerExitCode: code }));
+    });
   });
+  return { promise, get child() { return child; } };
 }
 
 function attachedOperation(child, input) {
@@ -71,9 +83,9 @@ function attachedOperation(child, input) {
 }
 
 async function cleanup(command, id, spawn) {
-  try { await operation(command, ['kill', '--signal', 'KILL', id], spawn); } catch {}
-  try { await operation(command, ['rm', '--force', id], spawn); } catch (error) { throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown', cause: error }); }
-  try { await operation(command, ['inspect', id], spawn); throw new Error('cleanup_unknown'); } catch (error) {
+  try { await operation(command, ['kill', '--signal', 'KILL', id], spawn).promise; } catch {}
+  try { await operation(command, ['rm', '--force', id], spawn).promise; } catch (error) { throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown', cause: error }); }
+  try { await operation(command, ['inspect', id], spawn).promise; throw new Error('cleanup_unknown'); } catch (error) {
     if (error.message === 'cleanup_unknown') throw error;
     const output = error.dockerOutput ?? '';
     if (!/no such (?:container|object)[: ]/i.test(output)) throw Object.assign(new Error('cleanup_unknown'), { cause: error });
@@ -84,6 +96,7 @@ export async function validateWorkspace(workspace) {
   const source = await realpath(workspace);
   const info = await lstat(source);
   if (!info.isDirectory()) throw new TypeError('workspace must be a directory');
+  await rejectNestedMounts(source);
   // Reject regular-file hardlinks: they can alias data outside the selected project.
   async function scan(dir) {
     for (const name of await readdir(dir)) {
@@ -94,4 +107,14 @@ export async function validateWorkspace(workspace) {
   }
   await scan(source);
   return source;
+}
+
+async function rejectNestedMounts(source) {
+  if (process.platform !== 'linux') return;
+  const mountInfo = await readFile('/proc/self/mountinfo', 'utf8');
+  const targets = mountInfo.split('\n').map(line => line.split(' - ')[0]?.split(' ')[4])
+    .filter(Boolean).map(target => target.replaceAll('\\040', ' ').replaceAll('\\011', '\t').replaceAll('\\134', '\\'));
+  if (targets.some(target => target.startsWith(`${source}/`))) {
+    throw new TypeError('workspace contains a nested mount; choose a directory without submounts');
+  }
 }

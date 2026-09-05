@@ -5,12 +5,13 @@ import { ConfiguredProvider } from './provider.mjs';
 import { DockerExecutor } from './docker-executor.mjs';
 import { ConfigStore, configPath, configRoot, validateModel, imageMetadataPath } from './config.mjs';
 import { ContainerLauncher } from './container-launcher.mjs';
-import { readFile, mkdir, cp, rm, writeFile } from 'node:fs/promises';
+import { readFile, mkdir, cp, rm, open, rename, readdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { createHash, randomUUID } from 'node:crypto';
 const execFileAsync = promisify(execFile);
 
 const VERSION = '0.1.0';
@@ -83,7 +84,7 @@ export async function configuredImage() {
   }
   try {
     const value = JSON.parse(await readFile(imageMetadataPath(), 'utf8'));
-    if (value?.version !== 1 || typeof value.imageId !== 'string' || !/^sha256:[0-9a-f]{64}$/i.test(value.imageId)) throw new Error('invalid image metadata');
+    if (value?.version !== 1 || typeof value.imageId !== 'string' || !/^sha256:[0-9a-f]{64}$/i.test(value.imageId) || typeof value.sourceDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/i.test(value.sourceDigest) || value.sourceVersion !== VERSION) throw new Error('invalid image metadata');
     return value.imageId;
   } catch (error) { if (error.code === 'ENOENT') throw new MissingProviderError('no runtime image configured; run `yolo setup` before starting a run'); throw error; }
 }
@@ -94,15 +95,56 @@ export async function setupCommand(io) {
     await cp(new URL('../package.json', import.meta.url), join(context, 'package.json'));
     await cp(new URL('../src', import.meta.url), join(context, 'src'), { recursive: true });
     const docker = process.env.YOLO_DOCKER_COMMAND ?? 'docker';
+    const sourceIdentity = await runtimeSourceIdentity();
     const tag = `yoloharness-local:${VERSION}`;
     await execFileAsync(docker, ['build', '--pull', '-f', new URL('../assets/runtime/Dockerfile', import.meta.url).pathname, '-t', tag, context], { maxBuffer: 1024 * 1024 });
     const { stdout } = await execFileAsync(docker, ['image', 'inspect', '--format', '{{.Id}}', tag], { maxBuffer: 16 * 1024 });
     const imageId = stdout.trim();
     if (!/^sha256:[0-9a-f]{64}$/i.test(imageId)) throw new Error('Docker returned an invalid immutable image ID');
     await mkdir(dirname(imageMetadataPath()), { recursive: true, mode: 0o700 });
-    await writeFile(imageMetadataPath(), `${JSON.stringify({ version: 1, imageId })}\n`, { mode: 0o600 });
+    await saveImageMetadata({ version: 1, imageId, ...sourceIdentity });
     io.stdout.write(`runtime image ready: ${imageId}\n`); return 0;
   } finally { await rm(context, { recursive: true, force: true }); }
+}
+
+export async function runtimeSourceIdentity() {
+  const packageUrl = new URL('../package.json', import.meta.url);
+  const packageJson = JSON.parse(await readFile(packageUrl, 'utf8'));
+  const files = [['package.json', packageUrl], ...(await listRuntimeFiles(new URL('../src/', import.meta.url)))];
+  const hash = createHash('sha256');
+  for (const [name, url] of files.sort(([a], [b]) => a.localeCompare(b))) {
+    const path = Buffer.from(name);
+    const bytes = await readFile(url);
+    const length = Buffer.alloc(8); length.writeBigUInt64BE(BigInt(path.length));
+    const contentLength = Buffer.alloc(8); contentLength.writeBigUInt64BE(BigInt(bytes.length));
+    hash.update(length).update(path).update(contentLength).update(bytes);
+  }
+  return { sourceDigest: `sha256:${hash.digest('hex')}`, sourceVersion: packageJson.version };
+}
+
+async function listRuntimeFiles(directory, prefix = '') {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const name = prefix ? `${prefix}/${entry.name}` : entry.name;
+    const url = new URL(`${entry.name}${entry.isDirectory() ? '/' : ''}`, directory);
+    if (entry.isDirectory()) files.push(...await listRuntimeFiles(url, name));
+    else if (entry.isFile() && entry.name.endsWith('.mjs')) files.push([`src/${name}`, url]);
+  }
+  return files;
+}
+
+async function saveImageMetadata(value) {
+  const path = imageMetadataPath();
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const temp = `${path}.${randomUUID()}.tmp`;
+  const fh = await open(temp, 'wx', 0o600);
+  try { await fh.writeFile(`${JSON.stringify(value)}\n`); await fh.sync(); } finally { await fh.close(); }
+  try {
+    await rename(temp, path);
+    const dir = await open(dirname(path), 'r');
+    try { await dir.sync(); } finally { await dir.close(); }
+  } catch (error) { await rm(temp, { force: true }).catch(() => {}); throw error; }
 }
 
 export async function runtimeCredentials(minutes) {

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtemp, readFile, stat, rm, utimes, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, stat, rm, utimes, mkdir, writeFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -53,8 +53,10 @@ test('real AuthStore save surfaces injected temporary-file and directory fsync f
   const path = join(dir, 'credentials.json');
   const fileStore = new AuthStore(path, { syncFile: async () => { throw new Error('file fsync failed'); } });
   await assert.rejects(fileStore.save({ accessToken: 'a', refreshToken: 'r' }), /file fsync failed/);
+  assert.deepEqual((await readdir(dir)).filter(name => name.includes('.tmp')), []);
   const directoryStore = new AuthStore(path, { syncDirectory: async () => { throw new Error('directory fsync failed'); } });
   await assert.rejects(directoryStore.save({ accessToken: 'a', refreshToken: 'r' }), /directory fsync failed/);
+  assert.deepEqual((await readdir(dir)).filter(name => name.includes('.tmp')), []);
 });
 
 test('two independent node processes consume one rotating refresh token', async t => {
@@ -88,9 +90,16 @@ test('local HTTP provider to runtime to executor preserves the exec bridge contr
     requestCount += 1;
     const body = JSON.parse(await new Promise(resolve => { let raw = ''; req.on('data', chunk => { raw += chunk; }); req.on('end', () => resolve(raw)); }));
     assert.deepEqual(body.tools, [EXEC_TOOL]);
+    if (requestCount === 2) {
+      const functionCall = body.input.find(item => item.type === 'function_call');
+      const functionOutput = body.input.find(item => item.type === 'function_call_output');
+      assert.equal(functionCall.call_id, 'bridge-1');
+      assert.equal(functionOutput.call_id, 'bridge-1');
+      assert.equal(JSON.parse(functionOutput.output).ok, false);
+    }
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     const event = requestCount === 1
-      ? { type: 'response.output_item.done', item: { type: 'function_call', id: 'item-bridge', call_id: 'bridge-1', name: 'exec', arguments: JSON.stringify({ command: 'printf', args: ['ok'] }), status: 'completed' } }
+      ? { type: 'response.output_item.done', item: { type: 'function_call', id: 'item-bridge', call_id: 'bridge-1', name: 'exec', arguments: JSON.stringify({ command: '/definitely/not-a-command', args: [] }), status: 'completed' } }
       : { type: 'response.completed', response: { id: 'response-2', status: 'completed' } };
     res.end(`data: ${JSON.stringify(event)}\n\ndata: ${JSON.stringify({ type: 'response.completed', response: { id: `response-${requestCount}`, status: 'completed' } })}\n\n`);
   });
@@ -100,11 +109,17 @@ test('local HTTP provider to runtime to executor preserves the exec bridge contr
   let envelope;
   const executor = new DockerExecutor({
     image: 'yolo:test', workspace: await mkdtemp(join(tmpdir(), 'yolo-bridge-')), preflight: async () => true,
-    spawn: (command, args) => {
+    spawn: (command, args, options) => {
       const operation = args[0];
+      if (operation === 'start') {
+        const child = spawn(process.execPath, ['worker.mjs'], { ...options, cwd: process.cwd() });
+        const originalEnd = child.stdin.end.bind(child.stdin);
+        child.stdin.end = value => { envelope = JSON.parse(value); calls.push(envelope.call); return originalEnd(value); };
+        return child;
+      }
       const child = {
         stdin: { end(value) { if (operation === 'start') { envelope = JSON.parse(value); calls.push(envelope.call); } } },
-        stdout: { on(event, fn) { if (event === 'data' && operation === 'start') setImmediate(() => fn(JSON.stringify({ version: 1, ok: true, call_id: 'bridge-1', code: 0, output: 'ok' }))); if (event === 'data' && operation === 'inspect') setImmediate(() => fn(`Error: No such container: ${args.at(-1)}`)); } },
+        stdout: { on(event, fn) { if (event === 'data' && operation === 'inspect') setImmediate(() => fn(`Error: No such container: ${args.at(-1)}`)); } },
         stderr: { on() {} },
         kill() {},
         once(event, fn) { if (event === 'close') setImmediate(() => fn(operation === 'start' ? 0 : operation === 'inspect' ? 1 : 0)); },
@@ -114,7 +129,7 @@ test('local HTTP provider to runtime to executor preserves the exec bridge contr
   });
   const record = await runOnce({ prompt: 'bridge', provider, executor, tools: [EXEC_TOOL] });
   assert.equal(record.status, 'completed', JSON.stringify(record));
-  assert.deepEqual(calls, [{ command: 'printf', args: ['ok'] }]);
+  assert.deepEqual(calls, [{ command: '/definitely/not-a-command', args: [] }]);
   assert.equal(envelope.version, 1);
   assert.equal(envelope.call_id, 'bridge-1');
 });
@@ -211,6 +226,35 @@ test('stale refresh lock with a dead owner is reclaimed through the atomic acqui
   const old = new Date(Date.now() - 5000); await utimes(lock, old, old);
   const client = new AuthClient({ clientId: 'fixture', issueUrl: 'https://example.invalid/i', pollUrl: 'https://example.invalid/p', tokenUrl: 'https://example.invalid/t', redirectUri: 'https://example.invalid/cb', store, lockTimeoutMs: 100, fetch: async () => ({ ok: true, async json() { return { access_token: 'new', refresh_token: 'r1' }; } }) });
   assert.equal((await client.refresh(await store.load())).accessToken, 'new');
+});
+
+test('actual child replacement owner survives a stale-lock reclaim interleaving', async t => {
+  let refreshes = 0;
+  const { s, base } = await server(async (req, res) => {
+    refreshes += 1;
+    return json(res, { access_token: `child-a${refreshes}`, refresh_token: `child-r${refreshes}`, expires_in: 3600 });
+  });
+  t.after(() => s.close());
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-auth-replacement-'));
+  const store = new AuthStore(join(dir, 'credentials.json'));
+  await store.save({ accessToken: 'old', refreshToken: 'child-r0', generation: 0 });
+  const lock = `${store.path}.lock`;
+  await mkdir(lock, { recursive: true });
+  await writeFile(join(lock, 'owner.json'), JSON.stringify({ owner: 'dead-owner', pid: 999999 }));
+  const old = new Date(Date.now() - 5000); await utimes(lock, old, old);
+  const modulePath = new URL('../src/auth.mjs', import.meta.url).href;
+  const script = `import { AuthClient, AuthStore } from ${JSON.stringify(modulePath)}; import { writeFile, access } from 'node:fs/promises'; const store = new AuthStore(process.env.STORE); const config = { clientId: 'fixture', issueUrl: 'https://example.invalid/i', pollUrl: 'https://example.invalid/p', tokenUrl: process.env.TOKEN_URL, redirectUri: 'https://example.invalid/cb', store, lockTimeoutMs: 300, fetch }; if (process.env.PAUSE) config.beforeReclaimRename = async () => { await writeFile(process.env.SIGNAL, 'ready'); while (true) { try { await access(process.env.RELEASE); break; } catch { await new Promise(r => setTimeout(r, 5)); } } }; const value = await new AuthClient(config).refresh(await store.load()); process.stdout.write(JSON.stringify(value));`;
+  const run = (extra = {}) => new Promise((resolve, reject) => { const child = spawn(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, ...extra, STORE: store.path, TOKEN_URL: `${base}/token` } }); let out = ''; let err = ''; child.stdout.on('data', chunk => { out += chunk; }); child.stderr.on('data', chunk => { err += chunk; }); child.on('close', code => code === 0 ? resolve(JSON.parse(out)) : reject(new Error(err || `child exit ${code}`))); });
+  const signal = join(dir, 'reclaimer-ready');
+  const first = run({ PAUSE: '1', SIGNAL: signal, RELEASE: join(dir, 'reclaimer-release') });
+  for (let i = 0; i < 100 && !(await stat(signal).catch(() => null)); i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+  await rm(lock, { recursive: true, force: true });
+  const second = run();
+  await writeFile(join(dir, 'reclaimer-release'), 'go');
+  const [reclaimed, replacement] = await Promise.all([first, second]);
+  assert.equal(refreshes, 1);
+  assert.equal(reclaimed.generation, 1); assert.equal(replacement.generation, 1);
+  assert.equal((await store.load()).refreshToken, 'child-r1');
 });
 
 

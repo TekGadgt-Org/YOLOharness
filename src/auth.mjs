@@ -9,11 +9,16 @@ export class AuthStore {
   async save(credentials) {
     if (!credentials?.accessToken || !credentials?.refreshToken) throw new AuthError('complete credentials required');
     await mkdir(dirname(this.path),{recursive:true,mode:0o700});
-    const tmp=`${this.path}.${randomUUID()}.tmp`; const fh=await open(tmp,'wx',0o600);
-    try { await fh.writeFile(JSON.stringify(credentials)+'\n'); await this.syncFile(fh); } finally { await fh.close(); }
-    await chmod(tmp,0o600); await rename(tmp,this.path); await chmod(this.path,0o600);
- const dir = await open(dirname(this.path), 'r');
- try { await this.syncDirectory(dir); } finally { await dir.close(); }
+    const tmp=`${this.path}.${randomUUID()}.tmp`; const fh=await open(tmp,'wx',0o600); let committed=false;
+    try {
+      try { await fh.writeFile(JSON.stringify(credentials)+'\n'); await this.syncFile(fh); } finally { await fh.close(); }
+      await chmod(tmp,0o600); await rename(tmp,this.path); committed=true; await chmod(this.path,0o600);
+      const dir = await open(dirname(this.path), 'r');
+      try { await this.syncDirectory(dir); } finally { await dir.close(); }
+    } catch (error) {
+      if (!committed) await rm(tmp, { force: true }).catch(() => {});
+      throw error;
+    }
     return credentials;
   }
   async clear() { const { unlink } = await import('node:fs/promises'); await unlink(this.path).catch(e=>{if(e.code!=='ENOENT') throw e;}); }
@@ -21,7 +26,7 @@ export class AuthStore {
 function required(config) { for(const k of ['clientId','issueUrl','pollUrl','tokenUrl','redirectUri']) if(!config[k]) throw new AuthError(`missing auth configuration: ${k}`,'config_error'); }
 async function body(response) { let value; try { value=await response.json(); } catch { throw new AuthError('malformed auth response','malformed_response'); } if(!value || typeof value!=='object' || Array.isArray(value)) throw new AuthError('malformed auth response','malformed_response'); return value; }
 export class AuthClient {
-  constructor(config) { required(config); this.config=config; this.fetch=config.fetch ?? fetch; this.store=config.store; this.refreshing=null; this.lockTimeoutMs=config.lockTimeoutMs ?? 5000; }
+  constructor(config) { required(config); this.config=config; this.fetch=config.fetch ?? fetch; this.store=config.store; this.refreshing=null; this.lockTimeoutMs=config.lockTimeoutMs ?? 5000; this.beforeReclaimRename=config.beforeReclaimRename; }
   async request(url, init, signal) { const r=await this.fetch(url,{...init,signal,redirect:'error'}); if(!r.ok) throw new AuthError(`auth request failed (${r.status})`,r.status===429?'rate_limited':'auth_http_error'); return body(r); }
   async begin({signal}={}) { const x=await this.request(this.config.issueUrl,{method:'POST',headers:{'content-type':'application/json',accept:'application/json'},body:JSON.stringify({client_id:this.config.clientId})},signal); if(typeof x.user_code!=='string'||!x.user_code||typeof x.device_auth_id!=='string'||!x.device_auth_id) throw new AuthError('malformed device authorization','malformed_response'); const n=x.interval===undefined?5:Number(x.interval); if(!Number.isFinite(n)||n<=0) throw new AuthError('invalid polling interval','malformed_response'); return {userCode:x.user_code,deviceAuthId:x.device_auth_id,interval:Math.max(3,Math.floor(n)),verificationUrl:this.config.verificationUrl}; }
   async finish(attempt,{signal,sleep=ms=>new Promise((r,j)=>{const t=setTimeout(r,ms); signal?.addEventListener('abort',()=>{clearTimeout(t);j(signal.reason)},{once:true});})}={}) { let x; const deadline=Date.now()+15*60e3; do { await sleep(attempt.interval*1000); if(signal?.aborted) throw signal.reason; const r=await this.fetch(this.config.pollUrl,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({device_auth_id:attempt.deviceAuthId,user_code:attempt.userCode}),signal,redirect:'error'}); if(r.status===403||r.status===404) continue; if(!r.ok) throw new AuthError(`poll failed (${r.status})`); x=await body(r); } while(!x && Date.now()<deadline); if(!x?.authorization_code||!x?.code_verifier) throw new AuthError('authentication expired','auth_expired');
@@ -33,7 +38,8 @@ export class AuthClient {
      await mkdir(reclaimMarker, { mode: 0o700 });
      let before = info?.owner ?? null;
      try { const latest = JSON.parse(await readFile(`${lock}/owner.json`,'utf8')); if ((latest.owner ?? null) !== before) { await rm(reclaimMarker,{recursive:true,force:true}); await new Promise(resolve=>setTimeout(resolve,25)); continue; } } catch { if (before !== null) { await rm(reclaimMarker,{recursive:true,force:true}); await new Promise(resolve=>setTimeout(resolve,25)); continue; } }
-     await rename(lock, quarantine);
+     if (this.beforeReclaimRename) await this.beforeReclaimRename({ lock, owner: before });
+    await rename(lock, quarantine);
      let moved = null;
      try { moved = JSON.parse(await readFile(`${quarantine}/owner.json`,'utf8')); } catch {}
      if ((moved?.owner ?? null) === before) await rm(quarantine,{recursive:true,force:true});

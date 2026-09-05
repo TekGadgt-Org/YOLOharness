@@ -3,7 +3,7 @@ import { AuthClient, AuthStore } from './auth.mjs';
 import { ConfigStore, configPath, configRoot, validateModel, imageMetadataPath } from './config.mjs';
 import { ContainerLauncher } from './container-launcher.mjs';
 import { readFile, mkdir, cp, rm, open, rename, readdir, access } from 'node:fs/promises';
-import { X_OK } from 'node:fs';
+import { constants as fsConstants } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -112,7 +112,7 @@ export async function resolveDockerCommand() {
   for (const directory of path.split(':')) {
     if (!directory) continue;
     const candidate = `${directory}/docker`;
-    try { await access(candidate, X_OK); return candidate; } catch {}
+    try { await access(candidate, fsConstants.X_OK); return candidate; } catch {}
   }
   throw new Error('Docker executable was not found on PATH');
 }

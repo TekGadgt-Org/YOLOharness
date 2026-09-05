@@ -132,7 +132,7 @@ test('launcher rejects a Docker create ID that is not the exact owned name and l
     const launcher = new ContainerLauncher({ image: 'sha256:' + '9'.repeat(64), workspace, timeoutMs: 1000, spawn: (_command, args) => {
       operations.push(args[0]);
       const listeners = new Map();
-      const foreignId = 'abcdef'.repeat(10) + 'ab';
+      const foreignId = 'abcdef'.repeat(10) + 'abcd';
       const output = args[0] === 'info' ? '["name=rootless"]' : args[0] === 'create' ? foreignId : JSON.stringify([{ Id: foreignId, Name: '/foreign', Config: { Labels: { 'yoloharness.run': 'other' } } }]);
       const error = args[0] === 'inspect' ? '' : '';
       return { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn(output)); } }, stderr: { on(event, fn) { if (event === 'data' && error) setImmediate(() => fn(error)); } }, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); if (event === 'close') setImmediate(() => fn(args[0] === 'inspect' ? 0 : 0)); } };

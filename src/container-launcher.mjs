@@ -166,6 +166,7 @@ export async function validateWorkspace(workspace, { signal, deadline } = {}) {
   const source = await realpath(workspace);
   const info = await lstat(source);
   if (!info.isDirectory()) throw new TypeError('workspace must be a directory');
+  if (/[\u0000-\u001f\u007f-\u009f]/u.test(source)) throw new TypeError('workspace path contains unsupported control characters');
   await rejectNestedMounts(source);
   // Reject regular-file hardlinks: they can alias data outside the selected project.
   async function scan(dir) {

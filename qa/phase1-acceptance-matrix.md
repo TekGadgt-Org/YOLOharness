@@ -9,15 +9,15 @@ WRC-03   Missing Docker/daemon/image fail-closed                FAIL (offline fa
 WRC-04   Exact one /workspace bind and prohibited targets       NOT RUN (daemon inspection)
 WRC-05   Outside absolute/parent path controls                   NOT RUN (real image)
 WRC-06   Symlink namespace controls                              NOT RUN (real image)
-WRC-07   Nested mount rejection                                  IMPLEMENTED in validateWorkspace; escaped-newline parser regression PASS
+WRC-07   Nested mount rejection                                  PASS shipped negative/control: newline-cwd is rejected before Docker mount parsing; escaped-newline parser regression PASS
 WRC-08   Multi-link regular-file rejection                       PASS test/container-launcher.test.mjs
 WRC-09   Project secret warning / intentional exposure            NOT RUN
-WRC-10   Rootless-only UID0 mapping, read-only root, tmpfs, canary PARTIAL (provider path and configured-image canary pass; complete daemon-observed shipped-path row NOT RUN)
+WRC-10   Rootless-only UID0 mapping, read-only root, tmpfs, canary PASS scoped controls (rebuilt image canary and shipped create flags pass; full daemon-observed row remains partial)
 WRC-11   Daemon resource/security inspection                      NOT RUN
 WRC-12   Started-child deadline and exact absence                  PARTIAL (offline launcher cancellation/timeout cleanup; real shipped deadline gate NOT RUN; bounded reconciliation now separates total budget from stable absence)
 WRC-13   Real OS SIGINT and exact absence                         NOT RUN on ContainerLauncher
 WRC-14   Independent stdout/stderr overflow cleanup               NOT RUN on ContainerLauncher
-WRC-15   Environment/metadata secret exclusion                    PARTIAL (explicit launcher env; daemon inspection NOT RUN)
+WRC-15   Environment/metadata secret exclusion                    PASS scoped shipped controls (hostile derivative rejected before credentials; runtime argv excludes Docker config/token vars; full daemon env inspection NOT RUN)
 WRC-16A  Access-only bootstrap; refresh absent; 401 fail-closed   PARTIAL (bootstrap/provider unit coverage; daemon probes NOT RUN)
 WRC-17   Host refresh rotation and atomic persistence             PASS existing auth integration tests
 WRC-18   Allowlisted build context / secret-free layers           PARTIAL (bundled Dockerfile and ignore rules; layer probe NOT RUN)
@@ -28,7 +28,7 @@ WRC-21   Native macOS Docker Desktop                              NOT RUN (separ
 Offline verification
 - npm test: PASS (84 pass, 2 skipped; 86 total)
 - node --test test/container-launcher.test.mjs: PASS (17 pass)
-- `YOLO_REAL_DOCKER=1 node --test test/real-docker.test.mjs`: PASS (2 pass, 0 fail; rootless image canary and shipped provider row; test-owned empty Docker config plus verified local endpoint)
+- `npm run test:docker`: PASS (2 pass, 0 fail; rebuilt rootless image, shipped provider row, read-only-root canary, hostile-XDG provenance negative, newline-cwd negative, create-flag positive controls, test-owned empty Docker config plus verified local endpoint)
 - node --check src/cli.mjs src/container-launcher.mjs: PASS
 - git diff --check: PASS
 

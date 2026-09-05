@@ -25,12 +25,17 @@ const restoreEnv = (old) => { for (const [key, value] of Object.entries(old)) { 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'yoloharness-real-'));
   const workspace = join(root, 'workspace');
+  // Docker's CLI mount grammar cannot safely represent a literal newline in a
+  // source path. The shipped CLI must reject this cwd rather than handing an
+  // ambiguous mount string to Docker; the ordinary workspace is the positive
+  // control below.
+  const newlineWorkspace = join(root, 'workspace\ncwd');
   const capture = join(root, 'capture');
   const configHome = join(root, 'home', '.config');
   const dataHome = join(root, 'home', '.local', 'share');
   const wrapperDir = join(root, 'bin');
   const derivativeContext = join(root, 'derivative');
-  await Promise.all([mkdir(workspace, { recursive: true }), mkdir(capture, { recursive: true }), mkdir(configHome, { recursive: true }), mkdir(dataHome, { recursive: true }), mkdir(wrapperDir, { recursive: true }), mkdir(derivativeContext, { recursive: true })]);
+  await Promise.all([mkdir(workspace, { recursive: true }), mkdir(newlineWorkspace, { recursive: true }), mkdir(capture, { recursive: true }), mkdir(configHome, { recursive: true }), mkdir(dataHome, { recursive: true }), mkdir(wrapperDir, { recursive: true }), mkdir(derivativeContext, { recursive: true })]);
   const baseId = docker('image', 'inspect', '--format', '{{.Id}}', configuredImage).trim();
   assert.match(baseId, /^sha256:[0-9a-f]{64}$/i);
   const sourceIdentity = await runtimeSourceIdentity();
@@ -87,8 +92,44 @@ async function fixture() {
     const request = JSON.parse(await readFile(join(capture, 'request-1.json'), 'utf8')); assert.match(request.body, /whole-runtime nonce synthetic/); assert.ok(request.remote);
     const secondRequest = JSON.parse(await readFile(join(capture, 'request-2.json'), 'utf8')); assert.match(secondRequest.body, /synthetic-1/);
     assert.equal(await access(join(workspace, '.yolo', 'runs')).then(() => true).catch(() => false), true);
-    const wrapperLines = (await readFile(join(root, 'docker-argv.jsonl'), 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line)); assert.equal(wrapperLines.length, 1); assert.equal(wrapperLines[0][wrapperLines[0].indexOf('--network') + 1], network);
+    const wrapperLines = (await readFile(join(root, 'docker-argv.jsonl'), 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
+    assert.equal(wrapperLines.length, 1);
+    const runtimeArgs = wrapperLines[0];
+    assert.equal(runtimeArgs[runtimeArgs.indexOf('--network') + 1], network);
+    assert.equal(runtimeArgs.filter(value => value === '--network').length, 1);
+    assert.ok(runtimeArgs.includes('--read-only'));
+    assert.ok(runtimeArgs.includes('--cap-drop=ALL'));
+    assert.ok(runtimeArgs.includes('--security-opt') && runtimeArgs.includes('no-new-privileges'));
+    assert.ok(runtimeArgs.includes('--pids-limit') && runtimeArgs.includes('128'));
+    assert.ok(runtimeArgs.includes('--memory') && runtimeArgs.includes('512m'));
+    assert.ok(runtimeArgs.includes('--cpus') && runtimeArgs.includes('1'));
+    assert.equal(runtimeArgs.filter(value => value === '--mount').length, 1);
+    assert.match(runtimeArgs[runtimeArgs.indexOf('--mount') + 1], /^type=bind,src=.*\/workspace,dst=\/workspace,readonly=false,bind-propagation=rprivate$/s);
+    assert.equal(runtimeArgs.some(value => /docker\.sock|DOCKER_CONFIG|ACCESS_TOKEN|REFRESH_TOKEN/i.test(value)), false);
     const inspect = JSON.parse(docker('inspect', providerName))[0]; assert.equal(Object.keys(inspect.NetworkSettings.Networks).length, 1); assert.ok(inspect.NetworkSettings.Networks[network]);
+    // The shipped subprocess must reject an XDG-selected derivative before it
+    // attempts to read credentials. Keep the credential path intentionally
+    // unreadable so the observed error identifies the provenance check.
+    await writeFile(join(dataHome, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId: derivativeId, ...sourceIdentity }));
+    const hostile = spawn(process.execPath, [new URL('../src/cli.mjs', import.meta.url).pathname, '--json', 'hostile provenance'], {
+      cwd: workspace,
+      env: { ...env, YOLO_AUTH_FILE: join(root, 'missing-credentials.json') },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let hostileStderr = ''; hostile.stderr.on('data', chunk => { hostileStderr += chunk; });
+    const hostileExit = await new Promise(resolve => hostile.once('close', (code, signal) => resolve({ code, signal })));
+    assert.equal(hostileExit.code, 1);
+    assert.match(hostileStderr, /installation-owned image tag/);
+    await writeFile(join(dataHome, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId: baseId, ...sourceIdentity }));
+    const newline = spawn(process.execPath, [new URL('../src/cli.mjs', import.meta.url).pathname, '--json', 'newline cwd'], {
+      cwd: newlineWorkspace,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let newlineStderr = ''; newline.stderr.on('data', chunk => { newlineStderr += chunk; });
+    const newlineExit = await new Promise(resolve => newline.once('close', (code, signal) => resolve({ code, signal })));
+    assert.equal(newlineExit.code, 1);
+    assert.match(newlineStderr, /workspace path contains unsupported control characters/);
     runtimeNames.push(...docker('ps', '-aq', '--filter', 'label=yoloharness.run').trim().split(/\s+/).filter(Boolean));
   } finally {
     restoreEnv(oldEnv);

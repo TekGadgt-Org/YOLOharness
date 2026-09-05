@@ -3,7 +3,7 @@
 This matrix records the whole-runtime migration on the current feature branch. Synthetic HOME/XDG/auth/provider fixtures only; no live provider requests or real credentials. Linux evidence below uses the observed rootless Docker daemon; the configured image must be rebuilt with `yolo setup` after source changes. Setup embeds the deterministic runtime source digest in the image label `org.yoloharness.source-digest`; the real-Docker gate verifies that label before using the image.
 
 ID       Retained evidence                                      Status
-WRC-01   Whole-runtime shipped launcher/image synthetic provider roundtrip  PASS (`shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network`)
+WRC-01   Whole-runtime shipped launcher/image synthetic provider roundtrip  PASS (`shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network`; test-owned Docker config/endpoint, production metadata remains the tagged base image)
 WRC-02   Launcher fixed argv / model text never host-executed   PASS (same shipped subprocess test; provider captured prompt and tool roundtrip)
 WRC-03   Missing Docker/daemon/image fail-closed                FAIL (offline fail-closed coverage exists; real shipped probes NOT RUN)
 WRC-04   Exact one /workspace bind and prohibited targets       NOT RUN (daemon inspection)
@@ -28,13 +28,13 @@ WRC-21   Native macOS Docker Desktop                              NOT RUN (separ
 Offline verification
 - npm test: PASS (84 pass, 2 skipped; 86 total)
 - node --test test/container-launcher.test.mjs: PASS (17 pass)
-- `YOLO_REAL_DOCKER=1 node --test test/real-docker.test.mjs`: PASS (2 pass, 0 fail; rootless image canary and shipped provider row)
+- `YOLO_REAL_DOCKER=1 node --test test/real-docker.test.mjs`: PASS (2 pass, 0 fail; rootless image canary and shipped provider row; test-owned empty Docker config plus verified local endpoint)
 - node --check src/cli.mjs src/container-launcher.mjs: PASS
 - git diff --check: PASS
 
 Security finding disposition
 - Newline-escaped mount target (security review medium): fixed by decoding Linux mountinfo `\\012` in `src/container-launcher.mjs`; regression is `mountinfo decoding preserves escaped newline targets for nested-mount checks` in `test/container-launcher.test.mjs`.
-- Synthetic Docker configuration provenance remains test-harness scoped: the real-Docker fixture uses the invoker-selected Docker client/context for setup and inspection, while application HOME/XDG/auth paths remain disposable and no credentials are read. This is not a production trust claim.
+- Synthetic Docker configuration provenance finding: fixed in `test/real-docker.test.mjs` by resolving the selected local endpoint before isolation and supplying a test-owned empty Docker config; the shipped child no longer consumes the invoker's Docker config, auth helpers, or contexts. Test-only network/image routing remains outside the shipped image-selection API.
 
 Cleanup regression
 - `uncertain create waits for stable absence and removes a delayed daemon container`: PASS. Exact name+label reconciliation polls for the complete bounded 500 ms grace; discovered IDs reset the absence clock, are removed and inspected, and `cleanup_unknown` is returned unless the full grace proves stable absence.

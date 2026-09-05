@@ -1,10 +1,10 @@
 # Real Docker phase1 gate evidence
 
-Run date: 2026-09-05 21:00 UTC
+Run date: 2026-09-05 21:10 UTC
 Docker server: 29.8.0, context `rootless`
 Kernel: `6.8.0-138-generic`; cgroup version 2; rootless security option observed; storage `overlayfs`.
-Base image: `yoloharness-local:0.1.0`, immutable ID `sha256:17061ef5fbf75a8a5eae41766f529b639582dbdf2e24d9dd56b3d2b6cf8bfd3f`.
-Embedded source label: `sha256:22a558b2aec7c692013ab49b433d28aa32e36a0bf664cc9f267eb56d07f47869`, verified by the shipped test against the current deterministic checkout digest; stale labels are rejected before credentials/bootstrap.
+Base image: `yoloharness-local:0.1.0`, immutable ID `sha256:a655b12f54fd2add3608869340ac99c424cef521a3221a3a274cdb6d0f2e78ac` (RepoTags includes the installation-owned tag).
+Embedded source label: `sha256:e14f2f5057b87c423fc4286fb7c324a50e12ab69a374792773f87e9024988ad6`, verified by the shipped test against the current deterministic checkout digest; stale labels and untagged substituted images are rejected before credentials/bootstrap.
 The shipped-path provider row derives a separate ephemeral CA-only image from that base. Its ID is intentionally ephemeral and is not configured as the production image; the test asserts the base label before deriving it.
 
 Commands:
@@ -26,7 +26,8 @@ Exact real-Docker test names:
 
 - The synthetic HTTPS provider ran in a separate container attached only to a pre-created `--internal` network, with alias `chatgpt.com`, no published ports, and SAN `chatgpt.com`; it captured the request nonce, remote container address, and provider PID.
 - The first provider request produced a tool call; the runtime executed `printf` inside the whole-runtime container; the second provider request contained the paired function-call output and returned `whole-runtime-ok`.
-- The shipped CLI path selected the configured immutable derivative image ID from synthetic image metadata, while access/refresh credentials and XDG configuration remained in isolated temporary directories. The derivative differs from the verified base only by the ephemeral public CA certificate and `NODE_EXTRA_CA_CERTS`; the CA/key/server-key are never copied into the derivative. No canonical external provider request was made.
+- The shipped CLI path selected the configured immutable tagged base image ID from synthetic image metadata. An external test-only wrapper rewrote only the create image/network to the ephemeral CA-only derivative; production image selection therefore remained bound to the verified base. Access/refresh credentials and XDG configuration remained in isolated temporary directories, and the CA/key/server-key were never copied into the derivative. No canonical external provider request was made.
+- The shipped subprocess received a test-owned empty Docker config and the verified local daemon endpoint (`unix:///run/user/999/docker.sock`); it did not consume the invoker's Docker config, credential helpers, or context files.
 
 - Preflight returned Docker server version `29.8.0`, with daemon security option `name=rootless`.
 - The whole-runtime container was created with `--pull=never`, read-only root, dropped capabilities, no-new-privileges, bounded PID/memory/CPU limits, bounded `/tmp` and synthetic-home tmpfs, and exactly one writable `/workspace` bind. The image canary observed `/app` as read-only and confirmed write/delete on the project bind.

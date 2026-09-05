@@ -218,7 +218,7 @@ test('configured image requires the complete versioned source-identity metadata'
     const identity = await runtimeSourceIdentity();
     const imageId = `sha256:${'a'.repeat(64)}`;
     await writeFile(join(data, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId, ...identity }));
-    assert.equal(await configuredImage({ inspect: async () => JSON.stringify({ Id: imageId, Config: { Labels: { 'org.yoloharness.source-digest': identity.sourceDigest }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }) }), imageId);
+    assert.equal(await configuredImage({ inspect: async () => JSON.stringify({ Id: imageId, RepoTags: ['yoloharness-local:0.1.0'], Config: { Labels: { 'org.yoloharness.source-digest': identity.sourceDigest }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }) }), imageId);
   } finally {
     if (old === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = old;
     await rm(data, { recursive: true, force: true });
@@ -235,7 +235,7 @@ test('configured image rejects an image whose embedded source digest is stale', 
     const imageId = `sha256:${'a'.repeat(64)}`;
     await writeFile(join(data, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId, ...identity }));
     await assert.rejects(
-      configuredImage({ inspect: async () => JSON.stringify({ Id: imageId, Config: { Labels: { 'org.yoloharness.source-digest': `sha256:${'b'.repeat(64)}` }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }) }),
+      configuredImage({ inspect: async () => JSON.stringify({ Id: imageId, RepoTags: ['yoloharness-local:0.1.0'], Config: { Labels: { 'org.yoloharness.source-digest': `sha256:${'b'.repeat(64)}` }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }) }),
       /source digest/i,
     );
   } finally {

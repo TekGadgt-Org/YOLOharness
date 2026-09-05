@@ -13,6 +13,7 @@ import { createHash, randomUUID } from 'node:crypto';
 const execFileAsync = promisify(execFile);
 
 const VERSION = '0.1.0';
+const RUNTIME_IMAGE_TAG = `yoloharness-local:${VERSION}`;
 const RUNTIME_ENTRYPOINT = ['node', '/app/src/container-runtime.mjs'];
 // Kept local so production launcher errors do not require loading the agent
 // runtime module on the host.
@@ -93,6 +94,7 @@ export async function configuredImage({ inspect, dockerCommand } = {}) {
     const inspected = JSON.parse(await inspectImage(value.imageId));
     const config = inspected?.Config ?? {};
     if (inspected.Id !== value.imageId) throw new Error('runtime image identity did not match configured immutable ID');
+    if (!Array.isArray(inspected.RepoTags) || !inspected.RepoTags.includes(RUNTIME_IMAGE_TAG)) throw new Error('runtime image is not the installation-owned image tag');
     if (config.Labels?.['org.yoloharness.source-digest'] !== value.sourceDigest) throw new Error('runtime image source digest does not match configured source digest');
     if (JSON.stringify(config.Entrypoint) !== JSON.stringify(RUNTIME_ENTRYPOINT)) throw new Error('runtime image entrypoint is not the installation-owned entrypoint');
     return value.imageId;

@@ -188,19 +188,37 @@ async function fixture(t) {
       const exit = await new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
       assert.equal(exit.signal, null, `${err}${out}`); return { ...exit, out, err };
     };
+    const createdRuntimeRecords = async () => (await readFile(join(root, 'docker-create.jsonl'), 'utf8').catch(() => '')).trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
+    const assertProbeRuntimeAbsent = async (records, label) => {
+      assert.equal(records.length, 1, `${label} must create exactly one owned runtime`);
+      const { id, name } = records[0];
+      assert.match(id, /^[a-f0-9]{64}$/i);
+      assert.equal(docker('ps', '-aq', '--filter', `id=${id}`).trim(), '', `${label} runtime must be absent before fixture teardown`);
+      assert.equal(docker('ps', '-aq', '--filter', `name=^/${name}$`).trim(), '', `${label} runtime name must be absent before fixture teardown`);
+    };
     const pythonProbe = await runShippedProbe('python-baseline-probe');
     assert.equal(pythonProbe.code, 0, `${pythonProbe.err}${pythonProbe.out}`);
     assert.match(pythonProbe.out, /hello from python/);
     assert.equal(await readFile(join(workspace, 'hello.txt'), 'utf8'), 'hello from python');
+    const pythonRecord = JSON.parse(pythonProbe.out.trim().split(/\r?\n/).at(-1));
+    assert.equal(pythonRecord.status, 'completed');
+    assert.deepEqual(pythonRecord.evidence.filter(value => value?.call_id === 'python-baseline-call'), [{ version: 1, ok: true, call_id: 'python-baseline-call', code: 0, output: 'hello from python' }]);
     const pythonRequest = JSON.parse(await readFile(join(capture, 'request-3.json'), 'utf8'));
     assert.match(pythonRequest.body, /Guaranteed baseline:.*python3.*python3 -m pip.*python3 -m venv/);
     assert.match(pythonRequest.body, /python3/);
+    await assertProbeRuntimeAbsent((await createdRuntimeRecords()).slice(-1), 'python baseline');
     const recoveryProbe = await runShippedProbe('missing-command-recovery-probe');
     assert.equal(recoveryProbe.code, 0, `${recoveryProbe.err}${recoveryProbe.out}`);
     assert.match(recoveryProbe.out, /completed/);
     assert.equal(await readFile(join(workspace, 'recovery-artifact'), 'utf8'), 'recovered');
     assert.match(recoveryProbe.out, /definitely-not-installed-yoloharness-command/);
     assert.match(recoveryProbe.out, /127/);
+    const recoveryRecord = JSON.parse(recoveryProbe.out.trim().split(/\r?\n/).at(-1));
+    assert.equal(recoveryRecord.status, 'completed');
+    assert.deepEqual(recoveryRecord.evidence.filter(value => value?.call_id === 'missing-command-recovery-call'), [
+      { version: 1, ok: false, call_id: 'missing-command-recovery-call', code: 127, output: '', error: 'spawn definitely-not-installed-yoloharness-command ENOENT' },
+      { version: 1, ok: true, call_id: 'missing-command-recovery-call', code: 0, output: '' },
+    ]);
     const recoveryRequests = (await readdir(capture)).filter(name => /^request-\d+\.json$/.test(name));
     assert.ok(recoveryRequests.length >= 5, 'provider must observe failed output before recovery call');
     const recoveryBodies = await Promise.all(recoveryRequests.slice(-3).map(name => readFile(join(capture, name), 'utf8')));
@@ -209,6 +227,7 @@ async function fixture(t) {
     assert.equal(await readFile(hostModelCanary, 'utf8'), 'host canary unchanged');
     const recoveryDockerArgv = await readFile(join(root, 'docker-argv.jsonl'), 'utf8');
     assert.doesNotMatch(recoveryDockerArgv, /definitely-not-installed-yoloharness-command|recovery-artifact|hello\.txt/);
+    await assertProbeRuntimeAbsent((await createdRuntimeRecords()).slice(-1), 'missing-command recovery');
 
     const runProbe = async (prompt, minutes = '0.2') => {
       const child = spawn(process.execPath, [installedCli, '--json', '-t', minutes, prompt], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });

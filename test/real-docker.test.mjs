@@ -110,13 +110,13 @@ async function fixture(t) {
     assert.match(canary, /200|404|401/);
     const env = { ...process.env, HOME: join(root, 'home'), XDG_CONFIG_HOME: configHome, XDG_DATA_HOME: dataHome, YOLO_AUTH_FILE: join(configHome, 'yoloharness', 'credentials.json'), DOCKER_CONFIG: dockerConfig, DOCKER_HOST: daemonEndpoint, PATH: `${wrapperDir}:${process.env.PATH}`, HTTP_PROXY: 'http://hostile.invalid:9', HTTPS_PROXY: 'http://hostile.invalid:9', ALL_PROXY: 'http://hostile.invalid:9', AWS_SECRET_ACCESS_KEY: 'synthetic-hostile-secret', GITHUB_TOKEN: 'synthetic-hostile-token', SSH_AUTH_SOCK: '/tmp/hostile-agent.sock', NPM_CONFIG_USERCONFIG: '/tmp/hostile.npmrc', YOLO_DOCKER_IMAGE: 'hostile-image', YOLO_DOCKER_COMMAND: 'sh -c hostile', YOLO_PROVIDER_TOKEN: 'synthetic-hostile-provider-token' };
     for (const key of ['DOCKER_CONTEXT', 'DOCKER_HOSTNAME', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH']) delete env[key];
-    const child = spawn(process.execPath, [new URL('../src/cli.mjs', import.meta.url).pathname, '--json', 'whole-runtime nonce synthetic'], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [new URL('../src/cli.mjs', import.meta.url).pathname, '--json', 'whole-runtime nonce synthetic $(touch /tmp/host-model-payload) /etc/shadow'], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = ''; let stderr = ''; child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
     const exit = await new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
     assert.equal(exit.code, 0, `${stderr}${stdout}\nprovider-log:\n${(() => { try { return docker('logs', providerName); } catch (error) { return error.stdout ?? error.message; } })()}\nwrapper:\n${await readFile(join(root, 'docker-argv.jsonl'), 'utf8').catch(() => 'missing')}\nnetwork:\n${(() => { try { return docker('network', 'inspect', network); } catch (error) { return error.stdout ?? error.message; } })()}`);
     assert.match(stderr, /Warning: files in the selected project are intentionally exposed/);
     const record = JSON.parse(stdout.trim().split(/\r?\n/).at(-1)); assert.equal(record.status, 'completed'); assert.equal(record.result, 'whole-runtime-ok');
-    const request = JSON.parse(await readFile(join(capture, 'request-1.json'), 'utf8')); assert.match(request.body, /whole-runtime nonce synthetic/); assert.ok(request.remote);
+    const request = JSON.parse(await readFile(join(capture, 'request-1.json'), 'utf8')); assert.match(request.body, /whole-runtime nonce synthetic \$\(touch \/tmp\/host-model-payload\) \/etc\/shadow/); assert.ok(request.remote);
     const secondRequest = JSON.parse(await readFile(join(capture, 'request-2.json'), 'utf8')); assert.match(secondRequest.body, /synthetic-1/);
     const runProbe = async (prompt, minutes = '0.2') => {
       const child = spawn(process.execPath, [new URL('../src/cli.mjs', import.meta.url).pathname, '--json', '-t', minutes, prompt], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -169,6 +169,14 @@ async function fixture(t) {
     assert.equal(runtimeInspect.HostConfig.PidsLimit, 128);
     assert.equal(runtimeInspect.HostConfig.Memory, 512 * 1024 * 1024);
     assert.equal(runtimeInspect.HostConfig.NanoCpus, 1 * 1e9);
+    assert.equal(runtimeInspect.HostConfig.Init, true);
+    assert.equal(runtimeInspect.Config.User, '0:0');
+    assert.equal(runtimeInspect.Config.Labels['yoloharness.run']?.length > 0, true);
+    assert.equal(runtimeInspect.HostConfig.IpcMode, 'private');
+    assert.equal(runtimeInspect.HostConfig.PidMode, '');
+    assert.equal(runtimeInspect.HostConfig.Tmpfs['/tmp'].includes('size=64m'), true);
+    assert.equal(runtimeInspect.HostConfig.Tmpfs['/home/worker'].includes('size=16m'), true);
+    assert.equal(runtimeInspect.Image, derivativeId);
     assert.equal(runtimeInspect.Mounts.filter(mount => mount.Destination === '/workspace').length, 1);
     assert.equal(runtimeInspect.Mounts.some(mount => /(?:docker\.sock|\/\.ssh|\/\.config|\/\.local\/share)/i.test(mount.Source ?? '')), false);
     assert.equal(runtimeInspect.Config.Env.some(value => /DOCKER_CONFIG|ACCESS_TOKEN|REFRESH_TOKEN|TOKEN|PROXY|AWS_|GITHUB_|SSH_AUTH|NPM_CONFIG|YOLO_DOCKER|YOLO_PROVIDER/i.test(value)), false);

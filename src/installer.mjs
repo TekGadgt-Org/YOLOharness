@@ -15,12 +15,7 @@ async function safeDirectory(path, create = false) {
     await mkdir(path, { recursive: true, mode: 0o700 });
   }
 }
-async function atomicCopy(source, target) {
-  const temporary = `${target}.${randomUUID()}.tmp`;
-  await cp(source, temporary, { recursive: true, errorOnExist: true, force: false });
-  try { await rename(temporary, target); } catch (error) { await rm(temporary, { recursive: true, force: true }); throw error; }
-}
-export async function installPackage(packageRoot, { home = homedir(), dataHome = process.env.XDG_DATA_HOME, binHome } = {}) {
+export async function installPackage(packageRoot, { home = homedir(), dataHome = process.env.XDG_DATA_HOME, binHome, renameFn = rename } = {}) {
   if (!isAbsolute(packageRoot) || !isAbsolute(home)) throw new TypeError('package and home paths must be absolute');
   const data = absolute(dataHome, join(home, '.local', 'share'));
   const bin = absolute(binHome, join(home, '.local', 'bin'));
@@ -29,19 +24,32 @@ export async function installPackage(packageRoot, { home = homedir(), dataHome =
   await safeDirectory(appRoot, true);
   const sourceInfo = await lstat(packageRoot); if (!sourceInfo.isDirectory() || sourceInfo.isSymbolicLink()) throw new TypeError('package root must be a real directory');
   const runtime = join(appRoot, 'app');
-  const staging = join(appRoot, `.app-${randomUUID()}`);
-  await mkdir(staging, { mode: 0o700 });
-  try {
-    await cp(packageRoot, staging, { recursive: true, filter: source => !source.includes('/.git') && !source.includes('/node_modules') });
-    if (await exists(runtime)) { const old = `${runtime}.old-${randomUUID()}`; await rename(runtime, old); await rename(staging, runtime); await rm(old, { recursive: true, force: true }); }
-    else await rename(staging, runtime);
-  } catch (error) { await rm(staging, { recursive: true, force: true }); throw error; }
   const launcher = join(bin, 'yolo');
-  try { const info = await lstat(launcher); if (info.isSymbolicLink()) { if (await readlink(launcher) !== join(runtime, 'src', 'cli.mjs')) throw new Error(`unsafe symlink destination: ${launcher}`); } else if (!info.isFile()) throw new Error(`unsafe non-file destination: ${launcher}`); }
-  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  try {
+    const info = await lstat(launcher);
+    if (info.isSymbolicLink()) { if (await readlink(launcher) !== join(runtime, 'src', 'cli.mjs')) throw new Error(`unsafe symlink destination: ${launcher}`); }
+    else if (!info.isFile()) throw new Error(`unsafe non-file destination: ${launcher}`);
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const staging = join(appRoot, `.app-${randomUUID()}`);
   const tmpLauncher = `${launcher}.${randomUUID()}.tmp`;
-  await symlink(join(runtime, 'src', 'cli.mjs'), tmpLauncher);
-  await rename(tmpLauncher, launcher); return { appRoot, launcher };
+  let old;
+  let promoted = false;
+  try {
+    await mkdir(staging, { mode: 0o700 });
+    await cp(packageRoot, staging, { recursive: true, filter: source => !source.includes('/.git') && !source.includes('/node_modules') });
+    if (await exists(runtime)) { old = `${runtime}.old-${randomUUID()}`; await renameFn(runtime, old); }
+    await renameFn(staging, runtime); promoted = true;
+    await symlink(join(runtime, 'src', 'cli.mjs'), tmpLauncher);
+    await renameFn(tmpLauncher, launcher);
+    if (old) await rm(old, { recursive: true, force: true });
+    return { appRoot, launcher };
+  } catch (error) {
+    await rm(tmpLauncher, { recursive: true, force: true }).catch(() => {});
+    if (promoted) await rm(runtime, { recursive: true, force: true }).catch(() => {});
+    if (old) await renameFn(old, runtime).catch(() => {});
+    await rm(staging, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
 }
 async function exists(path) { try { await access(path, constants.F_OK); return true; } catch { return false; } }
 export function installPaths({ home = homedir(), dataHome = process.env.XDG_DATA_HOME, binHome } = {}) {

@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 
 const APP = 'yoloharness';
-const MAX_SKILL_BUNDLE = 256 * 1024;
+const MAX_SKILL_BUNDLE = 64 * 1024;
 const MAX_SKILL_FILE = 64 * 1024;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 

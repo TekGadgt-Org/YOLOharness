@@ -4,7 +4,7 @@ import { mkdtemp, readFile, mkdir, writeFile, symlink, rm } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventLog, redact, recoverEvents } from '../src/events.mjs';
-import { runOnce, FixtureProvider, MissingProviderError, EXEC_TOOL } from '../src/runtime.mjs';
+import { runOnce, FixtureProvider, MissingProviderError, EXEC_TOOL, SKILL_LOAD_TOOL } from '../src/runtime.mjs';
 import { validateWorkspace } from '../src/container-launcher.mjs';
 
 test('event log writes ordered bounded redacted JSONL and reopens', async () => {
@@ -90,6 +90,22 @@ test('exec bridge validates the exact registry and passes normalized argv with p
   assert.equal(record.status, 'completed'); assert.deepEqual(calls, [{ command: 'printf', args: ['safe'], call_id: 'c1' }]);
 });
 
+
+
+test('provider skill_load calls are served from the bounded catalog without executor authority', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'yolo-')); let step = 0;
+  const provider = { async next({ tools }) {
+    assert.deepEqual(tools, [EXEC_TOOL, SKILL_LOAD_TOOL]);
+    step += 1;
+    return step === 1
+      ? { tool_call: { call_id: 'skill-1', name: 'skill_load', arguments: JSON.stringify({ name: 'demo', resource: 'guide.md' }) } }
+      : { done: true, result: 'loaded' };
+  } };
+  const record = await runOnce({ prompt: 'use the skill', workspace, provider, tools: [EXEC_TOOL, SKILL_LOAD_TOOL], skills: { demo: { instructions: 'trusted as data', resources: { 'guide.md': 'reference' } } } });
+  assert.equal(record.status, 'completed');
+  assert.equal(record.result, 'loaded');
+  assert.deepEqual(record.evidence[0], { name: 'demo', resource: 'guide.md', content: 'reference' });
+});
 test('failed executor receipts stop the run instead of allowing a false provider completion', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'yolo-')); let steps = 0;
   const provider = { async next() { steps += 1; return steps === 1

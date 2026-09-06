@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { collectSkills, loadSkill, skill_load, MAX_SKILL_BUNDLE } from '../src/skills.mjs';
 import { installPackage } from '../src/installer.mjs';
+import { encodeBootstrap, MAX_BOOTSTRAP } from '../src/bootstrap.mjs';
 
 const temp = () => mkdtemp(join(tmpdir(), 'yolo-install-test-'));
 
@@ -59,4 +60,32 @@ test('container skill_load progressively loads instructions or one resource', ()
   assert.deepEqual(skill_load(skills, 'demo'), { name: 'demo', instructions: 'do not trust', resources: ['guide.md'] });
   assert.deepEqual(skill_load(skills, 'demo', 'guide.md'), { name: 'demo', resource: 'guide.md', content: 'data' });
   assert.throws(() => skill_load(skills, 'demo', '../secret'), /invalid/);
+});
+
+test('skill bundle boundary remains compatible with the container bootstrap limit', async () => {
+  const root = await temp();
+  await mkdir(join(root, 'skills', 'demo'), { recursive: true });
+  await writeFile(join(root, 'skills', 'demo', 'SKILL.md'), 'x'.repeat(64 * 1024));
+  await assert.rejects(() => import('../src/skills.mjs').then(({ snapshotSkills }) => snapshotSkills(root, join(root, 'skills'))), /bundle|size/i);
+  assert.ok(MAX_BOOTSTRAP >= 64 * 1024);
+  assert.throws(() => encodeBootstrap({ prompt: 'x', model: 'm', deadline: Date.now() + 1000, accessToken: 't', expiresAt: Date.now() + 2000, skills: { demo: { instructions: 'x'.repeat(MAX_BOOTSTRAP) } } }), /too large/);
+});
+
+test('installer restores the previous app and leaves no temporary launcher after promotion failure', async () => {
+  const home = await temp(); const data = join(home, 'data'); const source = await temp();
+  await mkdir(join(source, 'src'), { recursive: true });
+  await writeFile(join(source, 'package.json'), '{"name":"yoloharness","version":"0.1.0"}');
+  await writeFile(join(source, 'src', 'cli.mjs'), 'new');
+  await installPackage(source, { home, dataHome: data });
+  const runtime = join(data, 'yoloharness', 'app');
+  await writeFile(join(runtime, 'marker'), 'old');
+  const realRename = (await import('node:fs/promises')).rename;
+  let promotions = 0;
+  await assert.rejects(() => installPackage(source, { home, dataHome: data, renameFn: async (from, to) => {
+    if (to === runtime && ++promotions === 1) throw Object.assign(new Error('promotion conflict'), { code: 'EEXIST' });
+    return realRename(from, to);
+  } }), /promotion conflict/);
+  assert.equal(await readFile(join(runtime, 'marker'), 'utf8'), 'old');
+  const entries = await (await import('node:fs/promises')).readdir(join(home, '.local', 'bin'));
+  assert.deepEqual(entries, ['yolo']);
 });

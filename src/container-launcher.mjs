@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { realpath, readdir, lstat, readFile, readlink } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { encodeBootstrap } from './bootstrap.mjs';
+import { snapshotSkills } from './skills.mjs';
 
 const MAX_OUTPUT = 1024 * 1024;
 const OP_TIMEOUT = 10_000;
@@ -66,7 +67,7 @@ export class ContainerLauncher {
       id = await verifyOwnedContainer(this.command, id, name, label, this.spawn);
       owned = true;
       attached = this.spawn(this.command, ['start', '--attach', '--interactive', id], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: DOCKER_ENV() });
-      const result = await attachedOperation(attached, encodeBootstrap(bootstrap), signal);
+      const result = await attachedOperation(attached, encodeBootstrap({ ...bootstrap, skills: await snapshotSkills(source) }), signal);
       if (reason) return { version: 1, run_id: null, status: reason.code === 'deadline' ? 'deadline' : 'interrupted', result: null, evidence: [], artifacts: [], errors: [reason.message] };
       if (result.overflow) throw Object.assign(new Error('container output limit exceeded'), { code: 'output_limit' });
       if (result.code !== 0) throw new Error(result.err.trim() || `container exited (${result.code})`);

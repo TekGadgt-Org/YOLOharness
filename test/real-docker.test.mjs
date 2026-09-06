@@ -90,7 +90,7 @@ async function fixture(t) {
     const derivativeConfig = JSON.parse(docker('inspect', '--format', '{{json .Config}}', derivativeTag));
     assert.equal(derivativeConfig.Env.some(value => /synthetic-(?:layer|nested|git|yolo|credential)-secret/i.test(value)), false);
     assert.ok(derivativeConfig.Env.includes('NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/yoloharness-test-ca.crt'));
-    const providerScript = `const https=require('https'),fs=require('fs');let n=0;const s=https.createServer({key:fs.readFileSync('/tls/server.key'),cert:fs.readFileSync('/tls/server.crt')},(q,r)=>{if(q.url==='/health'){r.writeHead(200);return r.end('ok')}let b='';q.on('data',c=>b+=c);q.on('end',()=>{n++;fs.writeFileSync('/capture/request-'+n+'.json',JSON.stringify({body:b,remote:q.socket.remoteAddress,pid:process.pid,authorization:q.headers.authorization ?? null}));if(b.includes('reauth-probe')){r.writeHead(401);return r.end('unauthorized')}r.writeHead(200,{'content-type':'text/event-stream'});const mode=b.includes('sigint-probe')?'sigint':b.includes('stdout-overflow-probe')?'stdout-overflow':b.includes('stderr-overflow-probe')?'stderr-overflow':b.includes('stdout-control-probe')?'stdout-control':b.includes('stderr-control-probe')?'stderr-control':b.includes('deadline-probe')?'deadline':'whole';const followup=b.includes('function_call_output');const commands={sigint:['sh','-c','printf started > /workspace/sigint-started; sleep 5; printf late > /workspace/sigint-late'],deadline:['sh','-c','printf started > /workspace/deadline-started; sleep 5; printf late > /workspace/deadline-late'],'stdout-overflow':['sh','-c','head -c 1048577 /dev/zero'],'stderr-overflow':['sh','-c','head -c 1048577 /dev/zero >&2'],'stdout-control':['sh','-c','sleep 0.1; printf control > /workspace/stdout-control'],'stderr-control':['sh','-c','sleep 0.1; printf control > /workspace/stderr-control']};const lifecycle=mode!=='whole';const tool={type:'response.output_item.done',item:{type:'function_call',id:mode==='whole'?'item-1':mode+'-item',call_id:mode==='whole'?'synthetic-1':mode+'-call',name:'exec',arguments:JSON.stringify(lifecycle?{command:commands[mode][0],args:commands[mode].slice(1)}:{command:'sh',args:['-c','test "$(cat /workspace/.env)" = "SYNTHETIC_ENV=visible-to-agent" && test "$(cat /workspace/fixture.key)" = synthetic-key && test "$(cat /workspace/fixture.token)" = synthetic-token-file && test -z "$ACCESS_TOKEN$REFRESH_TOKEN$DOCKER_CONFIG" && test ! -e /proc/1/fd/3 && test "$(id -u)" = "$(stat -c %u /proc/1)" && printf whole-runtime-ok']}),status:'completed'}};const completed={type:'response.completed',response:{id:mode==='whole'?'synthetic-1':mode+'-response',status:'completed'}};const events=!followup?[tool,completed]:[{type:'response.output_text.delta',delta:lifecycle?'control-complete':'whole-runtime-ok'},completed];r.end(events.map(x=>'data: '+JSON.stringify(x)+'\\n\\n').join(''))})});s.listen(443,'0.0.0.0',()=>fs.writeFileSync('/capture/ready','ready'));`;
+    const providerScript = `const https=require('https'),fs=require('fs');let n=0;const s=https.createServer({key:fs.readFileSync('/tls/server.key'),cert:fs.readFileSync('/tls/server.crt')},(q,r)=>{if(q.url==='/health'){r.writeHead(200);return r.end('ok')}let b='';q.on('data',c=>b+=c);q.on('end',()=>{n++;fs.writeFileSync('/capture/request-'+n+'.json',JSON.stringify({body:b,remote:q.socket.remoteAddress,pid:process.pid,authorization:q.headers.authorization ?? null}));if(b.includes('reauth-probe')){r.writeHead(401);return r.end('unauthorized')}r.writeHead(200,{'content-type':'text/event-stream'});const mode=b.includes('sigint-probe')?'sigint':b.includes('stdout-overflow-probe')?'stdout-overflow':b.includes('stderr-overflow-probe')?'stderr-overflow':b.includes('stdout-control-probe')?'stdout-control':b.includes('stderr-control-probe')?'stderr-control':b.includes('boundary-probe')?'boundary':b.includes('resource-probe')?'resource':b.includes('nested-docker-probe')?'nested-docker':b.includes('deadline-probe')?'deadline':'whole';const followup=b.includes('function_call_output');const commands={sigint:['sh','-c','printf started > /workspace/sigint-started; sleep 5; printf late > /workspace/sigint-late'],deadline:['sh','-c','printf started > /workspace/deadline-started; sleep 5; printf late > /workspace/deadline-late'],'stdout-overflow':['sh','-c','head -c 1048577 /dev/zero'],'stderr-overflow':['sh','-c','head -c 1048577 /dev/zero >&2'],'stdout-control':['sh','-c','sleep 0.1; printf control > /workspace/stdout-control'],'stderr-control':['sh','-c','sleep 0.1; printf control > /workspace/stderr-control'],boundary:['sh','-c','test -r /etc/hosts && printf boundary > /workspace/boundary-artifact && test "$(cat /workspace/boundary-artifact)" = boundary && rm /workspace/boundary-artifact && test ! -e /host-root && test ! -e /workspace/../outside-sentinel.txt'],resource:['sh','-c','test ! -w /app && test "$(cat /sys/fs/cgroup/memory.max)" = 536870912 && test "$(cat /sys/fs/cgroup/pids.max)" = 128 && head -c 4096 /dev/zero > /tmp/below-limit && rm /tmp/below-limit'],"nested-docker":['sh','-c','test ! -S /var/run/docker.sock && ! command -v docker && ! command -v podman && command -v sh >/dev/null']};const lifecycle=mode!=='whole';const tool={type:'response.output_item.done',item:{type:'function_call',id:mode==='whole'?'item-1':mode+'-item',call_id:mode==='whole'?'synthetic-1':mode+'-call',name:'exec',arguments:JSON.stringify(lifecycle?{command:commands[mode][0],args:commands[mode].slice(1)}:{command:'sh',args:['-c','test "$(cat /workspace/.env)" = "SYNTHETIC_ENV=visible-to-agent" && test "$(cat /workspace/fixture.key)" = synthetic-key && test "$(cat /workspace/fixture.token)" = synthetic-token-file && test -z "$ACCESS_TOKEN$REFRESH_TOKEN$DOCKER_CONFIG" && test ! -e /proc/1/fd/3 && test "$(id -u)" = "$(stat -c %u /proc/1)" && printf whole-runtime-ok']}),status:'completed'}};const completed={type:'response.completed',response:{id:mode==='whole'?'synthetic-1':mode+'-response',status:'completed'}};const events=!followup?[tool,completed]:[{type:'response.output_text.delta',delta:lifecycle?'control-complete':'whole-runtime-ok'},completed];r.end(events.map(x=>'data: '+JSON.stringify(x)+'\\n\\n').join(''))})});s.listen(443,'0.0.0.0',()=>fs.writeFileSync('/capture/ready','ready'));`;
     docker('network', 'create', '--internal', network);
     docker('run', '--detach', '--pull=never', '--network', network, '--network-alias', 'chatgpt.com', '--name', providerName, '--mount', `type=bind,src=${capture},dst=/capture,readonly=false`, '--mount', `type=bind,src=${caDir},dst=/tls,readonly=true`, '--entrypoint', 'node', derivativeTag, '-e', providerScript);
     await waitFor(join(capture, 'ready'));
@@ -107,7 +107,7 @@ async function fixture(t) {
     await symlink('/etc/hosts', join(workspace, 'container-known-target'));
     const canary = docker('run', '--rm', '--pull=never', '--network', network, '--entrypoint', 'node', derivativeTag, '-e', "require('https').get('https://chatgpt.com/health',r=>{console.log(r.statusCode);r.resume();r.on('end',()=>process.exit(0))}).on('error',e=>{console.error(e.message);process.exit(1)})");
     assert.match(canary, /200|404|401/);
-    const env = { ...process.env, HOME: join(root, 'home'), XDG_CONFIG_HOME: configHome, XDG_DATA_HOME: dataHome, YOLO_AUTH_FILE: join(configHome, 'yoloharness', 'credentials.json'), DOCKER_CONFIG: dockerConfig, DOCKER_HOST: daemonEndpoint, PATH: `${wrapperDir}:${process.env.PATH}` };
+    const env = { ...process.env, HOME: join(root, 'home'), XDG_CONFIG_HOME: configHome, XDG_DATA_HOME: dataHome, YOLO_AUTH_FILE: join(configHome, 'yoloharness', 'credentials.json'), DOCKER_CONFIG: dockerConfig, DOCKER_HOST: daemonEndpoint, PATH: `${wrapperDir}:${process.env.PATH}`, HTTP_PROXY: 'http://hostile.invalid:9', HTTPS_PROXY: 'http://hostile.invalid:9', ALL_PROXY: 'http://hostile.invalid:9', AWS_SECRET_ACCESS_KEY: 'synthetic-hostile-secret', GITHUB_TOKEN: 'synthetic-hostile-token', SSH_AUTH_SOCK: '/tmp/hostile-agent.sock', NPM_CONFIG_USERCONFIG: '/tmp/hostile.npmrc', YOLO_DOCKER_IMAGE: 'hostile-image', YOLO_DOCKER_COMMAND: 'sh -c hostile', YOLO_PROVIDER_TOKEN: 'synthetic-hostile-provider-token' };
     for (const key of ['DOCKER_CONTEXT', 'DOCKER_HOSTNAME', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH']) delete env[key];
     const child = spawn(process.execPath, [new URL('../src/cli.mjs', import.meta.url).pathname, '--json', 'whole-runtime nonce synthetic'], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = ''; let stderr = ''; child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
@@ -122,17 +122,28 @@ async function fixture(t) {
       let out = ''; let err = ''; child.stdout.on('data', chunk => { out += chunk; }); child.stderr.on('data', chunk => { err += chunk; });
       return { ...(await new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })))), out, err };
     };
+    for (const [prompt, artifact] of [['boundary-probe', 'wrc-05-06-boundary'], ['resource-probe', 'wrc-10-11-resource'], ['nested-docker-probe', 'wrc-19-nested-docker']]) {
+      const probe = await runProbe(prompt);
+      assert.equal(probe.code, 0, `${probe.err}${probe.out}`);
+      assert.match(probe.out, /control-complete/);
+      if (process.env.YOLO_EVIDENCE_DIR) {
+        await writeFile(join(process.env.YOLO_EVIDENCE_DIR, `${artifact}.stdout`), probe.out);
+        await writeFile(join(process.env.YOLO_EVIDENCE_DIR, `${artifact}.stderr`), probe.err);
+        await writeFile(join(process.env.YOLO_EVIDENCE_DIR, `${artifact}.status`), `${probe.code}\n`);
+      }
+    }
+    const requestsBeforeReauth = (await readdir(capture)).filter(name => /^request-\d+\.json$/.test(name)).length;
     const reauth = await runProbe('reauth-probe', '0.2');
     assert.equal(reauth.code, 1, `${reauth.err}${reauth.out}`);
     assert.match(reauth.out, /reauth_required/);
     assert.doesNotMatch(`${reauth.out}${reauth.err}`, /synthetic-(?:access|refresh)-token/);
     const reauthRequests = (await readdir(capture)).filter(name => /^request-\d+\.json$/.test(name));
-    assert.equal(reauthRequests.length, 3, '401 must be issued exactly once without a retry');
-    const reauthRequest = JSON.parse(await readFile(join(capture, 'request-3.json'), 'utf8'));
+    assert.equal(reauthRequests.length, requestsBeforeReauth + 1, '401 must be issued exactly once without a retry');
+    const reauthRequest = JSON.parse(await readFile(join(capture, `request-${requestsBeforeReauth + 1}.json`), 'utf8'));
     assert.equal(reauthRequest.authorization, 'Bearer synthetic-access-token');
     assert.equal(await access(join(workspace, '.yolo', 'runs')).then(() => true).catch(() => false), true);
     const wrapperLines = (await readFile(join(root, 'docker-argv.jsonl'), 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
-    assert.equal(wrapperLines.length, 2);
+    assert.ok(wrapperLines.length >= 5, 'whole runtime and named shipped probe launches must be retained');
     const runtimeArgs = wrapperLines[0];
     assert.equal(runtimeArgs[runtimeArgs.indexOf('--network') + 1], network);
     assert.equal(runtimeArgs.filter(value => value === '--network').length, 1);
@@ -144,7 +155,7 @@ async function fixture(t) {
     assert.ok(runtimeArgs.includes('--cpus') && runtimeArgs.includes('1'));
     assert.equal(runtimeArgs.filter(value => value === '--mount').length, 1);
     assert.match(runtimeArgs[runtimeArgs.indexOf('--mount') + 1], /^type=bind,src=.*\/workspace,dst=\/workspace,readonly=false,bind-propagation=rprivate$/s);
-    assert.equal(runtimeArgs.some(value => /docker\.sock|DOCKER_CONFIG|ACCESS_TOKEN|REFRESH_TOKEN/i.test(value)), false);
+    assert.equal(runtimeArgs.some(value => /docker\.sock|DOCKER_CONFIG|ACCESS_TOKEN|REFRESH_TOKEN|hostile|synthetic-hostile/i.test(value)), false);
     const runtimeInspect = JSON.parse(await readFile(runtimeInspectPath, 'utf8'))[0];
     if (process.env.YOLO_EVIDENCE_DIR) {
       await mkdir(process.env.YOLO_EVIDENCE_DIR, { recursive: true });
@@ -158,7 +169,7 @@ async function fixture(t) {
     assert.equal(runtimeInspect.HostConfig.NanoCpus, 1 * 1e9);
     assert.equal(runtimeInspect.Mounts.filter(mount => mount.Destination === '/workspace').length, 1);
     assert.equal(runtimeInspect.Mounts.some(mount => /(?:docker\.sock|\/\.ssh|\/\.config|\/\.local\/share)/i.test(mount.Source ?? '')), false);
-    assert.equal(runtimeInspect.Config.Env.some(value => /DOCKER_CONFIG|ACCESS_TOKEN|REFRESH_TOKEN|TOKEN/i.test(value)), false);
+    assert.equal(runtimeInspect.Config.Env.some(value => /DOCKER_CONFIG|ACCESS_TOKEN|REFRESH_TOKEN|TOKEN|PROXY|AWS_|GITHUB_|SSH_AUTH|NPM_CONFIG|YOLO_DOCKER|YOLO_PROVIDER/i.test(value)), false);
     assert.equal(runtimeInspect.HostConfig.NetworkMode, network);
     assert.equal(runtimeInspect.NetworkSettings.Networks[network] !== undefined, true);
     const inspect = JSON.parse(docker('inspect', providerName))[0]; assert.equal(Object.keys(inspect.NetworkSettings.Networks).length, 1); assert.ok(inspect.NetworkSettings.Networks[network]);
@@ -223,6 +234,12 @@ async function fixture(t) {
       assert.match(negativeErr, /workspace contains a multiply-linked file: hardlink-alias\.txt/);
       assert.equal(await readFile(hardlinkSource, 'utf8'), 'outside hardlink sentinel');
       assert.equal((await readdir(capture)).filter(name => /^request-\d+\.json$/.test(name)).length, requestsBefore);
+      if (process.env.YOLO_EVIDENCE_DIR) {
+        await mkdir(process.env.YOLO_EVIDENCE_DIR, { recursive: true });
+        await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-negative.stdout'), negativeOut);
+        await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-negative.stderr'), negativeErr);
+        await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-negative.status'), `${negativeExit.code}\n`);
+      }
       await rm(hardlinkAlias);
 
       const ordinaryFile = join(workspace, 'single-link-control.txt');
@@ -237,6 +254,11 @@ async function fixture(t) {
       assert.equal(positiveExit.code, 0, `${positiveErr}${positiveOut}`);
       assert.equal(positiveExit.signal, null);
       assert.equal(JSON.parse(positiveOut.trim()).status, 'completed');
+      if (process.env.YOLO_EVIDENCE_DIR) {
+        await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-control.stdout'), positiveOut);
+        await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-control.stderr'), positiveErr);
+        await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-control.status'), `${positiveExit.code}\n`);
+      }
       await rm(ordinaryFile);
     });
 

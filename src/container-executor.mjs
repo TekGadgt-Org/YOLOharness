@@ -41,7 +41,7 @@ export class ContainerProcessExecutor {
       };
       child.stdout?.on('data', chunk => collect('out', chunk));
       child.stderr?.on('data', chunk => collect('err', chunk));
-      child.once('error', error => finish(reject, error));
+      child.once('error', error => finish(resolve, { version: 1, ok: false, call_id: call.call_id, code: 127, output: out.slice(0, MAX_OUTPUT), error: `${error.message ?? String(error)}`.slice(0, MAX_OUTPUT) }));
       child.once('close', (code, signal) => {
         if (timedOut) return finish(resolve, { version: 1, ok: false, call_id: call.call_id, code: 124, output: out.slice(0, MAX_OUTPUT), error: 'command deadline or output limit exceeded' });
         const detail = signal ? `command killed by ${signal}` : `command exited (${code ?? 'unknown'})`;

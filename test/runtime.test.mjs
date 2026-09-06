@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { EventLog, redact, recoverEvents } from '../src/events.mjs';
 import { runOnce, FixtureProvider, MissingProviderError, EXEC_TOOL, SKILL_LOAD_TOOL } from '../src/runtime.mjs';
 import { validateWorkspace } from '../src/container-launcher.mjs';
+import { ContainerProcessExecutor } from '../src/container-executor.mjs';
 
 test('event log writes ordered bounded redacted JSONL and reopens', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'yolo-')); const path = join(dir, 'events.jsonl');
@@ -127,13 +128,33 @@ test('provider discovers skills from bounded metadata before loading and receive
   assert.deepEqual(record.evidence[0], { name: 'demo', source: 'local', instructions: 'untrusted instructions', resources: [] });
 });
 
-test('failed executor receipts stop the run instead of allowing a false provider completion', async () => {
+test('ordinary failed executor receipts return to the provider for recovery', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'yolo-')); let steps = 0; const outputs = [];
+  const provider = { async next({ messages }) { steps += 1;
+    if (steps === 1) return { tool_call: { call_id: 'failed-1', name: 'exec', arguments: JSON.stringify({ command: '/missing-command', args: [] }) } };
+    if (steps === 2) { outputs.push(messages.findLast(message => message.type === 'function_call_output')); return { tool_call: { call_id: 'success-1', name: 'exec', arguments: JSON.stringify({ command: 'printf', args: ['recovered'] }) } }; }
+    outputs.push(messages.at(-1)); return { done: true, result: 'recovered' };
+  } };
+  const executor = { async execute({ call }) { return call.call_id === 'failed-1'
+    ? { version: 1, ok: false, call_id: call.call_id, code: 127, output: '', error: 'spawn /missing-command ENOENT' }
+    : { version: 1, ok: true, call_id: call.call_id, code: 0, output: 'recovered' }; } };
+  const record = await runOnce({ prompt: 'recover', workspace, executor, provider, tools: [EXEC_TOOL] });
+  assert.equal(record.status, 'completed'); assert.equal(steps, 3); assert.equal(record.result, 'recovered');
+  const receipts = record.evidence.filter(value => value && typeof value === 'object');
+  assert.equal(receipts.length, 2); assert.equal(receipts[0].ok, false); assert.equal(receipts[1].ok, true);
+  assert.match(outputs[0].output, /spawn .* ENOENT/);
+});
+
+test('container process executor converts a missing command into a bounded receipt', async () => {
+  const receipt = await new ContainerProcessExecutor({ timeoutMs: 1000 }).execute({ call: { command: '/missing-command', args: [], call_id: 'enoent-1' } });
+  assert.deepEqual(receipt, { version: 1, ok: false, call_id: 'enoent-1', code: 127, output: '', error: 'spawn /missing-command ENOENT' });
+});
+
+test('deadline executor receipts remain fatal', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'yolo-')); let steps = 0;
-  const provider = { async next() { steps += 1; return steps === 1
-    ? { tool_call: { call_id: 'failed-1', name: 'exec', arguments: JSON.stringify({ command: 'sh', args: [] }) } }
-    : { done: true, result: 'must-not-complete' }; } };
-  const executor = { async execute() { return { version: 1, ok: false, call_id: 'failed-1', code: 124, output: '', error: 'command deadline or output limit exceeded' }; } };
-  const record = await runOnce({ prompt: 'stop', workspace, provider, executor, tools: [EXEC_TOOL] });
+  const provider = { async next() { steps += 1; return { tool_call: { call_id: 'deadline-1', name: 'exec', arguments: JSON.stringify({ command: 'sh', args: [] }) } }; } };
+  const executor = { async execute() { return { version: 1, ok: false, call_id: 'deadline-1', code: 124, output: '', error: 'command deadline or output limit exceeded' }; } };
+  const record = await runOnce({ prompt: 'stop', workspace, executor, provider, tools: [EXEC_TOOL] });
   assert.equal(record.status, 'deadline'); assert.equal(steps, 1); assert.match(record.errors[0], /command deadline/);
 });
 

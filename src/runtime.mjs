@@ -5,7 +5,7 @@ import { EventLog } from './events.mjs';
 import { validateReceipt } from './docker-executor.mjs';
 
 export class MissingProviderError extends Error { constructor(message = 'No provider is configured; run `yolo setup` and authenticate before starting a run') { super(message); this.name = 'MissingProviderError'; } }
-export const EXEC_TOOL = Object.freeze({ type: 'function', name: 'exec', description: 'Run one command in the isolated worker.', parameters: Object.freeze({ type: 'object', additionalProperties: false, required: ['command', 'args'], properties: { command: { type: 'string', minLength: 1, maxLength: 256 }, args: { type: 'array', maxItems: 64, items: { type: 'string', maxLength: 4096 } } } }) });
+export const EXEC_TOOL = Object.freeze({ type: 'function', name: 'exec', description: 'Run one command in the isolated worker. Guaranteed baseline: POSIX sh/core utilities, node, npm, git, python3, python3 -m pip, and python3 -m venv; other host commands are not guaranteed.', parameters: Object.freeze({ type: 'object', additionalProperties: false, required: ['command', 'args'], properties: { command: { type: 'string', minLength: 1, maxLength: 256 }, args: { type: 'array', maxItems: 64, items: { type: 'string', maxLength: 4096 } } } }) });
 export const SKILL_LOAD_TOOL = Object.freeze({ type: 'function', name: 'skill_load', description: 'Load untrusted instructions or one resource from the declared skill catalog.', parameters: Object.freeze({ type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string', minLength: 1, maxLength: 64 }, resource: { type: 'string', maxLength: 256 } } }) });
 
 function normalizeCall(call) {
@@ -121,9 +121,16 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
         const receipt = await awaitExecutorCleanup(executor.execute({ call, signal: timer.signal }), timer.signal, cleanupGraceMs);
         if (!validateReceipt(receipt, call.call_id)) { errors.push('effect denied: invalid executor receipt'); status = 'failed'; break; }
         if (!receipt.ok) {
+          evidence.push(receipt);
           errors.push(receipt.error);
-          status = timer.signal.aborted ? (signal.aborted ? 'interrupted' : 'deadline') : receipt.code === 124 ? 'deadline' : 'failed';
-          break;
+          if (timer.signal.aborted || receipt.code === 124) {
+            status = timer.signal.aborted ? (signal.aborted ? 'interrupted' : 'deadline') : 'deadline';
+            break;
+          }
+          messages.push({ type: 'function_call', call_id: call.call_id, name: 'exec', arguments: JSON.stringify({ command: call.command, args: call.args }) });
+          messages.push({ type: 'function_call_output', call_id: call.call_id, output: JSON.stringify(receipt) });
+          messages.push({ role: 'assistant', content: safe.message ?? '' });
+          continue;
         }
         evidence.push(receipt);
         messages.push({ type: 'function_call', call_id: call.call_id, name: 'exec', arguments: JSON.stringify({ command: call.command, args: call.args }) });

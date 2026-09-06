@@ -325,11 +325,12 @@ test('local HTTP provider to runtime to executor preserves the exec bridge contr
     },
   });
   const record = await runOnce({ prompt: 'bridge', provider, executor, tools: [EXEC_TOOL] });
-  assert.equal(record.status, 'failed', JSON.stringify(record));
-  assert.equal(requestCount, 1);
+  assert.equal(record.status, 'completed', JSON.stringify(record));
+  assert.equal(requestCount, 2);
   assert.deepEqual(calls, [{ command: '/definitely/not-a-command', args: [] }]);
   assert.equal(envelope.version, 1);
   assert.equal(envelope.call_id, 'bridge-1');
+  assert.equal(record.evidence.find(value => value?.call_id === 'bridge-1')?.ok, false);
 });
 
 test('SSE parser handles BOM, comments, CRLF and multiline data', async ()=> { const got=[...parseSSE(new TextEncoder().encode('\ufeff: hi\r\ndata: {"a":\r\ndata: 1}\r\n\r\n'))]; assert.deepEqual(got,['{"a":\n1}']); assert.deepEqual(JSON.parse(got[0]),{a:1}); });

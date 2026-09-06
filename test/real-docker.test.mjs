@@ -203,11 +203,11 @@ async function fixture(t) {
       }
     }
     const pidPressure = await runProbe('pid-pressure-probe', '0.2');
-    assert.equal(pidPressure.code, 1, `${pidPressure.err}${pidPressure.out}`);
+    assert.equal(pidPressure.code, 0, `${pidPressure.err}${pidPressure.out}`);
     assert.equal(await readFile(join(workspace, 'wrc11-pid-started'), 'utf8').then(value => /^128\n$/.test(value)), true, 'PID probe must record the configured cgroup limit before pressure');
     assert.match(`${pidPressure.out}${pidPressure.err}`, /(?:cannot fork|failed|denied|container exited|effect|128)/i, 'PID pressure must retain an attributable child-creation failure');
     const memoryPressure = await runProbe('memory-pressure-probe', '0.2');
-    assert.equal(memoryPressure.code, 1, `${memoryPressure.err}${memoryPressure.out}`);
+    assert.equal(memoryPressure.code, 0, `${memoryPressure.err}${memoryPressure.out}`);
     assert.equal(await readFile(join(workspace, 'wrc11-memory-started'), 'utf8').then(value => /^536870912\n$/.test(value)), true, 'memory probe must record the configured cgroup limit before pressure');
     const memoryObserved = await readFile(join(workspace, 'wrc11-memory-observed'), 'utf8');
     assert.match(memoryObserved, /child_status=\d+/);

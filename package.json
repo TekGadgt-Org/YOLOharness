@@ -1,0 +1,9 @@
+{
+  "name": "yoloharness",
+  "version": "0.1.0",
+  "description": "A bounded, inspectable one-shot agent runtime",
+  "type": "module",
+  "bin": { "yolo": "src/cli.mjs" },
+  "files": ["package.json", "install.mjs", "src", "assets/runtime"],
+  "scripts": { "test": "NODE_ENV=test node --test test/*.test.mjs prototype/test/*.test.mjs", "test:docker": "YOLO_REAL_DOCKER=1 node --test test/real-docker*.test.mjs" }
+}

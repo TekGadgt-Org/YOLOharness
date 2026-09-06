@@ -1,0 +1,17 @@
+.git
+.yolo
+node_modules
+.env*
+**/.env
+**/.env.*
+**/*credentials*
+**/*secret*
+**/*.key
+**/*.pem
+**/*.crt
+**/*.log
+**/coverage
+**/.git
+**/.yolo
+**/node_modules
+**/.git/worktrees

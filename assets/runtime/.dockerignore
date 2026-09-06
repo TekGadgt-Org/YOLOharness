@@ -1,0 +1,16 @@
+*
+!package.json
+!src/
+!src/*.mjs
+.git
+.yolo
+node_modules
+**/.env
+**/.env.*
+**/*credentials*
+**/*secret*
+**/*.key
+**/*.pem
+**/*.crt
+**/*.log
+**/coverage

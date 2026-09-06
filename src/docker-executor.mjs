@@ -1,0 +1,41 @@
+import { spawn as nodeSpawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+export class DockerUnavailableError extends Error { constructor(message = 'Docker is required for tool execution') { super(message); this.name = 'DockerUnavailableError'; this.code = 'docker_unavailable'; } }
+export class OutputLimitError extends Error { constructor() { super('executor output limit exceeded'); this.name = 'OutputLimitError'; this.code = 'output_limit'; } }
+export class UnknownCleanupError extends Error { constructor() { super('container cleanup could not be proven'); this.name = 'UnknownCleanupError'; this.code = 'cleanup_unknown'; } }
+const RECEIPT_KEYS = new Set(['version', 'ok', 'call_id', 'code', 'output', 'error']);
+export function validateReceipt(receipt, callId) {
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt) || receipt.version !== 1 || typeof receipt.ok !== 'boolean' || typeof receipt.call_id !== 'string' || !receipt.call_id || receipt.call_id.length > 128 || receipt.call_id !== callId || Object.keys(receipt).some(key => !RECEIPT_KEYS.has(key))) return false;
+  if (!Number.isInteger(receipt.code) || receipt.code < 0 || receipt.code > 255) return false;
+  if (typeof receipt.output !== 'string' || Buffer.byteLength(receipt.output) > 1024 * 1024) return false;
+  if (typeof receipt.error !== 'undefined' && (typeof receipt.error !== 'string' || Buffer.byteLength(receipt.error) > 1024 * 1024)) return false;
+  return receipt.ok ? receipt.code === 0 && typeof receipt.error === 'undefined' : receipt.code !== 0 && typeof receipt.error === 'string' && receipt.error.length > 0;
+}
+export class DockerExecutor {
+  constructor({ image, workspace, command = 'docker', spawn = nodeSpawn, maxOutput = 1024 * 1024, timeoutMs = 60000, preflight } = {}) { this.image = image; this.workspace = workspace; this.command = command; this.spawn = spawn; this.maxOutput = maxOutput; this.timeoutMs = timeoutMs; this.preflightFn = preflight; }
+  containerName() { return `yoloharness-${randomUUID()}`; }
+  args(name = 'yoloharness-container') { if (!this.image || !this.workspace) throw new DockerUnavailableError('Docker executor requires image and workspace'); return ['create', '--pull=never', '--name', name, '--init', '-i', '--network', 'none', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--cpus', '1', '-e', 'HOME=/tmp', '-v', `${this.workspace}:/workspace:rw`, '-w', '/workspace', this.image]; }
+  async preflight({ signal, timeoutMs = this.timeoutMs } = {}) { if (this.preflightFn) return this.preflightFn({ signal, timeoutMs }); return this.#simple(['version', '--format', '{{.Server.Version}}'], { signal, timeoutMs, unavailable: true }); }
+  async #simple(args, { signal, timeoutMs, unavailable = false, maxOutput = this.maxOutput } = {}) { return new Promise((resolve, reject) => { if (signal?.aborted) return reject(signal.reason ?? new Error('docker operation cancelled')); let child; let output = ''; let terminalError; let settled = false; const finish = (fn, value) => { if (settled) return; settled = true; clearTimeout(timer); signal?.removeEventListener('abort', abort); fn(value); }; const abort = () => { terminalError = signal?.reason ?? new Error('docker operation cancelled'); child?.kill('SIGKILL'); }; const timer = setTimeout(() => { terminalError = new Error('docker operation deadline exceeded'); child?.kill('SIGKILL'); }, timeoutMs); try { child = this.spawn(this.command, args, { stdio: ['ignore', 'pipe', 'pipe'], shell: false }); } catch { finish(reject, unavailable ? new DockerUnavailableError() : new UnknownCleanupError()); return; } const collect = v => { output += String(v); if (Buffer.byteLength(output) > maxOutput && !terminalError) { terminalError = new OutputLimitError(); child?.kill('SIGKILL'); } }; child.stdout?.on('data', collect); child.stderr?.on('data', collect); child.once('error', error => { terminalError ??= error; }); child.once('close', code => { if (terminalError) return finish(reject, terminalError);
+ if (code === 0) return finish(resolve, output.trim());
+ const failure = unavailable ? new DockerUnavailableError(output.trim()) : new UnknownCleanupError();
+ failure.dockerExitCode = code;
+ failure.dockerOutput = output.trim();
+ finish(reject, failure); }); signal?.addEventListener('abort', abort, { once: true }); }); }
+  async #reconcile(name) {
+    try { await this.#simple(['inspect', name], { timeoutMs: Math.min(this.timeoutMs, 10000), maxOutput: 16 * 1024 }); return false; }
+    catch (error) {
+      if (error?.dockerExitCode !== 1) return false;
+      const output = (error.dockerOutput ?? '').trim();
+      const quotedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const patterns = [
+        new RegExp(`^Error:\\s*No such container:\\s*${quotedName}$`, 'i'),
+        new RegExp(`^Error response from daemon:\\s*No such container:\\s*${quotedName}$`, 'i'),
+        new RegExp(`^(?:\\[\\]\\s*)?error:\\s*no such object:\\s*${quotedName}$`, 'i'),
+      ];
+      return patterns.some(pattern => pattern.test(output));
+    }
+  }
+  async execute(input = {}) { const { signal } = input; const call = input.call ?? (input.command ? { command: input.command, args: input.args } : undefined); if (!call?.call_id) throw new TypeError('executor requires call_id'); await this.preflight({ signal }); if (signal?.aborted) throw signal.reason; const name = this.containerName(); let maybeCreated = false; let primary; try { maybeCreated = true; await this.#simple(this.args(name), { signal, timeoutMs: this.timeoutMs }); return await this.#run(name, call, signal); } catch (error) { primary = error; throw error; } finally { if (maybeCreated) { try { await this.#simple(['kill', '--signal', 'KILL', name], { timeoutMs: Math.min(this.timeoutMs, 10000), maxOutput: 16 * 1024 }).catch(() => undefined); await this.#simple(['rm', '--force', name], { timeoutMs: Math.min(this.timeoutMs, 10000), maxOutput: 16 * 1024 }); if (!(await this.#reconcile(name))) throw new UnknownCleanupError(); } catch { throw new UnknownCleanupError(); } } } }
+  async #run(name, call, signal) { return new Promise((resolve, reject) => { let child; let settled = false; let out = ''; let err = ''; let terminalError; const finish = (fn, value) => { if (settled) return; settled = true; clearTimeout(timer); signal?.removeEventListener('abort', abort); fn(value); }; const abort = () => { terminalError = signal?.reason ?? new Error('executor cancelled'); child?.kill('SIGKILL'); }; const timer = setTimeout(() => { terminalError = new Error('executor deadline exceeded'); child?.kill('SIGKILL'); }, this.timeoutMs); if (signal?.aborted) return reject(signal.reason); try { child = this.spawn(this.command, ['start', '--attach', '--interactive', name], { stdio: ['pipe', 'pipe', 'pipe'], shell: false, env: { ...process.env, HOME: process.env.HOME } }); } catch (error) { finish(reject, error); return; } const collect = (which, chunk) => { const value = String(chunk); if (which === 'out') out += value; else err += value; if (Buffer.byteLength(which === 'out' ? out : err) > this.maxOutput && !terminalError) { terminalError = new OutputLimitError(); child.kill('SIGKILL'); } }; child.stdout?.on('data', d => collect('out', d)); child.stderr?.on('data', d => collect('err', d)); child.once('error', error => { terminalError ??= error; }); child.once('close', code => { if (terminalError) return finish(reject, terminalError); if (code !== 0) return finish(reject, new Error(`executor failed (${code}): ${err.slice(0, 200)}`)); const lines = out.split(/\r?\n/).filter(Boolean); if (lines.length !== 1) return finish(reject, new Error('worker must return exactly one receipt')); let receipt; try { receipt = JSON.parse(lines[0]); } catch { return finish(reject, new Error('worker returned malformed receipt')); } if (!validateReceipt(receipt, call.call_id)) return finish(reject, new Error('worker returned invalid receipt')); finish(resolve, receipt); }); signal?.addEventListener('abort', abort, { once: true }); child.stdin?.end(JSON.stringify({ version: 1, call: { command: call.command, args: call.args }, call_id: call.call_id }) + '\n'); }); }
+}

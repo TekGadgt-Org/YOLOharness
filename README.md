@@ -6,32 +6,49 @@ A ten-minute experiment in the harness Astra would choose for itself: a small, i
 
 ## Current direction
 
-**A thin, container-first, one-shot agent:** `yolo "<prompt>"` or `yolo -t <minutes> "<prompt>"`. No full chat interface. Read **[DIRECTION.md](DIRECTION.md)** first: it records Ryan's clarification and the verified finding that Hermes performs direct device-code authentication without requiring Codex CLI. It supersedes the original companion-first recommendation and mandatory-Codex prerequisites below. These commands remain proposed; only the fixture prototype runs today.
+A thin, container-first, one-shot agent: `yolo "<prompt>"` or `yolo -t <minutes> "<prompt>"`. Ordinary runs execute the provider, planner, parser, dispatch, and generated commands inside one rootless Docker container using the approved rootless-only UID/GID 0:0 mapping; rootful or unknown Docker is rejected. The host process is only a bounded launcher/supervisor; deterministic fixtures exist only in the non-shipped test harness. No host chmod/chown or ACL preparation is performed; the launcher never chmods or chowns the project.
+
+Run `yolo setup` to build the installation-owned runtime image and store its immutable local image ID plus source digest/version (`{version:1,imageId,sourceDigest,sourceVersion}`) under `$XDG_DATA_HOME/yoloharness/image.json` (or `$HOME/.local/share/yoloharness/image.json`). Ordinary runs use that exact ID with `--pull=never`. The selected project is the only host bind at `/workspace`; the runtime has a read-only root, dropped capabilities, bounded tmpfs/resource limits, and network egress for provider traffic. Project contents and the in-container access token are intentionally not treated as confidential from generated code.
+
+## Direct provider setup (explicit opt-in)
+
+Authentication is separate from a run and never starts automatically. Run `yolo auth login`; device authentication uses the built-in public Codex client configuration and credentials are stored at `$XDG_CONFIG_HOME/yoloharness/credentials.json` (or `YOLO_AUTH_FILE`) outside the project with mode 0600. In an interactive terminal, login asks `Model name?` after authentication and stores non-secret configuration at `$XDG_CONFIG_HOME/yoloharness/config.json`; Enter retains an existing model. Noninteractive login never waits for model input. You can set or change it independently with `yolo config set model <model-id>`. At run time, an explicit `YOLO_MODEL` overrides the saved model without changing it. `yolo auth status` reports only local presence/expiry and `yolo auth logout` removes local credentials; it does not claim remote revocation. Production runs use the installation-owned canonical HTTPS Responses endpoint; the endpoint is not selectable through environment variables. Loopback HTTP providers are available only through explicit test construction with synthetic credentials; the production CLI never routes stored bearer credentials to arbitrary endpoints. No live OAuth, entitlement, Docker isolation, or native macOS execution has been verified in this repository.
 
 ## What is here
 
 - **[DESIGN.md](DESIGN.md):** the opinionated architecture and build plan. Start here.
 - **[research/findings.md](research/findings.md):** source-first comparison of public Codex, Hermes, and OpenClaw; Codex OAuth integration feasibility.
-- **[prototype/](prototype/):** dependency-free Node ESM fixture kernel, runnable demo, and tests. **Not a live AI agent.**
+- **[prototype/](prototype/):** historical dependency-free fixture kernel, runnable demo, and tests. **Not a live AI agent.**
+- **[src/](src/):** bounded one-shot CLI/runtime. Ordinary runs are container-only and fail closed when setup, credentials, or the immutable image is unavailable.
 - **[memory/memory-design.md](memory/memory-design.md):** provenance, scope, expiry, contradictions, compaction, and forgetting.
 - **[security/threat-model.md](security/threat-model.md):** adversarial design review and concrete negative tests, not a security certification.
-- **[ux/interaction-design.md](ux/interaction-design.md):** proposed `yolo` CLI and explicitly mocked operator screens. The CLI is not implemented.
-- **[qa/maintainability.md](qa/maintainability.md):** the argument against rebuilding what Codex/Hermes already do.
-- **[qa/qa-report.md](qa/qa-report.md):** independent initial QA (historical FAIL; both reproduced bugs were repaired).
-- **[qa/final-verification.md](qa/final-verification.md):** coordinator's post-repair rerun: **7 tests pass**, repeated same-log demos succeed, and both bug probes pass; raw output retained.
-- **[qa/performance-plan.md](qa/performance-plan.md):** performance and context/delegation evaluation proposal.
+- **[ux/interaction-design.md](ux/interaction-design.md):** proposed `yolo` CLI and explicitly mocked operator screens. The shipped CLI supports only the bounded container path and explicitly configured provider paths.
 
-## Run the real code
+## Install and run (Linux MVP)
 
-From the project directory, with Node available:
+WARNING: Run in a fresh, disposable directory. The agent can overwrite or delete anything in the working directory without asking. Using it on an existing project is at your own risk; back up or commit your work first. Keep secrets out of the directory: networked generated code can send project contents out, and Docker does not protect files inside the mounted project.
 
-```sh
-cd prototype
-npm test
-npm run demo -- ./demo-events.jsonl
-```
+Node 22+ and Docker are prerequisites. From a downloaded package directory (or an extracted `yoloharness-0.1.0.tgz`), install to the user account; this never uses sudo, a global prefix, or shell startup files:
 
-No package installation is needed; only Node builtins are used. The demo emits `fixture_only: true`, exercises the step budget, and reconstructs state from the event log. Replaying state is not full agent resumption. The file-policy function is demonstrative and is not connected to an executor.
+1. Install: `node install.mjs`
+2. Add `$HOME/.local/bin` to PATH: `export PATH="$HOME/.local/bin:$PATH"` (persist this yourself if desired).
+3. Check offline readiness: `yolo doctor`.
+4. In a fresh disposable project, run `yolo setup`.
+5. Authenticate: `yolo auth login`.
+6. Set a model if needed: `yolo config set model <model-id>`.
+7. Run: `yolo -t 10 "verify the harness"` (or `yolo "verify the harness"`).
+
+`yolo doctor` performs no provider call and reports Docker executable, runtime image metadata, built-in device-auth client readiness, local credentials, and model status.
+
+The installer atomically replaces only app assets below `${XDG_DATA_HOME:-$HOME/.local/share}/yoloharness`, preserves config, credentials, and shared skills, and creates `$HOME/.local/bin/yolo`. It refuses symlinked or non-directory data/bin destinations. Back up or commit the selected project first: the agent can overwrite or delete files there, and networked generated code may disclose them.
+
+For development, run `npm test`; no package dependencies are required.
+
+The opt-in real-Docker gate requires the installation-owned whole-runtime image and a Docker daemon: `npm run test:docker`. The retained tests under `test/` are the source of truth for shipped-CLI/provider, workspace-boundary, token-secrecy, resource, deadline, SIGINT, and cleanup behavior. The default `npm test` remains offline and skips real Docker. Native macOS is a separate, explicitly unrun gate.
+
+Agent Skills are discovered only from `<cwd>/.agents/skills/<name>/SKILL.md` and `${XDG_DATA_HOME:-$HOME/.local/share}/yoloharness/skills/<name>/SKILL.md`; project skills override shared skills. Names, traversal, symlinks, special files, and bundled resources are bounded and validated. A catalog and bounded snapshots enter the container; `skill_load` content is instructions/data, never authority, and there is no ancestor, Hermes-profile, or remote discovery. Runs write bounded, redacted JSONL receipts below `.yolo/runs/`. Native macOS, live OAuth/provider calls, and non-Linux installation are unverified limits of this MVP.
+
+`SKILL.md` may be plain text (metadata description is `null`) or begin with a small YAML-style frontmatter block. This MVP intentionally supports the bounded subset of exactly non-empty `name` and `description` fields; other Agent Skills frontmatter keys are rejected. The name must match the directory, and descriptions are limited to 512 characters; malformed or mismatched metadata is rejected. The provider receives only bounded catalog metadata first (including source `local` or `shared` and resource names), encoded as a standard developer message item accepted by the Responses API, then requests instruction/resource content progressively.
 
 ## The design in one minute
 

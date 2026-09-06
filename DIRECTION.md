@@ -1,6 +1,6 @@
 # Current direction: a one-shot agent
 
-Ryan's clarification after the initial design jam supersedes the companion/chat-oriented portions of DESIGN.md and the original research recommendations. This is a product direction, not an implemented CLI.
+Ryan's clarification after the initial design jam supersedes the companion/chat-oriented portions of DESIGN.md and the original research recommendations. The first executable vertical slice is implemented in `src/`; live provider and container integration remain separate work.
 
 ```sh
 yolo "<prompt>"
@@ -34,7 +34,7 @@ Do not copy existing Hermes credentials into the project or commit auth state. N
 
 Target a disposable container for each run. Docker may be installed later by Ryan; no installation is requested now. Mount only the selected project, not the whole home, SSH directory, Docker socket, or credential store. Run without privilege, constrain resources, and make network access deliberate. Keep provider credentials outside the untrusted tool-execution environment; assess a small host-side auth/model broker rather than giving arbitrary shell tools access to refresh tokens. A container alone is not a complete sandbox.
 
-The current prototype remains a local deterministic fixture with no executor or container isolation. It must not be advertised as a safe autonomous host-shell agent.
+The shipped Linux MVP is an installable, container-only CLI. The historical prototype remains a local deterministic fixture and is not part of the package; neither path is a safe autonomous host-shell agent fallback. Skills are limited to project/shared roots, project precedence, bounded regular-file snapshots, and container-side loading.
 
 ## Current authorization
 

@@ -42,9 +42,10 @@ export class ContainerProcessExecutor {
       child.stdout?.on('data', chunk => collect('out', chunk));
       child.stderr?.on('data', chunk => collect('err', chunk));
       child.once('error', error => finish(reject, error));
-      child.once('close', code => {
+      child.once('close', (code, signal) => {
         if (timedOut) return finish(resolve, { version: 1, ok: false, call_id: call.call_id, code: 124, output: out.slice(0, MAX_OUTPUT), error: 'command deadline or output limit exceeded' });
-        finish(resolve, { version: 1, ok: code === 0, call_id: call.call_id, code: code ?? 1, output: out.slice(0, MAX_OUTPUT), ...(code === 0 ? {} : { error: err.trim().slice(0, MAX_OUTPUT) || `command exited (${code})` }) });
+        const detail = signal ? `command killed by ${signal}` : `command exited (${code ?? 'unknown'})`;
+        finish(resolve, { version: 1, ok: code === 0, call_id: call.call_id, code: code ?? 1, output: out.slice(0, MAX_OUTPUT), ...(code === 0 ? {} : { error: err.trim().slice(0, MAX_OUTPUT) || detail }) });
       });
       signal?.addEventListener('abort', abort, { once: true });
     });

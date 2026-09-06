@@ -90,6 +90,7 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
     while (steps < maxSteps) {
       if (timer.signal.aborted) { status = signal.aborted ? 'interrupted' : 'deadline'; break; }
       const response = await abortable(provider.next({ messages, tools, signal: timer.signal }), timer.signal);
+      if (typeof provider.partialResult === 'string' && provider.partialResult) result = provider.partialResult;
       steps += 1;
       const safe = response && typeof response === 'object' ? response : { result: String(response) };
       await log.append(runId, 'step', { step: steps, response: safe });
@@ -135,6 +136,7 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
     if (timer.signal.aborted) {
       status = signal.aborted ? 'interrupted' : 'deadline';
       if (typeof error?.partialResult === 'string') result = error.partialResult;
+      else if (typeof provider?.partialResult === 'string' && provider.partialResult) result = provider.partialResult;
       errors.push(error?.message === 'cleanup_unknown' ? 'cleanup_unknown: executor cleanup grace expired' : status === 'deadline' ? 'deadline exceeded; partial result may be incomplete' : 'interrupted by SIGINT');
     }
     else { status = 'failed'; errors.push(error?.code === 'reauth_required' ? 'reauth_required' : error instanceof Error ? error.message : String(error)); }

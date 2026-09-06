@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readdir, readFile, writeFile, rm, access, symlink, link, stat, cp } from 'node:fs/promises';
 import { join } from 'node:path';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { runtimeSourceIdentity } from '../src/cli.mjs';
@@ -106,7 +106,7 @@ async function fixture(t) {
     assert.equal(derivativeConfig.Env.some(value => /synthetic-(?:layer|nested|git|yolo|credential)-secret/i.test(value)), false);
     assert.ok(derivativeConfig.Env.includes('NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/yoloharness-test-ca.crt'));
     const providerHostilePayload = 'provider-only-$(touch /host/provider-output-canary) ; /etc/shadow';
-    const providerScript = `const https=require('https'),fs=require('fs');let n=0;const s=https.createServer({key:fs.readFileSync('/tls/server.key'),cert:fs.readFileSync('/tls/server.crt')},(q,r)=>{if(q.url==='/health'){r.writeHead(200);return r.end('ok')}let b='';q.on('data',c=>b+=c);q.on('end',()=>{n++;fs.writeFileSync('/capture/request-'+n+'.json',JSON.stringify({body:b,remote:q.socket.remoteAddress,pid:process.pid,authorization:q.headers.authorization ?? null}));if(b.includes('reauth-probe')){r.writeHead(401);return r.end('unauthorized')}r.writeHead(200,{'content-type':'text/event-stream'});const mode=b.includes('sigint-probe')?'sigint':b.includes('stdout-overflow-probe')?'stdout-overflow':b.includes('stderr-overflow-probe')?'stderr-overflow':b.includes('stdout-control-probe')?'stdout-control':b.includes('stderr-control-probe')?'stderr-control':b.includes('boundary-probe')?'boundary':b.includes('pid-pressure-probe')?'pid-pressure':b.includes('memory-pressure-probe')?'memory-pressure':b.includes('resource-probe')?'resource':b.includes('nested-docker-probe')?'nested-docker':b.includes('deadline-probe')?'deadline':'whole';const followup=b.includes('function_call_output');const commands={sigint:['sh','-c','printf started > /workspace/sigint-started; sleep 5; printf late > /workspace/sigint-late'],deadline:['sh','-c','printf started > /workspace/deadline-started; sleep 5; printf late > /workspace/deadline-late'],'stdout-overflow':['sh','-c','head -c 1048577 /dev/zero'],'stderr-overflow':['sh','-c','head -c 1048577 /dev/zero >&2'],'stdout-control':['sh','-c','sleep 0.1; printf control > /workspace/stdout-control'],'stderr-control':['sh','-c','sleep 0.1; printf control > /workspace/stderr-control'],boundary:['sh','-c','set -eu; test -L /workspace/container-known-target; test -r /workspace/container-known-target; test ! -w /workspace/container-known-target; test ! -e /host-root; test ! -e /var/run/docker.sock; test ! -e /run/podman/podman.sock; test ! -e /workspace/../outside-sentinel.txt; test ! -e /host-proc; test ! -e /host-home; test ! -e /dev/kvm; test ! -e /root/.ssh; test ! -e ${JSON.stringify(outsideSentinel)}; if cat ${JSON.stringify(outsideSentinel)} >/tmp/outside-read 2>/tmp/outside-read.err; then exit 41; fi; if printf hostile > ${JSON.stringify(outsideSentinel)} 2>/tmp/outside-write.err; then exit 42; fi; printf boundary > /workspace/boundary-artifact; test "$(cat /workspace/boundary-artifact)" = boundary; rm /workspace/boundary-artifact; printf control-complete'],resource:['sh','-c','set -eu; test ! -w /app && test "$(cat /sys/fs/cgroup/memory.max)" = 536870912 && test "$(cat /sys/fs/cgroup/pids.max)" = 128 && grep -Eq "^Seccomp:[[:space:]]+2$" /proc/1/status && grep -Eq "^NoNewPrivs:[[:space:]]+1$" /proc/1/status && pids=""; for i in $(seq 1 8); do (sleep 0.05)& pids="$pids $!"; done; wait $pids; printf pid-control-complete; node -e "const b=Buffer.alloc(16*1024*1024,1); if(b[0]!==1)process.exit(1)"; printf memory-control-complete; printf control-complete'],"pid-pressure":['sh','-c','set -eu; printf "128\\n" > /workspace/wrc11-pid-started; for i in $(seq 1 256); do (sleep 1)& done; wait'],"memory-pressure":['sh','-c','set -eu; printf "536870912\\n" > /workspace/wrc11-memory-started; node --max-old-space-size=1024 -e "const a=[];for(let i=0;i<100000000;i++)a.push(i);setTimeout(()=>process.exit(0),100)" & child=$!; set +e; wait "$child"; child_status=$?; set -e; events=$(cat /sys/fs/cgroup/memory.events); printf "child_status=%s\\n%s\\n" "$child_status" "$events" | tee /workspace/wrc11-memory-observed; test "$child_status" -ne 0; printf "%s\\n" "$events" | grep -Eq "^oom_kill [1-9]"; exit 1'],"nested-docker":['sh','-c','set -eu; test ! -S /var/run/docker.sock; ! command -v docker; ! command -v podman; ! docker info >/tmp/docker-attempt.out 2>/tmp/docker-attempt.err; ! podman info >/tmp/podman-attempt.out 2>/tmp/podman-attempt.err; test ! -e /run/docker.sock; command -v sh >/dev/null; printf control-complete']};const lifecycle=mode!=='whole';const tool={type:'response.output_item.done',item:{type:'function_call',id:mode==='whole'?'item-1':mode+'-item',call_id:mode==='whole'?'synthetic-1':mode+'-call',name:'exec',arguments:JSON.stringify(lifecycle?{command:commands[mode][0],args:commands[mode].slice(1)}:{command:'sh',args:['-c','test "$(cat /workspace/.env)" = "SYNTHETIC_ENV=visible-to-agent" && test "$(cat /workspace/fixture.key)" = synthetic-key && test "$(cat /workspace/fixture.token)" = synthetic-token-file && test -z "$ACCESS_TOKEN$REFRESH_TOKEN$DOCKER_CONFIG" && test ! -e /proc/1/fd/3 && test "$(id -u)" = "$(stat -c %u /proc/1)" && printf whole-runtime-ok']}),status:'completed'}};const completed={type:'response.completed',response:{id:mode==='whole'?'synthetic-1':mode+'-response',status:'completed'}};const hostile={type:'response.output_text.delta',delta:${JSON.stringify(providerHostilePayload)}};if(mode==='whole'&&n===1)fs.writeFileSync('/capture/emitted-hostile-sse.txt',hostile.delta+'\\n');const events=mode==='whole'&&n===1?[hostile,tool,completed]:!followup?[tool,completed]:[{type:'response.output_text.delta',delta:lifecycle?'control-complete':(b.includes('whole-runtime')?${JSON.stringify(providerHostilePayload)}+' whole-runtime-ok':'whole-runtime-ok')},completed];r.end(events.map(x=>'data: '+JSON.stringify(x)+'\\n\\n').join(''))})});s.listen(443,'0.0.0.0',()=>fs.writeFileSync('/capture/ready','ready'));`;
+    const providerScript = `const https=require('https'),fs=require('fs');let n=0;const s=https.createServer({key:fs.readFileSync('/tls/server.key'),cert:fs.readFileSync('/tls/server.crt')},(q,r)=>{if(q.url==='/health'){r.writeHead(200);return r.end('ok')}let b='';q.on('data',c=>b+=c);q.on('end',()=>{n++;fs.writeFileSync('/capture/request-'+n+'.json',JSON.stringify({body:b,remote:q.socket.remoteAddress,pid:process.pid,authorization:q.headers.authorization ?? null}));if(b.includes('reauth-probe')){r.writeHead(401);return r.end('unauthorized')}r.writeHead(200,{'content-type':'text/event-stream'});if(b.includes('deadline-probe')||b.includes('sigint-probe'))r.write('data: {"type":"response.output_text.delta","delta":"partial-stream-before-interrupt"}\\n\\n');const mode=b.includes('sigint-probe')?'sigint':b.includes('stdout-overflow-probe')?'stdout-overflow':b.includes('stderr-overflow-probe')?'stderr-overflow':b.includes('stdout-control-probe')?'stdout-control':b.includes('stderr-control-probe')?'stderr-control':b.includes('boundary-probe')?'boundary':b.includes('pid-pressure-probe')?'pid-pressure':b.includes('memory-pressure-probe')?'memory-pressure':b.includes('resource-probe')?'resource':b.includes('nested-docker-probe')?'nested-docker':b.includes('deadline-probe')?'deadline':'whole';const followup=b.includes('function_call_output');const commands={sigint:['sh','-c','printf started > /workspace/sigint-started; sleep 5; printf late > /workspace/sigint-late'],deadline:['sh','-c','printf started > /workspace/deadline-started; sleep 5; printf late > /workspace/deadline-late'],'stdout-overflow':['sh','-c','head -c 1048577 /dev/zero'],'stderr-overflow':['sh','-c','head -c 1048577 /dev/zero >&2'],'stdout-control':['sh','-c','sleep 0.1; printf control > /workspace/stdout-control'],'stderr-control':['sh','-c','sleep 0.1; printf control > /workspace/stderr-control'],boundary:['sh','-c','set -eu; test -L /workspace/container-known-target; test -r /workspace/container-known-target; test ! -w /workspace/container-known-target; test ! -e /host-root; test ! -e /var/run/docker.sock; test ! -e /run/podman/podman.sock; test ! -e /workspace/../outside-sentinel.txt; test ! -e /host-proc; test ! -e /host-home; test ! -e /dev/kvm; test ! -e /root/.ssh; test ! -e ${JSON.stringify(outsideSentinel)}; if cat ${JSON.stringify(outsideSentinel)} >/tmp/outside-read 2>/tmp/outside-read.err; then exit 41; fi; if printf hostile > ${JSON.stringify(outsideSentinel)} 2>/tmp/outside-write.err; then exit 42; fi; printf boundary > /workspace/boundary-artifact; test "$(cat /workspace/boundary-artifact)" = boundary; rm /workspace/boundary-artifact; printf control-complete'],resource:['sh','-c','set -eu; test ! -w /app && test "$(cat /sys/fs/cgroup/memory.max)" = 536870912 && test "$(cat /sys/fs/cgroup/pids.max)" = 128 && grep -Eq "^Seccomp:[[:space:]]+2$" /proc/1/status && grep -Eq "^NoNewPrivs:[[:space:]]+1$" /proc/1/status && pids=""; for i in $(seq 1 8); do (sleep 0.05)& pids="$pids $!"; done; wait $pids; printf pid-control-complete; node -e "const b=Buffer.alloc(16*1024*1024,1); if(b[0]!==1)process.exit(1)"; printf memory-control-complete; printf control-complete'],"pid-pressure":['sh','-c','set -eu; printf "128\\n" > /workspace/wrc11-pid-started; for i in $(seq 1 256); do (sleep 1)& done; wait'],"memory-pressure":['sh','-c','set -eu; printf "536870912\\n" > /workspace/wrc11-memory-started; node --max-old-space-size=1024 -e "const a=[];for(let i=0;i<100000000;i++)a.push(i);setTimeout(()=>process.exit(0),100)" & child=$!; set +e; wait "$child"; child_status=$?; set -e; events=$(cat /sys/fs/cgroup/memory.events); printf "child_status=%s\\n%s\\n" "$child_status" "$events" | tee /workspace/wrc11-memory-observed; test "$child_status" -ne 0; printf "%s\\n" "$events" | grep -Eq "^oom_kill [1-9]"; exit 1'],"nested-docker":['sh','-c','set -eu; test ! -S /var/run/docker.sock; ! command -v docker; ! command -v podman; ! docker info >/tmp/docker-attempt.out 2>/tmp/docker-attempt.err; ! podman info >/tmp/podman-attempt.out 2>/tmp/podman-attempt.err; test ! -e /run/docker.sock; command -v sh >/dev/null; printf control-complete']};const lifecycle=mode!=='whole';const tool={type:'response.output_item.done',item:{type:'function_call',id:mode==='whole'?'item-1':mode+'-item',call_id:mode==='whole'?'synthetic-1':mode+'-call',name:'exec',arguments:JSON.stringify(lifecycle?{command:commands[mode][0],args:commands[mode].slice(1)}:{command:'sh',args:['-c','test "$(cat /workspace/.env)" = "SYNTHETIC_ENV=visible-to-agent" && test "$(cat /workspace/fixture.key)" = synthetic-key && test "$(cat /workspace/fixture.token)" = synthetic-token-file && test -z "$ACCESS_TOKEN$REFRESH_TOKEN$DOCKER_CONFIG" && test ! -e /proc/1/fd/3 && test "$(id -u)" = "$(stat -c %u /proc/1)" && printf whole-runtime-ok']}),status:'completed'}};const completed={type:'response.completed',response:{id:mode==='whole'?'synthetic-1':mode+'-response',status:'completed'}};const hostile={type:'response.output_text.delta',delta:${JSON.stringify(providerHostilePayload)}};if(mode==='whole'&&n===1)fs.writeFileSync('/capture/emitted-hostile-sse.txt',hostile.delta+'\\n');const events=mode==='whole'&&n===1?[hostile,tool,completed]:!followup?[tool,completed]:[{type:'response.output_text.delta',delta:lifecycle?'control-complete':(b.includes('whole-runtime')?${JSON.stringify(providerHostilePayload)}+' whole-runtime-ok':'whole-runtime-ok')},completed];r.end(events.map(x=>'data: '+JSON.stringify(x)+'\\n\\n').join(''))})});s.listen(443,'0.0.0.0',()=>fs.writeFileSync('/capture/ready','ready'));`;
     docker('network', 'create', '--internal', network);
     docker('run', '--detach', '--pull=never', '--network', network, '--network-alias', 'chatgpt.com', '--name', providerName, '--mount', `type=bind,src=${capture},dst=/capture,readonly=false`, '--mount', `type=bind,src=${caDir},dst=/tls,readonly=true`, '--entrypoint', 'node', derivativeTag, '-e', providerScript);
     await waitFor(join(capture, 'ready'));
@@ -124,6 +124,14 @@ async function fixture(t) {
     await writeFile(join(dataHome, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId: baseId, ...sourceIdentity }));
     await writeFile(join(configHome, 'yoloharness', 'credentials.json'), JSON.stringify({ accessToken: 'synthetic-access-token', refreshToken: 'synthetic-refresh-token', clientId: 'synthetic-client', expiresAt: Date.now() + 1_800_000 }));
     await writeFile(join(configHome, 'yoloharness', 'config.json'), JSON.stringify({ version: 1, model: 'synthetic-model' }));
+    // Exercise the actual packed installer and installed launcher for the
+    // whole-runtime path; the checkout CLI must not be the test subject.
+    const packedDir = join(root, 'packed'); await mkdir(packedDir);
+    const packedName = execFileSync('npm', ['pack', '--pack-destination', packedDir], { cwd: process.cwd(), encoding: 'utf8' }).trim().split(/\r?\n/).at(-1);
+    execFileSync('tar', ['-xzf', join(packedDir, packedName), '-C', packedDir]);
+    const installed = spawnSync(process.execPath, [join(packedDir, 'package', 'install.mjs')], { cwd: join(packedDir, 'package'), env: { ...process.env, HOME: join(root, 'home'), XDG_CONFIG_HOME: configHome, XDG_DATA_HOME: dataHome }, encoding: 'utf8' });
+    assert.equal(installed.status, 0, installed.stderr);
+    const installedCli = join(root, 'home', '.local', 'bin', 'yolo');
     await writeFile(join(workspace, '.env'), 'SYNTHETIC_ENV=visible-to-agent\n');
     await writeFile(outsideSentinel, 'outside sentinel');
     const hostModelCanary = join(root, `host-model-canary-${process.pid}`);
@@ -136,7 +144,7 @@ async function fixture(t) {
     assert.match(canary, /200|404|401/);
     const env = { ...process.env, HOME: join(root, 'home'), XDG_CONFIG_HOME: configHome, XDG_DATA_HOME: dataHome, YOLO_AUTH_FILE: join(configHome, 'yoloharness', 'credentials.json'), DOCKER_CONFIG: dockerConfig, DOCKER_HOST: daemonEndpoint, PATH: `${wrapperDir}:${process.env.PATH}`, NODE_OPTIONS: `--require=${hostTraceModule}`, HTTP_PROXY: 'http://hostile.invalid:9', HTTPS_PROXY: 'http://hostile.invalid:9', ALL_PROXY: 'http://hostile.invalid:9', AWS_SECRET_ACCESS_KEY: 'synthetic-hostile-secret', GITHUB_TOKEN: 'synthetic-hostile-token', SSH_AUTH_SOCK: '/tmp/hostile-agent.sock', NPM_CONFIG_USERCONFIG: '/tmp/hostile.npmrc', YOLO_DOCKER_IMAGE: 'hostile-image', YOLO_DOCKER_COMMAND: 'sh -c hostile', YOLO_PROVIDER_TOKEN: 'synthetic-hostile-provider-token' };
     for (const key of ['DOCKER_CONTEXT', 'DOCKER_HOSTNAME', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH']) delete env[key];
-    const wrc02Argv = [new URL('../src/cli.mjs', import.meta.url).pathname, '--json', `whole-runtime nonce synthetic $(touch ${hostModelCanary}) /etc/shadow`];
+    const wrc02Argv = [installedCli, '--json', `whole-runtime nonce synthetic $(touch ${hostModelCanary}) /etc/shadow`];
     const wrc02StartedAt = new Date().toISOString();
     const child = spawn(process.execPath, wrc02Argv, { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = ''; let stderr = ''; child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
@@ -175,7 +183,7 @@ async function fixture(t) {
         await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-02-control-status'), '0\n');
       }
     const runProbe = async (prompt, minutes = '0.2') => {
-      const child = spawn(process.execPath, [new URL('../src/cli.mjs', import.meta.url).pathname, '--json', '-t', minutes, prompt], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(process.execPath, [installedCli, '--json', '-t', minutes, prompt], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
       let out = ''; let err = ''; child.stdout.on('data', chunk => { out += chunk; }); child.stderr.on('data', chunk => { err += chunk; });
       return { ...(await new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })))), out, err };
     };
@@ -271,7 +279,7 @@ async function fixture(t) {
     // hatch. The shipped CLI rejects it before creating a runtime; the normal
     // workspace run above is the positive control.
     await symlink(outsideSentinel, join(workspace, 'outside-link.txt'));
-    const symlinkChild = spawn(process.execPath, [new URL('../src/cli.mjs', import.meta.url).pathname, '--json', 'symlink escape probe'], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const symlinkChild = spawn(process.execPath, [installedCli, '--json', 'symlink escape probe'], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let symlinkStderr = ''; symlinkChild.stderr.on('data', chunk => { symlinkStderr += chunk; });
     const symlinkExit = await new Promise(resolve => symlinkChild.once('close', (code, signal) => resolve({ code, signal })));
     assert.equal(symlinkExit.code, 1);
@@ -285,7 +293,7 @@ async function fixture(t) {
     // deliberately has a descendant that would write after cancellation; the
     // marker synchronizes the assertion so a fast provider response cannot
     // produce a false positive.
-    const deadlineChild = spawn(process.execPath, [new URL('../src/cli.mjs', import.meta.url).pathname, '--json', '-t', '0.05', 'deadline-probe'], {
+    const deadlineChild = spawn(process.execPath, [installedCli, '--json', '-t', '0.05', 'deadline-probe'], {
       cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'],
     });
     let deadlineStdout = ''; let deadlineStderr = '';
@@ -294,6 +302,8 @@ async function fixture(t) {
     const deadlineExit = await new Promise(resolve => deadlineChild.once('close', (code, signal) => resolve({ code, signal })));
     assert.equal(deadlineExit.code, 124, `${deadlineStderr}${deadlineStdout}`);
     const deadlineRecord = JSON.parse(deadlineStdout.trim().split(/\r?\n/).at(-1));
+    assert.equal(deadlineRecord.result, 'partial-stream-before-interrupt');
+    assert.equal(deadlineRecord.effect_state, 'uncertain');
 
     await new Promise(resolve => setTimeout(resolve, 1_200));
     assert.equal(await access(join(workspace, 'deadline-late')).then(() => true).catch(() => false), false);
@@ -302,7 +312,7 @@ async function fixture(t) {
       assert.match(name, /^yoloharness-[0-9a-f-]+$/);
       assert.equal(docker('ps', '-aq', '--filter', `name=^/${name}$`).trim(), '');
     };
-    const sigint = spawn(process.execPath, [new URL('../src/cli.mjs', import.meta.url).pathname, '--json', 'sigint-probe'], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const sigint = spawn(process.execPath, [installedCli, '--json', 'sigint-probe'], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let sigintOut = ''; let sigintErr = ''; sigint.stdout.on('data', chunk => { sigintOut += chunk; }); sigint.stderr.on('data', chunk => { sigintErr += chunk; });
     await waitFor(join(workspace, 'sigint-started'));
     const sigintArgsBeforeSignal = JSON.parse((await readFile(join(root, 'docker-argv.jsonl'), 'utf8')).trim().split(/\r?\n/).at(-1));
@@ -312,6 +322,9 @@ async function fixture(t) {
     sigint.kill('SIGINT');
     const sigintExit = await new Promise(resolve => sigint.once('close', (code, signal) => resolve({ code, signal })));
     assert.equal(sigintExit.code, 130, `${sigintErr}${sigintOut}`); await new Promise(resolve => setTimeout(resolve, 600));
+    const sigintRecord = JSON.parse(sigintOut.trim().split(/\r?\n/).at(-1));
+    assert.equal(sigintRecord.result, 'partial-stream-before-interrupt');
+    assert.equal(sigintRecord.effect_state, 'uncertain');
 
     assert.equal(await access(join(workspace, 'sigint-late')).then(() => true).catch(() => false), false);
     const sigintArgs = JSON.parse((await readFile(join(root, 'docker-argv.jsonl'), 'utf8')).trim().split(/\r?\n/).at(-1)); assertOwnedRuntimeAbsent(sigintArgs);
@@ -342,7 +355,7 @@ async function fixture(t) {
       await link(hardlinkSource, hardlinkAlias);
       const sentinelBefore = await fileEvidence(hardlinkSource);
       const requestsBefore = (await readdir(capture)).filter(name => /^request-\d+\.json$/.test(name)).length;
-      const negative = spawn(process.execPath, [new URL('../src/cli.mjs', import.meta.url).pathname, '--json', 'hardlink negative probe'], {
+      const negative = spawn(process.execPath, [installedCli, '--json', 'hardlink negative probe'], {
         cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'],
       });
       let negativeOut = ''; let negativeErr = '';
@@ -359,7 +372,7 @@ async function fixture(t) {
       assert.equal((await readdir(capture)).filter(name => /^request-\d+\.json$/.test(name)).length, requestsBefore);
       if (process.env.YOLO_EVIDENCE_DIR) {
         await mkdir(process.env.YOLO_EVIDENCE_DIR, { recursive: true });
-        await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-negative.command'), `${process.execPath} ${new URL('../src/cli.mjs', import.meta.url).pathname} --json hardlink negative probe\n`);
+        await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-negative.command'), `${process.execPath} ${installedCli} --json hardlink negative probe\n`);
         await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-negative.stdout'), negativeOut);
         await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-negative.stderr'), negativeErr);
         await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-negative.status'), `${negativeExit.code}\n`);
@@ -370,7 +383,7 @@ async function fixture(t) {
       const ordinaryFile = join(workspace, 'single-link-control.txt');
       await writeFile(ordinaryFile, 'ordinary single-link control');
       const controlSentinelBefore = await fileEvidence(hardlinkSource);
-      const positive = spawn(process.execPath, [new URL('../src/cli.mjs', import.meta.url).pathname, '--json', 'single-link positive control'], {
+      const positive = spawn(process.execPath, [installedCli, '--json', 'single-link positive control'], {
         cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'],
       });
       let positiveOut = ''; let positiveErr = '';
@@ -383,7 +396,7 @@ async function fixture(t) {
       const controlSentinelAfter = await fileEvidence(hardlinkSource);
       assert.deepEqual(controlSentinelAfter, controlSentinelBefore, 'positive control must not alter the outside sentinel');
       if (process.env.YOLO_EVIDENCE_DIR) {
-        await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-control.command'), `${process.execPath} ${new URL('../src/cli.mjs', import.meta.url).pathname} --json single-link positive control\n`);
+        await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-control.command'), `${process.execPath} ${installedCli} --json single-link positive control\n`);
         await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-control.stdout'), positiveOut);
         await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-control.stderr'), positiveErr);
         await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-control.status'), `${positiveExit.code}\n`);
@@ -405,7 +418,7 @@ async function fixture(t) {
     // attempts to read credentials. Keep the credential path intentionally
     // unreadable so the observed error identifies the provenance check.
     await writeFile(join(dataHome, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId: derivativeId, ...sourceIdentity }));
-    const hostile = spawn(process.execPath, [new URL('../src/cli.mjs', import.meta.url).pathname, '--json', 'hostile provenance'], {
+    const hostile = spawn(process.execPath, [installedCli, '--json', 'hostile provenance'], {
       cwd: workspace,
       env: { ...env, YOLO_AUTH_FILE: join(root, 'missing-credentials.json') },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -415,7 +428,7 @@ async function fixture(t) {
     assert.equal(hostileExit.code, 1);
     assert.match(hostileStderr, /installation-owned image tag/);
     await writeFile(join(dataHome, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId: baseId, ...sourceIdentity }));
-    const newline = spawn(process.execPath, [new URL('../src/cli.mjs', import.meta.url).pathname, '--json', 'newline cwd'], {
+    const newline = spawn(process.execPath, [installedCli, '--json', 'newline cwd'], {
       cwd: newlineWorkspace,
       env,
       stdio: ['ignore', 'pipe', 'pipe'],

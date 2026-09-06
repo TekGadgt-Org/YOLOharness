@@ -39,6 +39,30 @@ test('configured provider preserves streamed partial text when the response abor
   });
 });
 
+test('shipped runtime retains provider partial text when cancellation interrupts an incomplete stream', async () => {
+  const controller = new AbortController();
+  let observed;
+  const provider = {
+    partialResult: '',
+    async next({ signal }) {
+      this.partialResult = 'streamed-before-interrupt';
+      observed?.();
+      await new Promise((resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+      return { done: true, result: 'unreachable' };
+    },
+  };
+  const started = new Promise(resolve => { observed = resolve; });
+  const running = runOnce({ prompt: 'incomplete stream', provider, signal: controller.signal });
+  await started;
+  controller.abort(new Error('SIGINT'));
+  const record = await running;
+  assert.equal(record.status, 'interrupted');
+  assert.equal(record.effect_state, 'uncertain');
+  assert.equal(record.result, 'streamed-before-interrupt');
+});
+
 test('model configuration roundtrips in XDG config and preserves exact spelling', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'yolo-config-')); const path = join(dir, 'yoloharness', 'config.json');
   const store = new ConfigStore(path); await store.save('Provider/MODEL:v2');

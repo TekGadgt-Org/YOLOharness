@@ -75,7 +75,7 @@ export class ContainerLauncher {
         const partial = lastReceipt(result.out) ?? await workspaceReceipt(this.workspace);
         return { ...(partial ?? { version: 1, run_id: null, result: null, evidence: [], artifacts: [] }), status: reason.code === 'deadline' ? 'deadline' : 'interrupted', effect_state: 'uncertain', errors: [...(partial?.errors ?? []), reason.message] };
       }
-      if (result.overflow) throw Object.assign(new Error('container output limit exceeded'), { code: 'output_limit' });
+      if (result.overflow) return { version: 1, run_id: null, status: 'deadline', effect_state: 'uncertain', result: null, evidence: [], artifacts: [], errors: ['container output limit exceeded'] };
       if (result.code !== 0) throw new Error(result.err.trim() || `container exited (${result.code})`);
       const lines = result.out.trim().split(/\r?\n/).filter(Boolean);
       if (lines.length !== 1) throw new Error('container returned malformed status');

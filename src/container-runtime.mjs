@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { decodeBootstrap } from './bootstrap.mjs';
 import { ConfiguredProvider } from './provider.mjs';
 import { runOnce, EXEC_TOOL, SKILL_LOAD_TOOL } from './runtime.mjs';
@@ -13,15 +13,20 @@ for await (const chunk of process.stdin) {
   if (input.length > MAX_INPUT) throw new Error('bootstrap too large');
 }
 let record;
+const controller = new AbortController();
+const interrupt = signal => controller.abort(Object.assign(new Error(signal === 'SIGTERM' ? 'container stopped' : 'SIGINT'), { code: signal === 'SIGTERM' ? 'interrupted' : 'interrupted' }));
+process.once('SIGTERM', () => interrupt('SIGTERM'));
+process.once('SIGINT', () => interrupt('SIGINT'));
 try {
   const boot = decodeBootstrap(input);
   if (boot.expiresAt <= boot.deadline) throw new Error('access token does not cover run deadline');
   const provider = new ConfiguredProvider({ credentials: { accessToken: boot.accessToken, expiresAt: boot.expiresAt }, url: RESPONSES_ENDPOINT, model: boot.model });
   const remaining = Math.max(1, (boot.deadline - Date.now()) / 60000);
   const executor = new ContainerProcessExecutor({ timeoutMs: Math.max(1_000, boot.deadline - Date.now()) });
-  record = await runOnce({ prompt: boot.prompt, minutes: remaining, workspace: '/workspace', provider, executor, tools: [EXEC_TOOL, SKILL_LOAD_TOOL], skills: boot.skills, maxSteps: 100 });
+  record = await runOnce({ prompt: boot.prompt, minutes: remaining, workspace: '/workspace', provider, executor, tools: [EXEC_TOOL, SKILL_LOAD_TOOL], skills: boot.skills, maxSteps: 100, signal: controller.signal });
 } catch (error) {
   const message = error?.code === 'reauth_required' ? 'reauth_required' : (error?.message ?? String(error));
-  record = { version: 1, run_id: null, status: 'failed', result: null, evidence: [], artifacts: [], errors: [message] };
+  record = { version: 1, run_id: null, status: controller.signal.aborted ? 'interrupted' : 'failed', effect_state: controller.signal.aborted ? 'uncertain' : 'none', result: error?.partialResult ?? null, evidence: [], artifacts: [], errors: [message] };
 }
+try { await writeFile('/workspace/.yolo/last-receipt.json', `${JSON.stringify(record)}\n`, { mode: 0o600 }); } catch {}
 process.stdout.write(`${JSON.stringify(record)}\n`);

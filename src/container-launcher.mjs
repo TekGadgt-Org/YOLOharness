@@ -46,8 +46,9 @@ export class ContainerLauncher {
     let reason;
     let abortCleanup;
     const abort = (abortReason = signal?.reason ?? Object.assign(new Error('container interrupted'), { code: 'interrupted' })) => {
+      if (reason) return;
       reason = abortReason;
-      creating?.kill('SIGKILL'); attached?.kill('SIGKILL');
+      creating?.kill('SIGKILL');
       // Do not wait for docker attach to observe EOF: a descendant can keep
       // that pipe open after the attach client is killed. Stop the owned
       // container immediately so it cannot write to the workspace later.
@@ -70,7 +71,8 @@ export class ContainerLauncher {
       attached = this.spawn(this.command, ['start', '--attach', '--interactive', id], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: DOCKER_ENV() });
       const result = await attachedOperation(attached, bootstrapFrame, signal);
       if (reason) {
-        const partial = lastReceipt(result.out);
+        if (abortCleanup) await abortCleanup;
+        const partial = lastReceipt(result.out) ?? await workspaceReceipt(this.workspace);
         return { ...(partial ?? { version: 1, run_id: null, result: null, evidence: [], artifacts: [] }), status: reason.code === 'deadline' ? 'deadline' : 'interrupted', effect_state: 'uncertain', errors: [...(partial?.errors ?? []), reason.message] };
       }
       if (result.overflow) throw Object.assign(new Error('container output limit exceeded'), { code: 'output_limit' });
@@ -97,6 +99,13 @@ function lastReceipt(output) {
   return null;
 }
 
+async function workspaceReceipt(workspace) {
+  try {
+    const value = JSON.parse(await readFile(join(workspace, '.yolo', 'last-receipt.json'), 'utf8'));
+    return value?.version === 1 ? value : null;
+  } catch { return null; }
+}
+
 async function containerIdentity(command, spawn, opts) {
   const result = await operation(command, ['info', '--format', '{{json .SecurityOptions}}'], spawn, opts).promise;
   let options;
@@ -114,7 +123,7 @@ function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT, signal } = {}
     let out = ''; let err = ''; let done = false; let terminalError; let abort = () => {};
     const finish = (fn, value) => { if (done) return; done = true; clearTimeout(timer); signal?.removeEventListener('abort', abort); fn(value); };
     const terminate = error => { terminalError = error; child?.kill('SIGKILL'); };
-    const timer = setTimeout(() => terminate(new Error('docker operation deadline exceeded')), Math.min(timeoutMs, OP_TIMEOUT));
+    const timer = setTimeout(() => { terminate(new Error('docker operation deadline exceeded')); setImmediate(() => finish(reject, terminalError)); }, Math.min(timeoutMs, OP_TIMEOUT));
     try { child = spawn(command, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: DOCKER_ENV() }); }
     catch (error) { finish(reject, error); return; }
     child.stdout?.on('data', chunk => { out += String(chunk); if (Buffer.byteLength(out) > MAX_OUTPUT) terminate(new Error('docker output limit exceeded')); });
@@ -135,8 +144,14 @@ function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT, signal } = {}
 function attachedOperation(child, input, signal) {
   return new Promise((resolve, reject) => {
     let out = ''; let err = ''; let done = false; let overflow = false;
-    const abort = () => { child.kill('SIGKILL'); setImmediate(() => finish(resolve, { code: null, out, err, overflow })); };
-    const finish = (fn, value) => { if (done) return; done = true; signal?.removeEventListener('abort', abort); fn(value); };
+    let hardKill;
+    const abort = () => {
+      // ContainerLauncher starts an owned `docker stop` concurrently. Keep the
+      // attach pipe alive long enough to receive the runtime's SIGTERM receipt;
+      // force-close only if the daemon or a descendant remains stuck.
+      hardKill = setTimeout(() => { child.kill('SIGKILL'); finish(resolve, { code: null, out, err, overflow }); }, 5500);
+    };
+    const finish = (fn, value) => { if (done) return; done = true; clearTimeout(hardKill); signal?.removeEventListener('abort', abort); fn(value); };
     const collect = (which, chunk) => { const text = String(chunk); if (which === 'out') out += text; else err += text; if (Buffer.byteLength(which === 'out' ? out : err) > MAX_OUTPUT) { overflow = true; child.kill('SIGKILL'); } };
     child.stdout?.on('data', chunk => collect('out', chunk)); child.stderr?.on('data', chunk => collect('err', chunk));
     child.once('error', error => finish(reject, error)); child.once('close', code => finish(resolve, { code, out, err, overflow }));
@@ -180,6 +195,10 @@ async function verifyOwnedContainer(command, id, name, label, spawn) {
 async function cleanup(command, id, name, label, spawn) {
   if (typeof name === 'function') { spawn = name; name = null; label = null; }
   if (name && label) await verifyOwnedContainer(command, id, name, label, spawn);
+  // Give the runtime a chance to trap SIGTERM and emit its partial receipt
+  // before the hard kill fallback. This is important when a provider stream
+  // has started but the container deadline/SIGINT arrives mid-response.
+  try { await operation(command, ['stop', '--time', '5', id], spawn, { timeoutMs: 5500 }).promise; } catch {}
   try { await operation(command, ['kill', '--signal', 'KILL', id], spawn).promise; } catch {}
   try { await operation(command, ['rm', '--force', id], spawn).promise; } catch (error) { throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown', cause: error }); }
   try { await operation(command, ['inspect', id], spawn).promise; throw new Error('cleanup_unknown'); } catch (error) {

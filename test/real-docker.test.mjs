@@ -117,6 +117,10 @@ async function fixture(t) {
     const wrapperPath = join(wrapperDir, 'docker');
     await writeFile(wrapperPath, `#!/usr/bin/env node\nconst cp=require('child_process'),fs=require('fs');const a=process.argv.slice(2);let createMeta; if(a[0]==='create'){const name=a[a.indexOf('--name')+1],label=a[a.indexOf('--label')+1],ni=a.indexOf('--network'),ii=a.lastIndexOf(${JSON.stringify(baseId)});if(!name||!name.startsWith('yoloharness-')||!label||!label.startsWith(${JSON.stringify(expectedLabel)})||ni<0||a[ni+1]!=='bridge'||a.filter(x=>x==='--network').length!==1||ii<0) process.exit(91);a[ni+1]=${JSON.stringify(network)};a[ii]=${JSON.stringify(derivativeId)};createMeta={name,label};}const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio:['inherit','pipe','pipe']});if(a[0]==='create'&&result.status===0){const inspected=cp.spawnSync(${JSON.stringify(dockerPath)},['inspect',result.stdout.trim()],{encoding:'utf8'});fs.appendFileSync(${JSON.stringify(join(root, 'docker-argv.jsonl'))},JSON.stringify(a)+'\\n');fs.appendFileSync(${JSON.stringify(join(root, 'docker-create.jsonl'))},JSON.stringify({...createMeta,id:result.stdout.trim(),inspection:JSON.parse(inspected.stdout)[0]})+'\\n');}if(a[0]==='start'&&result.status===0){const inspected=cp.spawnSync(${JSON.stringify(dockerPath)},['inspect',a.at(-1)],{encoding:'utf8'});if(inspected.status===0)fs.writeFileSync(${JSON.stringify(runtimeInspectPath)},inspected.stdout);}process.stderr.write(result.stderr??'');process.stdout.write(result.stdout??'');process.exit(result.status??92);\n`, { mode: 0o755 });
     await mkdir(join(configHome, 'yoloharness'), { recursive: true }); await mkdir(join(dataHome, 'yoloharness'), { recursive: true });
+    await mkdir(join(workspace, '.agents', 'skills', 'local-skill'), { recursive: true });
+    await mkdir(join(dataHome, 'yoloharness', 'skills', 'shared-skill'), { recursive: true });
+    await writeFile(join(workspace, '.agents', 'skills', 'local-skill', 'SKILL.md'), '---\nname: local-skill\ndescription: local synthetic skill\n---\nLocal synthetic instructions.\n');
+    await writeFile(join(dataHome, 'yoloharness', 'skills', 'shared-skill', 'SKILL.md'), '---\nname: shared-skill\ndescription: shared synthetic skill\n---\nShared synthetic instructions.\n');
     await writeFile(join(dataHome, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId: baseId, ...sourceIdentity }));
     await writeFile(join(configHome, 'yoloharness', 'credentials.json'), JSON.stringify({ accessToken: 'synthetic-access-token', refreshToken: 'synthetic-refresh-token', clientId: 'synthetic-client', expiresAt: Date.now() + 1_800_000 }));
     await writeFile(join(configHome, 'yoloharness', 'config.json'), JSON.stringify({ version: 1, model: 'synthetic-model' }));
@@ -145,6 +149,7 @@ async function fixture(t) {
     assert.equal(emittedHostile, `${providerHostilePayload}\n`, 'WRC-02 must retain the provider-emitted hostile SSE payload, not only the request');
     assert.ok(stdout.includes(providerHostilePayload), 'WRC-02 must observe the hostile SSE after it crosses the provider/client boundary');
     const request = JSON.parse(await readFile(join(capture, 'request-1.json'), 'utf8')); assert.match(request.body, new RegExp(`whole-runtime nonce synthetic \\$\\(touch ${hostModelCanary.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\) /etc/shadow`)); assert.ok(request.remote);
+    assert.match(request.body, /local-skill/); assert.match(request.body, /shared-skill/); assert.match(request.body, /\\"source\\":\\"local\\"/); assert.match(request.body, /\\"source\\":\\"shared\\"/);
     const secondRequest = JSON.parse(await readFile(join(capture, 'request-2.json'), 'utf8')); assert.match(secondRequest.body, /synthetic-1/);
       const hostTrace = (await readFile(hostTraceLog, 'utf8')).trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
       assert.ok(hostTrace.some(entry => entry.kind === 'child_process.spawn'), 'host process instrumentation must record launcher process creation');
@@ -288,6 +293,8 @@ async function fixture(t) {
     await waitFor(join(workspace, 'deadline-started'));
     const deadlineExit = await new Promise(resolve => deadlineChild.once('close', (code, signal) => resolve({ code, signal })));
     assert.equal(deadlineExit.code, 124, `${deadlineStderr}${deadlineStdout}`);
+    const deadlineRecord = JSON.parse(deadlineStdout.trim().split(/\r?\n/).at(-1));
+
     await new Promise(resolve => setTimeout(resolve, 1_200));
     assert.equal(await access(join(workspace, 'deadline-late')).then(() => true).catch(() => false), false);
     const assertOwnedRuntimeAbsent = (runtimeArgs) => {
@@ -305,6 +312,7 @@ async function fixture(t) {
     sigint.kill('SIGINT');
     const sigintExit = await new Promise(resolve => sigint.once('close', (code, signal) => resolve({ code, signal })));
     assert.equal(sigintExit.code, 130, `${sigintErr}${sigintOut}`); await new Promise(resolve => setTimeout(resolve, 600));
+
     assert.equal(await access(join(workspace, 'sigint-late')).then(() => true).catch(() => false), false);
     const sigintArgs = JSON.parse((await readFile(join(root, 'docker-argv.jsonl'), 'utf8')).trim().split(/\r?\n/).at(-1)); assertOwnedRuntimeAbsent(sigintArgs);
 

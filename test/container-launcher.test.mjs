@@ -315,6 +315,7 @@ test('abort starts exact cleanup while an attach client never closes', async () 
     assert.equal(result.result, 'partial answer');
     assert.equal(result.effect_state, 'uncertain');
     assert.ok(cleanupStarted, 'cleanup did not start while attach remained open');
+    assert.ok(operations.includes('stop'), 'abort must gracefully stop the owned runtime before hard cleanup');
     assert.equal(operations.filter(operation => operation === 'rm').length, 1);
     assert.equal(cleanupCount, 2, 'exact cleanup should issue one kill and one rm');
   } finally { await rm(workspace, { recursive: true, force: true }); }

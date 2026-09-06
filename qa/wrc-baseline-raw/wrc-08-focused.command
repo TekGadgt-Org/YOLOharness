@@ -1,0 +1,1 @@
+YOLO_REAL_DOCKER=1 YOLO_WRC08_ONLY=1 YOLO_EVIDENCE_DIR=qa/wrc-baseline-raw node --test --test-name-pattern='shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network' test/real-docker.test.mjs

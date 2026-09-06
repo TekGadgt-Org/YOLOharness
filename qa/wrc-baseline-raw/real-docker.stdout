@@ -1,58 +1,47 @@
 TAP version 13
-# \#0 building with "rootless" instance using docker driver
-# \#1 [internal] load build definition from Dockerfile
-# \#1 transferring dockerfile: 218B done
-# \#1 DONE 0.0s
-# \#2 [internal] load metadata for docker.io/library/yoloharness-local:0.1.0
-# \#2 DONE 0.0s
-# \#3 [internal] load .dockerignore
-# \#3 transferring context: 102B done
-# \#3 DONE 0.0s
-# \#4 [internal] load build context
-# \#4 transferring context: 1.17kB done
-# \#4 DONE 0.0s
-# \#5 [1/2] FROM docker.io/library/yoloharness-local:0.1.0@sha256:7d40fa5f991fc167366b31f082c1a9ee5c2e3ca779f8d69e1a997fcf78f58f08
-# \#5 resolve docker.io/library/yoloharness-local:0.1.0@sha256:7d40fa5f991fc167366b31f082c1a9ee5c2e3ca779f8d69e1a997fcf78f58f08 0.0s done
-# \#5 CACHED
-# \#6 [2/2] COPY ca.crt /usr/local/share/ca-certificates/yoloharness-test-ca.crt
-# \#6 DONE 0.1s
-# \#7 exporting to image
-# \#7 exporting layers 0.1s done
-# \#7 exporting manifest sha256:1553e13b42de7e7f761c9394b56356642ca1e1c3dde6d7cee857f6d92419d728 0.0s done
-# \#7 exporting config sha256:736dc2ba679a5e95f4da72a6ee29bd55a8038460a33e7a7cca52123c4b98ccf9 0.0s done
-# \#7 exporting attestation manifest sha256:b802567eeac4c7f90ad1509ad31c67b54f1570027f44fc25e746e8547420c2e1 0.0s done
-# \#7 exporting manifest list sha256:274755fdf5dfd7f0d7da25baa0a21614bfbb9a8c2f880b08fe6631987d2225bd
-# \#7 exporting manifest list sha256:274755fdf5dfd7f0d7da25baa0a21614bfbb9a8c2f880b08fe6631987d2225bd 0.0s done
-# \#7 naming to docker.io/library/yoloharness-test-derivative:759739 done
-# \#7 unpacking to docker.io/library/yoloharness-test-derivative:759739 0.0s done
-# \#7 DONE 0.3s
-# WARNING: current commit information was not captured by the build: failed to read current commit information with git rev-parse --is-inside-work-tree
-# Subtest: shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network
+# Subtest: shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network (WRC-08 hardlink rejection and ordinary single-link positive control)
     # Subtest: WRC-08 shipped CLI rejects a hardlink alias before model execution
     ok 1 - WRC-08 shipped CLI rejects a hardlink alias before model execution
       ---
-      duration_ms: 1121.581984
+      duration_ms: 1204.826595
       type: 'test'
       ...
     1..1
-ok 1 - shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network
+ok 1 - shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network (WRC-08 hardlink rejection and ordinary single-link positive control)
   ---
-  duration_ms: 24600.729959
+  duration_ms: 31257.682534
   type: 'test'
   ...
-# touch: cannot touch '/app/forbidden': Read-only file system
 # Subtest: configured final image has read-only root and rootless UID0 workspace write/delete canary
 ok 2 - configured final image has read-only root and rootless UID0 workspace write/delete canary
   ---
-  duration_ms: 454.138017
+  duration_ms: 483.898216
   type: 'test'
   ...
-1..2
-# tests 3
+# Subtest: WRC-11 final image bounded PID and memory enforcement has below-limit controls
+ok 3 - WRC-11 final image bounded PID and memory enforcement has below-limit controls # SKIP
+  ---
+  duration_ms: 0.178408
+  type: 'test'
+  ...
+# Subtest: WRC-07 records safe nested-bind setup denial and ordinary nested-directory control
+ok 4 - WRC-07 records safe nested-bind setup denial and ordinary nested-directory control # SKIP
+  ---
+  duration_ms: 0.191603
+  type: 'test'
+  ...
+# Subtest: WRC-18 shipped setup uses only the package/src build context and emits secret-free layers
+ok 5 - WRC-18 shipped setup uses only the package/src build context and emits secret-free layers # SKIP
+  ---
+  duration_ms: 0.086283
+  type: 'test'
+  ...
+1..5
+# tests 6
 # suites 0
 # pass 3
 # fail 0
 # cancelled 0
-# skipped 0
+# skipped 3
 # todo 0
-# duration_ms 25148.024798
+# duration_ms 31819.561256

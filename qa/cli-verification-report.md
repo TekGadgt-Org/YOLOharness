@@ -1,6 +1,6 @@
-# Independent shipped-CLI verification report
+# Independent shipped-CLI verification report (historical snapshot)
 
-Date: 2026-09-05 UTC
+Date: 2026-09-05 UTC; not the current baseline. Current row evidence is in `qa/real-docker-evidence.md` and `qa/wrc-linux-evidence-index.md`.
 Workspace: `/opt/hermes/workspace/YOLOharness/.worktrees/phase1`
 Host: Linux 6.8.0-138-generic x86_64, kernel 6.8.0-138-generic
 Node: v22.23.2
@@ -62,17 +62,17 @@ WRC row-by-row disposition
 | WRC-16A | PASS scoped | Synthetic access-token bootstrap and one 401 map to `reauth_required`; no refresh token in argv/env/logs and no retry/refresh. |
 | WRC-16B | N/A | Amended contract selects Option A; no relay resource or invocation is applicable. |
 | WRC-17 | PASS offline | Existing auth rotation, atomic persistence, and multi-line event-log reopen tests pass under `npm test`. |
-| WRC-18 | PASS scoped | Derivative build/history/export scan excludes synthetic ignored secrets; allowlisted CA remains usable. |
+| WRC-18 | HISTORICAL PASS scoped only | Historical derivative build/history/export scan excludes synthetic ignored secrets; it did not exercise shipped `yolo setup`. Current shipped-setup evidence is retained separately under `qa/wrc-baseline-raw/wrc-18-setup.*`. |
 | WRC-19 | PASS scoped | Runtime inspection finds no Docker socket/nested daemon exposure; declared provider tool control passes. |
-| WRC-20 | PARTIAL | Linux rootless/image/source linkage and applicable shipped probes pass. Broader aggregation/daemon matrix is not claimed complete. |
+| WRC-20 | HISTORICAL PARTIAL | This historical report predates the reconciled finite applicable Linux aggregation. It remains traceability only; current disposition is recorded in `qa/wrc-linux-evidence-index.md` and is not whole-matrix or release approval. |
 | WRC-21 | DEFERRED | Native macOS Docker Desktop evidence cannot be generated on this Linux host. |
 
 Cleanup and failure notes
 
 - Positive passing gates left no containers matching `label=yoloharness.run` and no networks matching `yoloharness-internal*`.
 - The first real-Docker attempt exposed an intermittent cleanup timing failure: at the deadline assertion, a test-owned runtime was still listed. A subsequent exact-ID cleanup removed only that owned container; the immediate rerun and `npm run test:docker` both passed with empty final inventories.
-- This is not a reproducible acceptance failure across the two subsequent complete gates, but it is a release-confidence residual: the deadline assertion can race the daemon's cleanup. The failing run must not be erased from the QA history merely because the retained raw files were refreshed by later successful runs.
-- WRC-20 remains PARTIAL and WRC-21 remains DEFERRED by contract. No release approval is inferred.
+- This is not a reproducible acceptance failure across the two subsequent complete gates. The retained fact is limited to a test-owned runtime still being observed at the deadline cleanup assertion; the original root cause is unproven and the exact source candidate is irrecoverable. The failing run must not be erased from the QA history merely because the retained raw files were refreshed by later successful runs.
+- Historical WRC-20 disposition was PARTIAL; the current finite applicable Linux aggregation is recorded separately as COMPLETE. WRC-21 remains DEFERRED by contract. No release approval is inferred.
 
 Coverage gaps / environmental blockers
 

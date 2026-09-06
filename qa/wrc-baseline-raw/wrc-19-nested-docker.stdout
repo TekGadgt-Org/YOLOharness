@@ -1,1 +1,1 @@
-{"version":1,"run_id":"run-1788655206003-9a4a4ba2","status":"completed","result":"control-complete","evidence":[{"version":1,"ok":true,"call_id":"nested-docker-call","code":0,"output":""},"provider response received at step 2"],"artifacts":[],"errors":[]}
+{"version":1,"run_id":"run-1788663316660-aadae75e","status":"completed","result":"control-complete","evidence":[{"version":1,"ok":true,"call_id":"nested-docker-call","code":0,"output":"control-complete"},"provider response received at step 2"],"artifacts":[],"errors":[]}

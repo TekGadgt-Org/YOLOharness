@@ -1,1 +1,66 @@
-{"Id":"sha256:7d40fa5f991fc167366b31f082c1a9ee5c2e3ca779f8d69e1a997fcf78f58f08","RepoTags":["yoloharness-local:0.1.0"],"RepoDigests":["yoloharness-local@sha256:7d40fa5f991fc167366b31f082c1a9ee5c2e3ca779f8d69e1a997fcf78f58f08"],"Comment":"buildkit.dockerfile.v0","Created":"2026-09-06T00:31:32.834536047Z","Config":{"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","NODE_VERSION=22.23.2","YARN_VERSION=1.22.22"],"Entrypoint":["node","/app/src/container-runtime.mjs"],"WorkingDir":"/app","Labels":{"org.yoloharness.source-digest":"sha256:fad13e8ac9129acf775b6f5b11624929872d32108be657312cadf204490ca122"}},"Architecture":"amd64","Os":"linux","Size":457056029,"RootFS":{"Type":"layers","Layers":["sha256:1d69a5fd31932841d7825ef4780c06f008eea65aaa9f3110fe09d5832ed5c7d8","sha256:34a6e01aec8a29f1c6b30df6b31b6f9f29acc2ae09836b79ef277eb8c031904b","sha256:4a5c8e86ffd87d3cd001f89d12232d8c05732179df4e4304a64bb9d106d2f5ac","sha256:baa7a8b2ed766b8037ad8abaad028064bcb8f110bd82472d8bb90cce62e07233","sha256:72d01f9cb3224c5bad0234a61ae0213799c495812719428a63c1a32020e9fd67","sha256:324a23b601011792ea5a32d37f44815cfe305adcf6dd8d17223bd654ec1579aa","sha256:62e0e6c2277adf860b946f14f9debc0d26fcc2fde6b467d5210dcecc02950cae","sha256:2effbace9c170404bf7bf6f3cdb33263e37641f71709fdaa80f5813c5166e6c3","sha256:e84a0f98055867d4ca1695d57dce8c4074f6ba4000d37188ac26a346a1204d18"]},"Metadata":{"LastTagTime":"2026-09-06T00:31:38.335423429Z"},"Descriptor":{"mediaType":"application/vnd.oci.image.index.v1+json","digest":"sha256:7d40fa5f991fc167366b31f082c1a9ee5c2e3ca779f8d69e1a997fcf78f58f08","size":856},"Identity":{"Pull":[{"Repository":"docker.io/library/yoloharness-local"}],"Build":[{"Ref":"zb0puc2te8rg8q26ysf8owewp","CreatedAt":"2026-09-06T00:31:40.578145328Z"}]}}
+[
+    {
+        "Id": "sha256:7c881f86ae5cb83d2700128381e7d75a028170bf862858792f3959a573221e2d",
+        "RepoTags": [
+            "yoloharness-local:0.1.0"
+        ],
+        "RepoDigests": [
+            "yoloharness-local@sha256:7c881f86ae5cb83d2700128381e7d75a028170bf862858792f3959a573221e2d"
+        ],
+        "Comment": "buildkit.dockerfile.v0",
+        "Created": "2026-09-06T02:24:58.044537279Z",
+        "Config": {
+            "Env": [
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "NODE_VERSION=22.23.2",
+                "YARN_VERSION=1.22.22"
+            ],
+            "Entrypoint": [
+                "node",
+                "/app/src/container-runtime.mjs"
+            ],
+            "WorkingDir": "/app",
+            "Labels": {
+                "org.yoloharness.source-digest": "sha256:5a9eaf94b2012bdb48251774dcb3397828261b5768ac8879ce778614f26b7a8e"
+            }
+        },
+        "Architecture": "amd64",
+        "Os": "linux",
+        "Size": 457056096,
+        "RootFS": {
+            "Type": "layers",
+            "Layers": [
+                "sha256:1d69a5fd31932841d7825ef4780c06f008eea65aaa9f3110fe09d5832ed5c7d8",
+                "sha256:34a6e01aec8a29f1c6b30df6b31b6f9f29acc2ae09836b79ef277eb8c031904b",
+                "sha256:4a5c8e86ffd87d3cd001f89d12232d8c05732179df4e4304a64bb9d106d2f5ac",
+                "sha256:baa7a8b2ed766b8037ad8abaad028064bcb8f110bd82472d8bb90cce62e07233",
+                "sha256:72d01f9cb3224c5bad0234a61ae0213799c495812719428a63c1a32020e9fd67",
+                "sha256:f101fcb53ae7f321e6be9dccb8a775a0f07bac9f943c8ba3e20c93e365efd8f2",
+                "sha256:577b2736c5b0ae9a6739c0f248a3f5396693640142f03816d1c15fba7a973afb",
+                "sha256:3030adc13705d388137ff39b3fe30b48b899923870f31aa188dbece2e651ed63",
+                "sha256:941382275f22c77a82001d615ff0dcea045693a9ac20942437caae51c82ac03d"
+            ]
+        },
+        "Metadata": {
+            "LastTagTime": "2026-09-06T02:25:03.533671862Z"
+        },
+        "Descriptor": {
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "digest": "sha256:7c881f86ae5cb83d2700128381e7d75a028170bf862858792f3959a573221e2d",
+            "size": 856
+        },
+        "Identity": {
+            "Pull": [
+                {
+                    "Repository": "docker.io/library/yoloharness-local"
+                }
+            ],
+            "Build": [
+                {
+                    "Ref": "zltlv6qvk4kqsd0f5zvhbl5fx",
+                    "CreatedAt": "2026-09-06T02:25:05.394775133Z"
+                }
+            ]
+        }
+    }
+]

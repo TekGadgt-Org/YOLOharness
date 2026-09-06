@@ -106,6 +106,27 @@ test('provider skill_load calls are served from the bounded catalog without exec
   assert.equal(record.result, 'loaded');
   assert.deepEqual(record.evidence[0], { name: 'demo', resource: 'guide.md', content: 'reference' });
 });
+
+test('provider discovers skills from bounded metadata before loading and receives provenance', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'yolo-')); let step = 0;
+  const provider = { async next({ messages, tools }) {
+    assert.deepEqual(tools, [EXEC_TOOL, SKILL_LOAD_TOOL]);
+    step += 1;
+    if (step === 1) {
+      const catalog = messages.find(message => message.type === 'skill_catalog');
+      assert.ok(catalog);
+      assert.match(catalog.content, /demo/);
+      assert.match(catalog.content, /local/);
+      assert.doesNotMatch(catalog.content, /untrusted instructions/);
+      return { tool_call: { call_id: 'discover-1', name: 'skill_load', arguments: JSON.stringify({ name: 'demo' }) } };
+    }
+    return { done: true, result: 'loaded' };
+  } };
+  const record = await runOnce({ prompt: 'discover', workspace, provider, tools: [EXEC_TOOL, SKILL_LOAD_TOOL], skills: { demo: { name: 'demo', source: 'local', description: 'A demo skill', instructions: 'untrusted instructions', resources: {} } } });
+  assert.equal(record.status, 'completed');
+  assert.deepEqual(record.evidence[0], { name: 'demo', source: 'local', instructions: 'untrusted instructions', resources: [] });
+});
+
 test('failed executor receipts stop the run instead of allowing a false provider completion', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'yolo-')); let steps = 0;
   const provider = { async next() { steps += 1; return steps === 1

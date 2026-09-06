@@ -54,6 +54,11 @@ function abortable(promise, signal) {
   });
 }
 
+function skillCatalogMessage(skills) {
+  const catalog = Object.values(skills ?? {}).map(skill => ({ name: skill.name, source: skill.source, description: skill.description ?? null, resources: Object.keys(skill.resources ?? {}) }));
+  return { type: 'skill_catalog', content: JSON.stringify(catalog) };
+}
+
 function awaitExecutorCleanup(promise, signal, graceMs) {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -77,7 +82,7 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
   await mkdir(runDir, { recursive: true, mode: 0o700 });
   const log = new EventLog(join(runDir, 'events.jsonl'));
   const timer = deadlineSignal(signal, minutes * 60_000);
-  const messages = [{ role: 'user', content: prompt }];
+  const messages = [skillCatalogMessage(skills), { role: 'user', content: prompt }];
   const evidence = []; const artifacts = []; const errors = []; let result;
   let status = 'running'; let steps = 0;
   try {

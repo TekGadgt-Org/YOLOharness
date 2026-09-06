@@ -36,6 +36,22 @@ test('skill snapshots reject symlinks and traversal', async () => {
   assert.ok(MAX_SKILL_BUNDLE > 0);
 });
 
+test('frontmatter metadata must match the discovered skill name', async () => {
+  const root = await temp();
+  await mkdir(join(root, 'skills', 'demo'), { recursive: true });
+  await writeFile(join(root, 'skills', 'demo', 'SKILL.md'), '---\nname: other\ndescription: Wrong\n---\nbody');
+  const cwd = await temp();
+  await assert.rejects(() => collectSkills(cwd, join(root, 'skills')), /metadata|match/i);
+});
+
+test('valid frontmatter metadata is exposed in the bounded catalog', async () => {
+  const root = await temp();
+  await mkdir(join(root, 'skills', 'demo'), { recursive: true });
+  await writeFile(join(root, 'skills', 'demo', 'SKILL.md'), '---\nname: demo\ndescription: A demo skill\n---\nbody');
+  const catalog = await collectSkills(await temp(), join(root, 'skills'));
+  assert.deepEqual({ name: catalog.demo.name, description: catalog.demo.description, source: catalog.demo.source }, { name: 'demo', description: 'A demo skill', source: 'shared' });
+});
+
 test('installer preserves config and rejects symlinked destinations', async () => {
   const home = await temp();
   const data = join(home, 'data');
@@ -57,8 +73,8 @@ test('installer preserves config and rejects symlinked destinations', async () =
 
 test('container skill_load progressively loads instructions or one resource', () => {
   const skills = { demo: { instructions: 'do not trust', resources: { 'guide.md': 'data' } } };
-  assert.deepEqual(skill_load(skills, 'demo'), { name: 'demo', instructions: 'do not trust', resources: ['guide.md'] });
-  assert.deepEqual(skill_load(skills, 'demo', 'guide.md'), { name: 'demo', resource: 'guide.md', content: 'data' });
+  assert.deepEqual(skill_load({ demo: { ...skills.demo, source: 'shared' } }, 'demo'), { name: 'demo', source: 'shared', instructions: 'do not trust', resources: ['guide.md'] });
+  assert.deepEqual(skill_load({ demo: { ...skills.demo, source: 'shared' } }, 'demo', 'guide.md'), { name: 'demo', source: 'shared', resource: 'guide.md', content: 'data' });
   assert.throws(() => skill_load(skills, 'demo', '../secret'), /invalid/);
 });
 

@@ -25,6 +25,19 @@ async function regular(path, label) {
   if (info.size > MAX_SKILL_FILE) throw new RangeError(`${label} exceeds size limit`);
   return info;
 }
+function metadata(text, name) {
+  if (!text.startsWith('---\n')) return { name, description: null };
+  const end = text.indexOf('\n---\n', 4);
+  if (end < 0) throw new TypeError(`${name}/SKILL.md has malformed frontmatter`);
+  const values = {};
+  for (const line of text.slice(4, end).split('\n')) {
+    const match = /^(name|description):[ \t]*(.*)$/.exec(line);
+    if (!match || !match[2].trim()) throw new TypeError(`${name}/SKILL.md has invalid frontmatter`);
+    values[match[1]] = match[2].trim();
+  }
+  if (values.name !== name || !values.description || values.description.length > 512) throw new TypeError(`${name}/SKILL.md metadata does not match skill`);
+  return values;
+}
 async function findSkillNames(...roots) {
   const result = new Set();
   for (const root of roots) {
@@ -44,7 +57,8 @@ export async function collectSkills(cwd = process.cwd(), sharedRoot = sharedSkil
     let file; let source;
     try { await regular(localFile, `${name}/SKILL.md`); file = localFile; source = 'local'; }
     catch (error) { if (error.code !== 'ENOENT') throw error; await regular(sharedFile, `${name}/SKILL.md`); file = sharedFile; source = 'shared'; }
-    catalog[name] = { name, source, path: file, size: (await lstat(file)).size };
+    const text = await readFile(file, 'utf8');
+    catalog[name] = { ...metadata(text, name), source, path: file, size: (await lstat(file)).size };
   }
   return catalog;
 }
@@ -71,7 +85,7 @@ export async function loadSkill(entry, { root, cwd = process.cwd(), resource } =
   if (resource !== undefined) {
     if (typeof resource !== 'string' || resource.includes('..') || resource.startsWith('/') || !(resource in files)) throw new TypeError('invalid skill resource');
   }
-  return { name: entry.name, instructions, resource: resource === undefined ? undefined : files[resource], resources: Object.keys(files).filter(key => key !== 'SKILL.md') };
+  return { name: entry.name, source: entry.source, description: entry.description ?? null, instructions, resource: resource === undefined ? undefined : files[resource], resources: Object.keys(files).filter(key => key !== 'SKILL.md') };
 }
 export async function snapshotSkills(cwd = process.cwd(), sharedRoot = sharedSkillsRoot()) {
   const catalog = await collectSkills(cwd, sharedRoot);
@@ -79,7 +93,7 @@ export async function snapshotSkills(cwd = process.cwd(), sharedRoot = sharedSki
   let size = 0;
   for (const [name, entry] of Object.entries(catalog)) {
     const loaded = await loadSkill(entry, { root: sharedRoot, cwd });
-    const value = { name, source: entry.source, instructions: loaded.instructions, resources: {} };
+    const value = { name, source: entry.source, description: entry.description ?? null, instructions: loaded.instructions, resources: {} };
     for (const resource of loaded.resources) {
       const item = await loadSkill(entry, { root: sharedRoot, cwd, resource });
       value.resources[resource] = item.resource;
@@ -96,8 +110,8 @@ export function skill_load(skills, name, resource) {
   safeName(name);
   const skill = skills?.[name];
   if (!skill || typeof skill.instructions !== 'string') throw new TypeError('skill is not in the catalog');
-  if (resource === undefined) return { name, instructions: skill.instructions, resources: Object.keys(skill.resources ?? {}) };
+  if (resource === undefined) return { name, ...(skill.source === undefined ? {} : { source: skill.source }), instructions: skill.instructions, resources: Object.keys(skill.resources ?? {}) };
   if (typeof resource !== 'string' || resource.includes('..') || resource.startsWith('/') || typeof skill.resources?.[resource] !== 'string') throw new TypeError('invalid skill resource');
-  return { name, resource, content: skill.resources[resource] };
+  return { name, ...(skill.source === undefined ? {} : { source: skill.source }), resource, content: skill.resources[resource] };
 }
 export { MAX_SKILL_BUNDLE };

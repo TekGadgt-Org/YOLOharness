@@ -17,7 +17,7 @@ Environment control:
 Current regression command:
 
     $ npm test
-    1..84
+    1..91
     # tests 93
     # pass 87
     # fail 0
@@ -29,14 +29,14 @@ Current shipped rootless gate:
 
     $ YOLO_EVIDENCE_DIR=qa/wrc-baseline-raw YOLO_REAL_DOCKER=1 node --test test/real-docker.test.mjs
     1..2
-    # tests 2
-    # pass 2
+    # tests 3
+    # pass 3
     # fail 0
     # cancelled 0
     # skipped 0
     exit_code=0
 
-The complete real-Docker build output, command, stderr, status, timestamps, image inventories, and daemon inspection are retained under `qa/wrc-baseline-raw/`; summarized evidence is `qa/real-docker-evidence.md`. `git diff --check` exits 0. The pre-existing untracked `qa/run-117-docker-policy-diagnostic.md` is preserved and is not treated as a product finding.
+The complete real-Docker build output, command, stderr, status, timestamps, image inventories, daemon inspection, and row-specific WRC-05/06, WRC-08, WRC-10/11, and WRC-19 stdout/stderr/status artifacts are retained under `qa/wrc-baseline-raw/`; summarized evidence is `qa/real-docker-evidence.md`. `git diff --check` exits 0. The pre-existing untracked `qa/run-117-docker-policy-diagnostic.md` is preserved and is not treated as a product finding.
 
 ## Finding-by-finding reconciliation
 
@@ -50,7 +50,7 @@ The complete real-Docker build output, command, stderr, status, timestamps, imag
 | S3-04: inherited Docker selection variables could alter test/runtime authority | WRC-01, WRC-15, WRC-20 | Already corrected within synthetic gate scope | The shipped child receives a test-owned empty Docker config and verified endpoint while clearing competing selectors; production preserves the invoker's normal context semantics. `test/real-docker.test.mjs` asserts argv/env and `runtime-inspect.stdout` asserts no Docker/token selector variables. Evidence: `qa/run-117-docker-policy-diagnostic.md` (normal-context distinction), `qa/real-docker-evidence.md` lines 25-36. | `shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network`; `ordinary runtime ignores inherited image and test-control environment`; rerun with the hostile selector fixture and valid-context positive control. |
 | OLD-03: prefix/unknown-create ownership could kill or remove a foreign resource | WRC-02, WRC-12, WRC-13, WRC-14, WRC-20 | Already corrected at product/unit and synthetic shipped-control scope | IDs require exactly 64 hex characters; reconciliation re-inspects exact generated name and `yoloharness.run` label before kill/rm. `test/container-launcher.test.mjs`: `launcher rejects a Docker create ID that is not the exact owned name and label`, delayed appearance, stable absence, cancellation, timeout, stdout/stderr overflow, and nonzero-create controls pass. The foreign fixture is a valid 64-hex ID. Full real daemon lifecycle rows remain S3-01 residual, not silently passed. | Run `node --test test/container-launcher.test.mjs`; then the shipped real-Docker gate and exact-owned before/after inventory checks. |
 | OLD-04: shipped fixture/command injection or host model execution | WRC-02, WRC-03, WRC-15, WRC-20 | Already corrected | Shipped parser rejects `--fixture` (`unknown option`, exit 1); no `YOLO_DOCKER_COMMAND` path exists. Current source uses portable `fs.constants.X_OK`; raw shipped negative/control evidence was refreshed under Node 22 in `qa/wrc-baseline-raw/shipped-fixture.*` and `shipped-empty.*`. | `node --test test/integration.test.mjs`; execute `node src/cli.mjs --fixture` from an isolated disposable cwd and assert nonzero/unknown option; run the ordinary shipped positive control. |
-| OLD-05: stable absence/deadline/overflow and late-write behavior not proven through shipped daemon | WRC-12, WRC-13, WRC-14, WRC-20 | Corrected within Linux synthetic shipped scope; broader WRC-20 remains partial | The shipped gate synchronizes on started markers, verifies deadline exit 124 and SIGINT exit 130, proves delayed writes absent, exercises independent stdout-only and stderr-only 1 MiB+ overflow, and verifies exact generated runtime-name absence after each cancellation. Matching short-delay stdout/stderr controls write markers and complete. Abort cleanup now stops the owned container immediately instead of waiting for attach EOF. Evidence: `qa/wrc-baseline-raw/real-docker.*`, `qa/phase1-acceptance-matrix.md`. | `sh qa/capture-wrc-baseline.sh` (which runs `npm run test:docker`) from the repository checkout; retain raw stdout/stderr/status and exact-owned before/after inventories. |
+| OLD-05: stable absence/deadline/overflow and late-write behavior not proven through shipped daemon | WRC-12, WRC-13, WRC-14, WRC-20 | Corrected within Linux synthetic shipped scope; historical race root cause identified | The historical failure was an attach-pipe cleanup race: killing the host attach client did not stop a descendant that retained the pipe, so daemon removal could lag the assertion. `src/container-launcher.mjs` now starts exact owned cleanup immediately on abort, independently of attach EOF; the fresh started-marker deadline/SIGINT/overflow controls pass with stable exact absence. Evidence: `qa/wrc-baseline-raw/real-docker.*`, `qa/phase1-acceptance-matrix.md`. | `sh qa/capture-wrc-baseline.sh` (which runs `npm run test:docker`) from the repository checkout; retain raw stdout/stderr/status and exact-owned before/after inventories. |
 | R121-01: Node 24 shipped import failure caused raw negatives to fail for the wrong reason | shipped CLI availability; affects WRC-03, WRC-15, WRC-20 evidence validity | Already corrected on available runtime; Node 24 environmental gap | `src/cli.mjs` now uses portable `fs.constants.X_OK`. Node 22 shipped CLI negatives and `npm test` pass. Node 24 is not installed in this environment, so no Node 24 claim is made. | Run `node --check src/cli.mjs`; `npm test`; execute shipped negative/control under Node 24 when that runtime is available and record its exact version/output. |
 
 ## WRC row closure checklist

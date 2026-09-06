@@ -4,24 +4,24 @@ This matrix records the whole-runtime migration on the current feature branch. S
 
 ID       Retained evidence                                      Status
 WRC-01   Whole-runtime shipped launcher/image synthetic provider roundtrip  PASS (`shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network`; test-owned Docker config/endpoint, production metadata remains the tagged base image)
-WRC-02   Launcher fixed argv / model text never host-executed   PASS (same shipped subprocess test; provider captured prompt and tool roundtrip)
+WRC-02   Launcher fixed argv / model text never host-executed   PASS (shipped subprocess records hostile prompt/environment as data; Docker argv and runtime env contain no injected selector/secret values)
 WRC-03   Missing Docker/daemon/image fail-closed                PASS scoped shipped preflight probes (`test/shipped-preflight.test.mjs`; unavailable client, unavailable daemon, absent image, and valid preflight control; synthetic fixtures only)
 WRC-04   Exactly one /workspace bind and prohibited targets       PASS scoped shipped runtime inspect (`qa/wrc-baseline-raw/runtime-inspect.stdout`)
-WRC-05   Outside absolute/parent path controls                   PASS shipped launcher boundary (parent/root-relative and outside-resolving symlink negatives; in-workspace positive control)
-WRC-06   Symlink namespace controls                              PASS scoped shipped launcher boundary (outside-resolving symlink negative plus `/etc/hosts` Docker-managed container-target positive control; broader namespace remains bounded)
+WRC-05   Outside absolute/parent path controls                   PASS shipped `boundary-probe` (outside path absent; workspace artifact write/read/delete succeeds)
+WRC-06   Symlink namespace controls                              PASS shipped `boundary-probe` (known `/etc/hosts` container target readable; host-root path absent)
 WRC-07   Nested mount rejection                                  PASS shipped negative/control: newline-cwd is rejected before Docker mount parsing; escaped-newline parser regression PASS
 WRC-08   Multi-link regular-file rejection                       PASS shipped CLI subtest `WRC-08 shipped CLI rejects a hardlink alias before model execution` (negative hardlink alias leaves outside sentinel unchanged and emits no provider request; same-runtime ordinary single-link control completes; unit regression retained)
 WRC-09   Project secret warning / intentional exposure            PASS scoped shipped control (warning emitted; synthetic `.env`, key, and token fixtures readable only through `/workspace`; no confidentiality claim)
-WRC-10   Rootless-only UID0 mapping, read-only root, tmpfs, canary PASS scoped controls (rebuilt image canary and shipped create flags pass; full daemon-observed row remains partial)
-WRC-11   Daemon resource/security inspection                      PASS scoped shipped runtime inspect (`qa/wrc-baseline-raw/runtime-inspect.stdout`)
+WRC-10   Rootless-only UID0 mapping, read-only root, tmpfs, canary PASS shipped runtime inspect plus bounded `resource-probe` control
+WRC-11   Daemon resource/security inspection                      PASS shipped runtime inspect plus bounded `resource-probe` control (no uncontrolled exhaustion)
 WRC-12   Started-child deadline and exact absence                  PASS scoped shipped deadline/no-late-write control (started marker, exit 124, delayed descendant write absent, exact owned runtime inventory empty); broader matrix remains partial
 WRC-13   Real OS SIGINT and exact absence                         PASS scoped shipped subprocess control (SIGINT after started marker exits 130, delayed write absent, exact owned runtime inventory empty)
 WRC-14   Independent stdout/stderr overflow cleanup               PASS scoped shipped subprocess controls (stdout-only and stderr-only 1 MiB overflow exit 124 and exact owned runtime inventory empty; short-delay controls succeed)
-WRC-15   Environment/metadata secret exclusion                    PASS scoped shipped controls (hostile derivative rejected before credentials; runtime argv excludes Docker config/token vars; full daemon env inspection NOT RUN)
+WRC-15   Environment/metadata secret exclusion                    PASS shipped controls (hostile proxy/cloud/SSH/npm/selector classes excluded from runtime argv/env; explicit config control passes)
 WRC-16A  Access-only bootstrap; refresh absent; 401 fail-closed   PASS scoped shipped control (synthetic access token bootstrapped via stdin; captured `Authorization: Bearer` header; exactly one 401 request; refresh token absent from argv/env/logs; provider 401 returns `reauth_required` without retry/refresh)
 WRC-17   Host refresh rotation and atomic persistence             PASS existing auth integration tests
 WRC-18   Allowlisted build context / secret-free layers           PASS scoped derivative probe (credential, `.git`, `.yolo`, nested, and ignored synthetic secrets absent from history/export/config; allowlisted CA artifact remains usable)
-WRC-19   No Docker socket/nested Docker; declared tools            PASS scoped shipped runtime env/mount inspection; declared-tool positive control remains covered by provider roundtrip
+WRC-19   No Docker socket/nested Docker; declared tools            PASS shipped `nested-docker-probe` (socket and Docker/Podman negatives; `sh` declared-tool control)
 WRC-20   Observed Linux rootless evidence tied to image/commit     PARTIAL (Docker 29.8.0 rootless, current configured-image ID/source label, exact cleanup, and applicable shipped probes retained; broader daemon/matrix boundaries remain)
 WRC-21   Native macOS Docker Desktop                              DEFERRED (approved Linux-only milestone; Ryan runs after Linux ships)
 

@@ -1,21 +1,22 @@
 # Real Docker phase1 gate evidence
 
-Run date: 2026-09-05 23:27 UTC
+Run date: 2026-09-06 UTC (fresh rerun after WRC-08 shipped CLI probe)
+Candidate source commit: `cf55c9e`; cross-row index: `qa/wrc-linux-evidence-index.md`
 Docker server: 29.8.0, context `rootless`
 Kernel: `6.8.0-138-generic`; cgroup version 2; rootless security option observed; storage `overlayfs`.
-Base image: `yoloharness-local:0.1.0`, immutable ID `sha256:e243d2c9cb9c123478f68a05a29ee0262d4b9593f35237362185c9a5d862dbee` (RepoTags includes the installation-owned tag).
-Embedded source label: `sha256:c5e880a2223fc885df754789235e404da89bf2a383ee5f22fcc30ad8670f3402`, verified against the current deterministic checkout digest by `yolo setup` and the shipped test; stale labels and untagged substituted images are rejected before credentials/bootstrap.
+Base image: `yoloharness-local:0.1.0`, immutable ID `sha256:dc073cdc43f6967b5d84acc6dc65565493a6e22a56c88f3eca0011312074d261` (RepoTags includes the installation-owned tag).
+Embedded source label: `sha256:89d149d12f9bd411775b1b5dc0bee41cac92f8e11798858a898616bcdbecf027`, verified against the current deterministic checkout digest by the shipped test; stale labels and untagged substituted images are rejected before credentials/bootstrap.
 The shipped-path provider row derives a separate ephemeral CA-only image from that base. Its ID is intentionally ephemeral and is not configured as the production image; the test asserts the base label before deriving it.
 
 Commands:
 
-- `XDG_CONFIG_HOME=<disposable>/config XDG_DATA_HOME=<disposable>/data node src/cli.mjs setup` (exit 0; image `sha256:e243d2c9cb9c123478f68a05a29ee0262d4b9593f35237362185c9a5d862dbee`)
-- `YOLO_EVIDENCE_DIR=qa/wrc-baseline-raw YOLO_REAL_DOCKER=1 node --test test/real-docker.test.mjs` (exit 0)
+- `XDG_CONFIG_HOME=<disposable>/config XDG_DATA_HOME=<disposable>/data node src/cli.mjs setup` (historical setup snapshot; current immutable image is recorded above)
+- `YOLO_EVIDENCE_DIR=qa/wrc-baseline-raw YOLO_REAL_DOCKER=1 node --test test/real-docker.test.mjs` (exit 0; 3 passed including named WRC-08 shipped hardlink negative/control)
 - `npm test`
 
-The current candidate result is 2 passed, 0 failed, 0 skipped, with full suite 86 passed, 0 failed, 6 skipped (92 total). The focused WRC-03 preflight result is 4 passed, 0 failed. Raw commands, stdout, stderr, status, and timestamps are retained under `qa/wrc-baseline-raw/`.
+- The current candidate result is 3 passed, 0 failed, 0 skipped, with full suite 87 passed, 0 failed, 6 skipped (93 total). The focused WRC-03 preflight result is 4 passed, 0 failed. Raw commands, stdout, stderr, and timestamps are retained under `qa/wrc-baseline-raw/`.
 
-After the trusted-client policy was changed to resolve Docker once from the invoker's PATH and preserve normal Docker context/host selection, `yolo setup` rebuilt the image and `npm run test:docker` was rerun. Both shipped subprocess tests passed (2/2): the CA-only internal-network provider roundtrip and the read-only-root/rootless UID0 write/delete canary. The image was rebuilt before execution and its embedded source digest matched the current runtime source.
+After the trusted-client policy was changed to resolve Docker once from the invoker's PATH and preserve normal Docker context/host selection, the current configured image was inspected and `test/real-docker.test.mjs` was rerun. All three current shipped tests passed: the CA-only internal-network provider roundtrip (including the named WRC-08 nested subtest) and the read-only-root/rootless UID0 write/delete canary. The embedded source digest matched the current runtime source.
 
 Exact real-Docker test names:
 
@@ -31,6 +32,7 @@ Exact real-Docker test names:
 - The shipped CLI path selected the configured immutable tagged base image ID from synthetic image metadata. An external test-only wrapper rewrote only the create image/network to the ephemeral CA-only derivative; production image selection therefore remained bound to the verified base. Access/refresh credentials and XDG configuration remained in isolated temporary directories, and the CA/key/server-key were never copied into the derivative. No canonical external provider request was made.
 - The shipped subprocess received a test-owned empty Docker config and the verified local daemon endpoint (`unix:///run/user/999/docker.sock`); it did not consume the invoker's Docker config, credential helpers, or context files.
 - WRC-09 shipped warning/readability control passed: the CLI emitted the intentional-exposure warning and the in-container provider tool read synthetic `.env`, key, and token fixtures through `/workspace` only.
+- WRC-08 shipped hardlink negative/control passed: the nested named subtest created a test-owned hardlink alias from the disposable workspace to an outside sentinel, observed the shipped CLI reject it before provider/model execution with exit 1, verified unchanged sentinel content and unchanged provider request count, then removed the alias and completed an ordinary single-link control through the same shipped runtime.
 - WRC-16A shipped access-only/401 control passed: the synthetic access token was bootstrapped via stdin, refresh material was absent from runtime argv/env/logs, and one provider 401 produced the machine-readable `reauth_required` receipt without in-container refresh.
 - WRC-18 derivative build control passed: test-owned ignored/nested synthetic secrets were absent from image history and `docker save` output; the allowlisted CA artifact remained usable.
 - A hostile XDG metadata fixture pointing at the untagged CA derivative failed with `runtime image is not the installation-owned image tag` while its credential path was intentionally absent; the tagged base metadata then restored the positive control.

@@ -18,34 +18,41 @@ TAP version 13
 # \#6 DONE 0.1s
 # \#7 exporting to image
 # \#7 exporting layers 0.1s done
-# \#7 exporting manifest sha256:d9b149d38e2b28cc8957445e504987401105a571fa3b0834f4af873622ecee97 0.0s done
-# \#7 exporting config sha256:d11a0ea552c614457fde7311f22194cb88140ca2ef5d3d8b30ecfb63ae300ff2 0.0s done
-# \#7 exporting attestation manifest sha256:0c1ba10b0947c6fc71e00829f003005f5b58a188309908e986f0fb71d672a231
-# \#7 exporting attestation manifest sha256:0c1ba10b0947c6fc71e00829f003005f5b58a188309908e986f0fb71d672a231 0.0s done
-# \#7 exporting manifest list sha256:051cd6c3bebd9c507863a5f11ad2799a65c80a2b4d9449b8feb94b3eda3615b9 0.0s done
-# \#7 naming to docker.io/library/yoloharness-test-derivative:700464 done
-# \#7 unpacking to docker.io/library/yoloharness-test-derivative:700464 0.0s done
-# \#7 DONE 0.4s
+# \#7 exporting manifest sha256:2d7685e8c4b485d78d732ec135b46cdb6393ddf2c720f455182c2691a49ecc8b 0.0s done
+# \#7 exporting config sha256:57804b8442946c0e80a05f7cd3125ed3c8c7bc1dc767e05e4a2b4391694643a6 0.0s done
+# \#7 exporting attestation manifest sha256:9451b47e0a8b052429a602d4c63f932878034c05ea3b02fd851ff160fdd50afd 0.0s done
+# \#7 exporting manifest list sha256:ddaef38e8f113bb68a84751925f7e418d10bb3b2a1d212d0b04c1255d7da48c9
+# \#7 exporting manifest list sha256:ddaef38e8f113bb68a84751925f7e418d10bb3b2a1d212d0b04c1255d7da48c9 0.0s done
+# \#7 naming to docker.io/library/yoloharness-test-derivative:717550 done
+# \#7 unpacking to docker.io/library/yoloharness-test-derivative:717550 0.1s done
+# \#7 DONE 0.3s
 # WARNING: current commit information was not captured by the build: failed to read current commit information with git rev-parse --is-inside-work-tree
 # Subtest: shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network
+    # Subtest: WRC-08 shipped CLI rejects a hardlink alias before model execution
+    ok 1 - WRC-08 shipped CLI rejects a hardlink alias before model execution
+      ---
+      duration_ms: 1148.388136
+      type: 'test'
+      ...
+    1..1
 ok 1 - shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network
   ---
-  duration_ms: 20355.643469
+  duration_ms: 21426.914634
   type: 'test'
   ...
 # touch: cannot touch '/app/forbidden': Read-only file system
 # Subtest: configured final image has read-only root and rootless UID0 workspace write/delete canary
 ok 2 - configured final image has read-only root and rootless UID0 workspace write/delete canary
   ---
-  duration_ms: 453.635094
+  duration_ms: 478.827538
   type: 'test'
   ...
 1..2
-# tests 2
+# tests 3
 # suites 0
-# pass 2
+# pass 3
 # fail 0
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 20889.549399
+# duration_ms 21996.88494

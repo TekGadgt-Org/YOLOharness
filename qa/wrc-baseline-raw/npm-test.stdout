@@ -2,434 +2,434 @@ TAP version 13
 # Subtest: bounded step loop stops at the configured budget
 ok 1 - bounded step loop stops at the configured budget
   ---
-  duration_ms: 6.762964
+  duration_ms: 6.279378
   type: 'test'
   ...
 # Subtest: replay recovers state from append-only events
 ok 2 - replay recovers state from append-only events
   ---
-  duration_ms: 3.233557
+  duration_ms: 2.86029
   type: 'test'
   ...
 # Subtest: reopened event log continues a run sequence
 ok 3 - reopened event log continues a run sequence
   ---
-  duration_ms: 1.714068
+  duration_ms: 1.280637
   type: 'test'
   ...
 # Subtest: reopened event log continues each run after a multi-line log
 ok 4 - reopened event log continues each run after a multi-line log
   ---
-  duration_ms: 2.785818
+  duration_ms: 2.090732
   type: 'test'
   ...
 # Subtest: policy denies shell and network effects by default
 ok 5 - policy denies shell and network effects by default
   ---
-  duration_ms: 0.700949
+  duration_ms: 0.700347
   type: 'test'
   ...
 # Subtest: policy permits workspace-scoped file writes only
 ok 6 - policy permits workspace-scoped file writes only
   ---
-  duration_ms: 0.135507
+  duration_ms: 0.138252
   type: 'test'
   ...
 # Subtest: policy rejects parent and root-relative paths outside the workspace
 ok 7 - policy rejects parent and root-relative paths outside the workspace
   ---
-  duration_ms: 0.206181
+  duration_ms: 0.203606
   type: 'test'
   ...
 # Subtest: launcher never starts a container after create is cancelled
 ok 8 - launcher never starts a container after create is cancelled
   ---
-  duration_ms: 1510.411234
+  duration_ms: 1510.820158
   type: 'test'
   ...
 # Subtest: uncertain create cancellation reconciles a delayed daemon appearance with no returned ID
 ok 9 - uncertain create cancellation reconciles a delayed daemon appearance with no returned ID
   ---
-  duration_ms: 1504.636339
+  duration_ms: 1505.383405
   type: 'test'
   ...
 # Subtest: uncertain create timeout reconciles a delayed daemon appearance with no returned ID
 ok 10 - uncertain create timeout reconciles a delayed daemon appearance with no returned ID
   ---
-  duration_ms: 1533.22394
+  duration_ms: 1532.507522
   type: 'test'
   ...
 # Subtest: uncertain create stdout overflow reconciles a delayed daemon appearance with no returned ID
 ok 11 - uncertain create stdout overflow reconciles a delayed daemon appearance with no returned ID
   ---
-  duration_ms: 1505.499688
+  duration_ms: 1505.19451
   type: 'test'
   ...
 # Subtest: uncertain create stderr overflow and nonzero create reconcile delayed daemon appearances with no returned ID
     # Subtest: stderr overflow
     ok 1 - stderr overflow
       ---
-      duration_ms: 1506.391507
+      duration_ms: 1505.076245
       type: 'test'
       ...
     # Subtest: nonzero create
     ok 2 - nonzero create
       ---
-      duration_ms: 1503.544293
+      duration_ms: 1504.40348
       type: 'test'
       ...
     1..2
 ok 12 - uncertain create stderr overflow and nonzero create reconcile delayed daemon appearances with no returned ID
   ---
-  duration_ms: 3010.990859
+  duration_ms: 3010.566744
   type: 'test'
   ...
 # Subtest: production launcher has no caller-selectable network or endpoint policy
 ok 13 - production launcher has no caller-selectable network or endpoint policy
   ---
-  duration_ms: 0.283037
+  duration_ms: 0.284179
   type: 'test'
   ...
 # Subtest: launcher rejects a Docker create ID that is not the exact owned name and label
 ok 14 - launcher rejects a Docker create ID that is not the exact owned name and label
   ---
-  duration_ms: 1506.292478
+  duration_ms: 1505.577804
   type: 'test'
   ...
 # Subtest: uncertain create waits for stable absence and removes a delayed daemon container
 ok 15 - uncertain create waits for stable absence and removes a delayed daemon container
   ---
-  duration_ms: 66.623708
+  duration_ms: 66.359178
   type: 'test'
   ...
 # Subtest: uncertain create proves stable absence after the bounded reconciliation budget
 ok 16 - uncertain create proves stable absence after the bounded reconciliation budget
   ---
-  duration_ms: 2504.426886
+  duration_ms: 2504.618329
   type: 'test'
   ...
 # Subtest: workspace validation rejects nested mount points and multiply-linked files
 ok 17 - workspace validation rejects nested mount points and multiply-linked files
   ---
-  duration_ms: 4.92416
+  duration_ms: 5.340059
   type: 'test'
   ...
 # Subtest: workspace validation allows Docker-managed known container symlink targets
 ok 18 - workspace validation allows Docker-managed known container symlink targets
   ---
-  duration_ms: 2.584808
+  duration_ms: 2.606339
   type: 'test'
   ...
 # Subtest: mountinfo decoding preserves escaped newline targets for nested-mount checks
 ok 19 - mountinfo decoding preserves escaped newline targets for nested-mount checks
   ---
-  duration_ms: 1.628336
+  duration_ms: 1.553644
   type: 'test'
   ...
 # Subtest: runtime source identity is a versioned sha256 digest
 ok 20 - runtime source identity is a versioned sha256 digest
   ---
-  duration_ms: 22.061362
+  duration_ms: 21.189059
   type: 'test'
   ...
 # Subtest: configured image requires the complete versioned source-identity metadata
 ok 21 - configured image requires the complete versioned source-identity metadata
   ---
-  duration_ms: 10.034072
+  duration_ms: 9.139718
   type: 'test'
   ...
 # Subtest: configured image rejects an image whose embedded source digest is stale
 ok 22 - configured image rejects an image whose embedded source digest is stale
   ---
-  duration_ms: 9.923794
+  duration_ms: 9.879519
   type: 'test'
   ...
 # Subtest: launcher uses one absolute deadline and does not create after slow preflight
 ok 23 - launcher uses one absolute deadline and does not create after slow preflight
   ---
-  duration_ms: 11.147963
+  duration_ms: 11.122685
   type: 'test'
   ...
 # Subtest: shipped argument parser rejects the host-runtime fixture option
 ok 24 - shipped argument parser rejects the host-runtime fixture option
   ---
-  duration_ms: 1.337554
+  duration_ms: 1.337384
   type: 'test'
   ...
 # Subtest: model configuration roundtrips in XDG config and preserves exact spelling
 ok 25 - model configuration roundtrips in XDG config and preserves exact spelling
   ---
-  duration_ms: 29.003475
+  duration_ms: 27.822367
   type: 'test'
   ...
 # Subtest: model configuration rejects invalid identifiers and malformed schemas without fallback
 ok 26 - model configuration rejects invalid identifiers and malformed schemas without fallback
   ---
-  duration_ms: 1.334899
+  duration_ms: 1.189163
   type: 'test'
   ...
 # Subtest: config command preserves malformed and unsupported configuration
 ok 27 - config command preserves malformed and unsupported configuration
   ---
-  duration_ms: 2.080102
+  duration_ms: 1.954894
   type: 'test'
   ...
 # Subtest: interactive auth saves the prompted model and retains an existing model on Enter
 ok 28 - interactive auth saves the prompted model and retains an existing model on Enter
   ---
-  duration_ms: 14.285609
+  duration_ms: 14.214563
   type: 'test'
   ...
 # Subtest: noninteractive auth does not read stdin and reports missing model guidance
 ok 29 - noninteractive auth does not read stdin and reports missing model guidance
   ---
-  duration_ms: 0.841044
+  duration_ms: 1.178272
   type: 'test'
   ...
 # Subtest: interactive auth reports unfinished model setup on EOF without erasing prior config
 ok 30 - interactive auth reports unfinished model setup on EOF without erasing prior config
   ---
-  duration_ms: 12.052767
+  duration_ms: 12.36026
   type: 'test'
   ...
 # Subtest: configPath falls back to isolated HOME config when XDG_CONFIG_HOME is absent
 ok 31 - configPath falls back to isolated HOME config when XDG_CONFIG_HOME is absent
   ---
-  duration_ms: 13.158282
+  duration_ms: 13.953118
   type: 'test'
   ...
 # Subtest: empty and relative XDG_CONFIG_HOME use the absolute HOME root for model and credentials
 ok 32 - empty and relative XDG_CONFIG_HOME use the absolute HOME root for model and credentials
   ---
-  duration_ms: 0.999824
+  duration_ms: 1.409661
   type: 'test'
   ...
 # Subtest: missing model command reports actionable guidance without inventing a model
 ok 33 - missing model command reports actionable guidance without inventing a model
   ---
-  duration_ms: 0.909192
+  duration_ms: 1.552061
   type: 'test'
   ...
 # Subtest: interactive auth reports unfinished model setup on SIGINT without erasing prior config
 ok 34 - interactive auth reports unfinished model setup on SIGINT without erasing prior config
   ---
-  duration_ms: 12.687179
+  duration_ms: 13.023246
   type: 'test'
   ...
 # Subtest: shipped default I/O handles PTY SIGINT after auth and preserves config and credentials
 ok 35 - shipped default I/O handles PTY SIGINT after auth and preserves config and credentials
   ---
-  duration_ms: 91.390346
+  duration_ms: 99.042846
   type: 'test'
   ...
 # Subtest: failed model config writes preserve the old file and remove temporary files
 ok 36 - failed model config writes preserve the old file and remove temporary files
   ---
-  duration_ms: 14.346814
+  duration_ms: 12.568205
   type: 'test'
   ...
 # Subtest: config command persists model and runtime override is non-persistent
 ok 37 - config command persists model and runtime override is non-persistent
   ---
-  duration_ms: 13.130429
+  duration_ms: 12.244952
   type: 'test'
   ...
 # Subtest: device auth issues, polls, exchanges, and stores restrictive credentials
 ok 38 - device auth issues, polls, exchanges, and stores restrictive credentials
   ---
-  duration_ms: 60.981257
+  duration_ms: 61.577055
   type: 'test'
   ...
 # Subtest: concurrent refresh clients reread the stored generation before consuming a rotating token
 ok 39 - concurrent refresh clients reread the stored generation before consuming a rotating token
   ---
-  duration_ms: 44.114007
+  duration_ms: 43.261692
   type: 'test'
   ...
 # Subtest: refresh persistence faults are observable and short receipt text is digested
 ok 40 - refresh persistence faults are observable and short receipt text is digested
   ---
-  duration_ms: 14.978261
+  duration_ms: 14.786598
   type: 'test'
   ...
 # Subtest: real AuthStore save surfaces injected temporary-file and directory fsync faults
 ok 41 - real AuthStore save surfaces injected temporary-file and directory fsync faults
   ---
-  duration_ms: 9.245518
+  duration_ms: 9.236401
   type: 'test'
   ...
 # Subtest: two independent node processes consume one rotating refresh token
 ok 42 - two independent node processes consume one rotating refresh token
   ---
-  duration_ms: 140.58509
+  duration_ms: 134.128055
   type: 'test'
   ...
 # Subtest: responses client parses split SSE text and completed tool roundtrip
 ok 43 - responses client parses split SSE text and completed tool roundtrip
   ---
-  duration_ms: 10.973843
+  duration_ms: 11.507214
   type: 'test'
   ...
 # Subtest: local HTTP provider to runtime to executor preserves the exec bridge contract
 ok 44 - local HTTP provider to runtime to executor preserves the exec bridge contract
   ---
-  duration_ms: 44.719234
+  duration_ms: 47.008301
   type: 'test'
   ...
 # Subtest: SSE parser handles BOM, comments, CRLF and multiline data
 ok 45 - SSE parser handles BOM, comments, CRLF and multiline data
   ---
-  duration_ms: 0.442639
+  duration_ms: 0.458589
   type: 'test'
   ...
 # Subtest: docker executor fails closed without docker and never runs host shell
 ok 46 - docker executor fails closed without docker and never runs host shell
   ---
-  duration_ms: 0.329464
+  duration_ms: 0.330065
   type: 'test'
   ...
 # Subtest: docker executor preserves the host Docker context for rootless CLI operations
 ok 47 - docker executor preserves the host Docker context for rootless CLI operations
   ---
-  duration_ms: 2.814653
+  duration_ms: 2.720254
   type: 'test'
   ...
 # Subtest: docker executor requests interactive stdin and handles output overflow without a signal
 ok 48 - docker executor requests interactive stdin and handles output overflow without a signal
   ---
-  duration_ms: 1.698859
+  duration_ms: 1.734967
   type: 'test'
   ...
 # Subtest: docker create cancellation reaps and reconciles the exact generated identity
 ok 49 - docker create cancellation reaps and reconciles the exact generated identity
   ---
-  duration_ms: 1.705411
+  duration_ms: 1.683239
   type: 'test'
   ...
 # Subtest: docker executor rejects pre-aborted calls before creating a container
 ok 50 - docker executor rejects pre-aborted calls before creating a container
   ---
-  duration_ms: 0.404496
+  duration_ms: 0.399457
   type: 'test'
   ...
 # Subtest: docker create timeout waits for delayed child before exact cleanup
 ok 51 - docker create timeout waits for delayed child before exact cleanup
   ---
-  duration_ms: 11.879539
+  duration_ms: 11.913563
   type: 'test'
   ...
 # Subtest: docker create output overflow waits for termination before exact cleanup
 ok 52 - docker create output overflow waits for termination before exact cleanup
   ---
-  duration_ms: 1.596996
+  duration_ms: 1.502356
   type: 'test'
   ...
 # Subtest: docker start cancellation reaps before exact cleanup and reconciliation
 ok 53 - docker start cancellation reaps before exact cleanup and reconciliation
   ---
-  duration_ms: 2.081253
+  duration_ms: 2.076033
   type: 'test'
   ...
 # Subtest: refresh reclaims a lock left by an actually crashed child process
 ok 54 - refresh reclaims a lock left by an actually crashed child process
   ---
-  duration_ms: 90.61691
+  duration_ms: 85.308401
   type: 'test'
   ...
 # Subtest: stale refresh lock with a dead owner is reclaimed through the atomic acquire path
 ok 55 - stale refresh lock with a dead owner is reclaimed through the atomic acquire path
   ---
-  duration_ms: 51.587878
+  duration_ms: 51.216786
   type: 'test'
   ...
 # Subtest: actual child replacement owner survives a stale-lock reclaim interleaving
 ok 56 - actual child replacement owner survives a stale-lock reclaim interleaving
   ---
-  duration_ms: 174.27774
+  duration_ms: 195.934154
   type: 'test'
   ...
 # Subtest: docker reconciliation binds not-found evidence to the exact generated identity
 ok 57 - docker reconciliation binds not-found evidence to the exact generated identity
   ---
-  duration_ms: 8.402291
+  duration_ms: 6.608352
   type: 'test'
   ...
 # Subtest: configured provider refreshes expired credentials before first provider request
 ok 58 - configured provider refreshes expired credentials before first provider request
   ---
-  duration_ms: 1.274125
+  duration_ms: 0.989535
   type: 'test'
   ...
 # Subtest: default CLI fails closed with setup guidance when runtime image is unavailable
 ok 59 - default CLI fails closed with setup guidance when runtime image is unavailable
   ---
-  duration_ms: 25.174982
+  duration_ms: 24.394403
   type: 'test'
   ...
 # Subtest: ordinary runtime ignores inherited image and test-control environment
 ok 60 - ordinary runtime ignores inherited image and test-control environment
   ---
-  duration_ms: 13.874268
+  duration_ms: 20.135613
   type: 'test'
   ...
 # Subtest: runtime rejects unsolicited tool calls without an executor
 ok 61 - runtime rejects unsolicited tool calls without an executor
   ---
-  duration_ms: 2.434763
+  duration_ms: 2.174831
   type: 'test'
   ...
 # Subtest: configured provider retries exactly one actual 401
 ok 62 - configured provider retries exactly one actual 401
   ---
-  duration_ms: 0.803032
+  duration_ms: 0.791239
   type: 'test'
   ...
 # Subtest: responses rejects an oversized event
 ok 63 - responses rejects an oversized event
   ---
-  duration_ms: 8.378455
+  duration_ms: 8.355392
   type: 'test'
   ...
 # Subtest: worker receipts use a closed, typed success/failure schema
 ok 64 - worker receipts use a closed, typed success/failure schema
   ---
-  duration_ms: 0.160144
+  duration_ms: 0.172927
   type: 'test'
   ...
 # Subtest: DockerExecutor accepts the shipped worker validation failure through its receipt parser
 ok 65 - DockerExecutor accepts the shipped worker validation failure through its receipt parser
   ---
-  duration_ms: 34.719757
+  duration_ms: 34.657519
   type: 'test'
   ...
 # Subtest: worker emits paired typed failure receipts for spawn and validation errors
 ok 66 - worker emits paired typed failure receipts for spawn and validation errors
   ---
-  duration_ms: 66.427827
+  duration_ms: 66.350921
   type: 'test'
   ...
 # Subtest: production endpoint rejects query and fragment before credential reads
 ok 67 - production endpoint rejects query and fragment before credential reads
   ---
-  duration_ms: 1.462982
+  duration_ms: 1.522454
   type: 'test'
   ...
 # Subtest: production auth endpoint rejects poisoned token URL before credential reads
 ok 68 - production auth endpoint rejects poisoned token URL before credential reads
   ---
-  duration_ms: 0.530706
+  duration_ms: 0.534072
   type: 'test'
   ...
 # Subtest: production provider uses stored client identity when transient env is absent
 ok 69 - production provider uses stored client identity when transient env is absent
   ---
-  duration_ms: 20.855046
+  duration_ms: 21.50611
   type: 'test'
   ...
 # Subtest: saved model reaches the production configured provider request body without YOLO_MODEL
 ok 70 - saved model reaches the production configured provider request body without YOLO_MODEL
   ---
-  duration_ms: 23.913622
+  duration_ms: 24.126375
   type: 'test'
   ...
 # npm warn gitignore-fallback No .npmignore file found, using .gitignore for file exclusion. Consider creating a .npmignore file to explicitly control published files.
@@ -459,34 +459,34 @@ ok 70 - saved model reaches the production configured provider request body with
 # npm notice 8.2kB qa/maintainability.md
 # npm notice 496B qa/orchestrator-demo.jsonl
 # npm notice 8.1kB qa/performance-plan.md
-# npm notice 8.0kB qa/phase1-acceptance-matrix.md
-# npm notice 5.3kB qa/phase1-consolidated-disposition.md
+# npm notice 8.3kB qa/phase1-acceptance-matrix.md
+# npm notice 5.5kB qa/phase1-consolidated-disposition.md
 # npm notice 3.3kB qa/phase1-security-disposition.md
 # npm notice 1.1kB qa/qa-probe.mjs
 # npm notice 5.4kB qa/qa-report.md
-# npm notice 7.7kB qa/real-docker-evidence.md
-# npm notice 15.5kB qa/remediation-checklist.md
+# npm notice 8.2kB qa/real-docker-evidence.md
+# npm notice 16.2kB qa/remediation-checklist.md
 # npm notice 5.9kB qa/run-117-docker-policy-diagnostic.md
-# npm notice 67B qa/wrc-baseline-raw/docker-images-after.command
+# npm notice 116B qa/wrc-baseline-raw/docker-images-after.command
 # npm notice 73B qa/wrc-baseline-raw/docker-images-after.status
 # npm notice 0B qa/wrc-baseline-raw/docker-images-after.stderr
-# npm notice 288B qa/wrc-baseline-raw/docker-images-after.stdout
-# npm notice 67B qa/wrc-baseline-raw/docker-images-before.command
+# npm notice 0B qa/wrc-baseline-raw/docker-images-after.stdout
+# npm notice 116B qa/wrc-baseline-raw/docker-images-before.command
 # npm notice 73B qa/wrc-baseline-raw/docker-images-before.status
 # npm notice 0B qa/wrc-baseline-raw/docker-images-before.stderr
-# npm notice 288B qa/wrc-baseline-raw/docker-images-before.stdout
+# npm notice 0B qa/wrc-baseline-raw/docker-images-before.stdout
 # npm notice 41B qa/wrc-baseline-raw/docker-info.command
 # npm notice 73B qa/wrc-baseline-raw/docker-info.status
 # npm notice 0B qa/wrc-baseline-raw/docker-info.stderr
 # npm notice 10.7kB qa/wrc-baseline-raw/docker-info.stdout
-# npm notice 46B qa/wrc-baseline-raw/docker-net-after.command
+# npm notice 83B qa/wrc-baseline-raw/docker-net-after.command
 # npm notice 73B qa/wrc-baseline-raw/docker-net-after.status
 # npm notice 0B qa/wrc-baseline-raw/docker-net-after.stderr
-# npm notice 17B qa/wrc-baseline-raw/docker-net-after.stdout
-# npm notice 46B qa/wrc-baseline-raw/docker-net-before.command
+# npm notice 0B qa/wrc-baseline-raw/docker-net-after.stdout
+# npm notice 83B qa/wrc-baseline-raw/docker-net-before.command
 # npm notice 73B qa/wrc-baseline-raw/docker-net-before.status
 # npm notice 0B qa/wrc-baseline-raw/docker-net-before.stderr
-# npm notice 17B qa/wrc-baseline-raw/docker-net-before.stdout
+# npm notice 0B qa/wrc-baseline-raw/docker-net-before.stdout
 # npm notice 121B qa/wrc-baseline-raw/docker-owned-after.command
 # npm notice 73B qa/wrc-baseline-raw/docker-owned-after.status
 # npm notice 0B qa/wrc-baseline-raw/docker-owned-after.stderr
@@ -506,7 +506,7 @@ ok 70 - saved model reaches the production configured provider request body with
 # npm notice 20B qa/wrc-baseline-raw/real-docker.command
 # npm notice 73B qa/wrc-baseline-raw/real-docker.status
 # npm notice 117B qa/wrc-baseline-raw/real-docker.stderr
-# npm notice 2.4kB qa/wrc-baseline-raw/real-docker.stdout
+# npm notice 2.5kB qa/wrc-baseline-raw/real-docker.stdout
 # npm notice 4.9kB qa/wrc-baseline-raw/runtime-inspect.stdout
 # npm notice 217B qa/wrc-baseline-raw/shipped-empty.command
 # npm notice 73B qa/wrc-baseline-raw/shipped-empty.status
@@ -520,7 +520,7 @@ ok 70 - saved model reaches the production configured provider request body with
 # npm notice 12B qa/wrc-baseline-raw/shipped-preflight.status
 # npm notice 0B qa/wrc-baseline-raw/shipped-preflight.stderr
 # npm notice 1.0kB qa/wrc-baseline-raw/shipped-preflight.stdout
-# npm notice 14.0kB qa/wrc-finding-test-inventory.md
+# npm notice 14.4kB qa/wrc-finding-test-inventory.md
 # npm notice 11.6kB research/findings.md
 # npm notice 1.6kB research/sources.json
 # npm notice 15.5kB security/threat-model.md
@@ -539,7 +539,7 @@ ok 70 - saved model reaches the production configured provider request body with
 # npm notice 8.4kB src/runtime.mjs
 # npm notice 16.9kB test/container-launcher.test.mjs
 # npm notice 55.9kB test/integration.test.mjs
-# npm notice 26.1kB test/real-docker.test.mjs
+# npm notice 28.5kB test/real-docker.test.mjs
 # npm notice 7.7kB test/runtime.test.mjs
 # npm notice 5.7kB test/shipped-preflight.test.mjs
 # npm notice 10.8kB ux/interaction-design.md
@@ -548,136 +548,136 @@ ok 70 - saved model reaches the production configured provider request body with
 # npm notice name: yoloharness
 # npm notice version: 0.1.0
 # npm notice filename: yoloharness-0.1.0.tgz
-# npm notice package size: 126.5 kB
-# npm notice unpacked size: 429.1 kB
-# npm notice shasum: 4746a156114428884f63d1feb47988b8e26bd09b
-# npm notice integrity: sha512-ziSsUBZOGMmMH[...]QHFTFiJDZXKfw==
+# npm notice package size: 127.4 kB
+# npm notice unpacked size: 433.0 kB
+# npm notice shasum: 97c23253fd52f4f7ddf170314309a4009d8f3532
+# npm notice integrity: sha512-e/QtvptcWGyaY[...]g8S97wx2mbM3Q==
 # npm notice total files: 108
 # npm notice
 # Subtest: packed package bin runs offline from an extracted artifact
 ok 71 - packed package bin runs offline from an extracted artifact
   ---
-  duration_ms: 460.341982
+  duration_ms: 450.359497
   type: 'test'
   ...
 # Subtest: shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network
 ok 72 - shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network # SKIP
   ---
-  duration_ms: 1.671758
+  duration_ms: 0.631928
   type: 'test'
   ...
 # Subtest: configured final image has read-only root and rootless UID0 workspace write/delete canary
 ok 73 - configured final image has read-only root and rootless UID0 workspace write/delete canary # SKIP
   ---
-  duration_ms: 0.127432
+  duration_ms: 0.092315
   type: 'test'
   ...
 # Subtest: event log writes ordered bounded redacted JSONL and reopens
 ok 74 - event log writes ordered bounded redacted JSONL and reopens
   ---
-  duration_ms: 8.651563
+  duration_ms: 8.622668
   type: 'test'
   ...
 # Subtest: fixture completes with a final version 1 record
 ok 75 - fixture completes with a final version 1 record
   ---
-  duration_ms: 3.216285
+  duration_ms: 3.155008
   type: 'test'
   ...
 # Subtest: deadline cancels cooperative and hanging providers and preserves partial result
 ok 76 - deadline cancels cooperative and hanging providers and preserves partial result
   ---
-  duration_ms: 62.526545
+  duration_ms: 62.493052
   type: 'test'
   ...
 # Subtest: real mode never falls back to fixture
 ok 77 - real mode never falls back to fixture
   ---
-  duration_ms: 0.83417
+  duration_ms: 0.861513
   type: 'test'
   ...
 # Subtest: zero-progress provider is capped
 ok 78 - zero-progress provider is capped
   ---
-  duration_ms: 3.082571
+  duration_ms: 4.09013
   type: 'test'
   ...
 # Subtest: deadline returns from a non-cooperative provider
 ok 79 - deadline returns from a non-cooperative provider
   ---
-  duration_ms: 33.400287
+  duration_ms: 32.659032
   type: 'test'
   ...
 # Subtest: deadline awaits executor cleanup before returning
 ok 80 - deadline awaits executor cleanup before returning
   ---
-  duration_ms: 63.013728
+  duration_ms: 63.356367
   type: 'test'
   ...
 # Subtest: deadline reports unknown cleanup when executor exceeds cleanup grace
 ok 81 - deadline reports unknown cleanup when executor exceeds cleanup grace
   ---
-  duration_ms: 42.19984
+  duration_ms: 44.067088
   type: 'test'
   ...
 # Subtest: invalid inputs are rejected
 ok 82 - invalid inputs are rejected
   ---
-  duration_ms: 1.367922
+  duration_ms: 1.675946
   type: 'test'
   ...
 # Subtest: prototype remains present
 ok 83 - prototype remains present
   ---
-  duration_ms: 1.527054
+  duration_ms: 1.787216
   type: 'test'
   ...
 # Subtest: recoverEvents ignores no events and returns ordered records
 ok 84 - recoverEvents ignores no events and returns ordered records
   ---
-  duration_ms: 3.38306
+  duration_ms: 3.143636
   type: 'test'
   ...
 # Subtest: exec bridge validates the exact registry and passes normalized argv with pairing
 ok 85 - exec bridge validates the exact registry and passes normalized argv with pairing
   ---
-  duration_ms: 4.522279
+  duration_ms: 3.838002
   type: 'test'
   ...
 # Subtest: failed executor receipts stop the run instead of allowing a false provider completion
 ok 86 - failed executor receipts stop the run instead of allowing a false provider completion
   ---
-  duration_ms: 3.783559
+  duration_ms: 3.10846
   type: 'test'
   ...
 # Subtest: workspace validation rejects symlinks that resolve outside the workspace
 ok 87 - workspace validation rejects symlinks that resolve outside the workspace
   ---
-  duration_ms: 8.309195
+  duration_ms: 6.767573
   type: 'test'
   ...
 # Subtest: WRC-03 unavailable Docker executable fails before image or credential handoff
 ok 88 - WRC-03 unavailable Docker executable fails before image or credential handoff # SKIP
   ---
-  duration_ms: 0.978504
+  duration_ms: 0.656283
   type: 'test'
   ...
 # Subtest: WRC-03 unavailable Docker daemon fails after image identity and before credentials
 ok 89 - WRC-03 unavailable Docker daemon fails after image identity and before credentials # SKIP
   ---
-  duration_ms: 0.119907
+  duration_ms: 0.095771
   type: 'test'
   ...
 # Subtest: WRC-03 absent configured image fails before credentials or runtime start
 ok 90 - WRC-03 absent configured image fails before credentials or runtime start # SKIP
   ---
-  duration_ms: 0.118314
+  duration_ms: 0.0791
   type: 'test'
   ...
 # Subtest: WRC-03 valid client daemon and image control reaches credential boundary without handoff
 ok 91 - WRC-03 valid client daemon and image control reaches credential boundary without handoff # SKIP
   ---
-  duration_ms: 0.120218
+  duration_ms: 0.103987
   type: 'test'
   ...
 1..91
@@ -688,4 +688,4 @@ ok 91 - WRC-03 valid client daemon and image control reaches credential boundary
 # cancelled 0
 # skipped 6
 # todo 0
-# duration_ms 13287.5765
+# duration_ms 13286.354174

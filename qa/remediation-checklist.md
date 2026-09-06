@@ -18,11 +18,11 @@ Current regression command:
 
     $ npm test
     1..84
-    # tests 86
-    # pass 84
+    # tests 93
+    # pass 87
     # fail 0
     # cancelled 0
-    # skipped 2
+    # skipped 6
     exit_code=0
 
 Current shipped rootless gate:
@@ -64,7 +64,7 @@ The following is the non-duplicated current row disposition. “Partial/unrun”
 - WRC-05: PASS for the shipped launcher boundary: parent/root-relative policy negatives and outside-resolving symlink negatives now fail closed; nested in-workspace positive controls pass. A broader final-image sentinel probe remains bounded by the Linux bind namespace.
 - WRC-06: PASS for the shipped launcher boundary: outside-resolving symlink negatives now fail closed, the shipped `/etc/hosts` Docker-managed container-target positive control reaches launch, and an in-workspace symlink positive control passes. A broader final-image namespace probe remains bounded by the Linux bind namespace.
 - WRC-07: PASS scoped escaped-newline negative/control; broader unprivileged nested-mount fixture remains bounded by environment.
-- WRC-08: PASS unit only; shipped subprocess coverage may be added with the WRC-03..20 completion work.
+- WRC-08: PASS shipped CLI negative/control. The named nested subtest `WRC-08 shipped CLI rejects a hardlink alias before model execution` creates a test-owned outside sentinel and hardlink alias, invokes `src/cli.mjs` as an OS subprocess from the disposable workspace, observes exit 1 with `workspace contains a multiply-linked file`, verifies the outside sentinel is unchanged and provider request count is unchanged, then removes the alias and runs a same-runtime ordinary single-link positive control to completion. The unit rejection/control remains retained separately.
 - WRC-09: PASS scoped shipped synthetic `.env`/key/token warning/readability control; the provider tool reads only test-owned project fixtures through `/workspace`, and the CLI emits the intentional-exposure warning.
 - WRC-10: PASS scoped rootless read-only-root/write-delete canary; full daemon row remains partial by the matrix's definition.
 - WRC-11: PASS scoped runtime inspection for limits/capabilities/no-new-privileges; daemon-dependent seccomp detail remains bounded.

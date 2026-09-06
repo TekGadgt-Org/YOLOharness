@@ -1,6 +1,6 @@
 # Phase 1 consolidated QA/security disposition
 
-This ledger records the implementation delta on the sole backend writer lane. It does not claim release acceptance for WRC rows that still require daemon inspection or platform-specific execution. The complete original/residual finding map, classification, reproducible environmental evidence, and targeted shipped-CLI remediation checklist is `qa/remediation-checklist.md`.
+This ledger records the implementation delta on the sole backend writer lane. It does not claim release acceptance for WRC rows that still require daemon inspection or platform-specific execution. The fresh cross-row evidence index is `qa/wrc-linux-evidence-index.md`; the complete original/residual finding map, classification, reproducible environmental evidence, and targeted shipped-CLI remediation checklist is `qa/remediation-checklist.md`.
 
 | Finding | WRC rows | Disposition and evidence |
 |---|---|---|
@@ -18,7 +18,7 @@ This ledger records the implementation delta on the sole backend writer lane. It
 
 - `npm test`: 87 passed, 0 failed, 6 skipped (93 tests), captured in `qa/wrc-baseline-raw/`.
 - `node --test test/container-launcher.test.mjs`: 17 passed, 0 failed, 0 skipped.
-- `npm run test:docker`: 2 passed, 0 failed, 0 skipped from a rebuilt rootless image (`sha256:e243d2c9cb9c123478f68a05a29ee0262d4b9593f35237362185c9a5d862dbee`); the shipped provider row includes WRC-09 warning/readability, WRC-16A access/401 fail-closed, WRC-18 history/export scans, lifecycle controls, and short-delay controls; current raw stdout/status is retained in `qa/wrc-baseline-raw/`.
+- `npm run test:docker`: 3 passed, 0 failed, 0 skipped from the current rootless image (`sha256:dc073cdc43f6967b5d84acc6dc65565493a6e22a56c88f3eca0011312074d261`, source label `sha256:89d149d12f9bd411775b1b5dc0bee41cac92f8e11798858a898616bcdbecf027`); the shipped provider row includes the named WRC-08 hardlink negative/control, WRC-09 warning/readability, WRC-16A access/401 fail-closed, WRC-18 history/export scans, lifecycle controls, and short-delay controls; current raw stdout/status is retained in `qa/wrc-baseline-raw/`.
 - `git diff --check`: passed.
 - Rebuild used the inherited `rootless` context (Docker 29.8.0, security option `name=rootless`) without endpoint redirection or real credentials. Exact-owned post-run container inventory is empty; pre-existing images/networks are not claimed as test-owned.
 - Reconciliation rerun on 2026-09-05 at `a01bf98`: `npm test` passed 84/86 (2 skipped), the opt-in shipped real-Docker gate passed 2/2, and `git diff --check` passed. Full command output and per-finding mapping are in `qa/remediation-checklist.md`; this does not close the explicitly partial/unrun rows below.

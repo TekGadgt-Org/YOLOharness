@@ -1,6 +1,6 @@
 # Whole-runtime container acceptance matrix
 
-This matrix records the whole-runtime migration on the current feature branch. Synthetic HOME/XDG/auth/provider fixtures only; no live provider requests or real credentials. Linux evidence below uses the observed rootless Docker daemon; the configured image must be rebuilt with `yolo setup` after source changes. Setup embeds the deterministic runtime source digest in the image label `org.yoloharness.source-digest`; the real-Docker gate verifies that label before using the image.
+This matrix records the whole-runtime migration on the current feature branch. Synthetic HOME/XDG/auth/provider fixtures only; no live provider requests or real credentials. Fresh cross-row evidence is indexed in `qa/wrc-linux-evidence-index.md` at candidate source commit `cf55c9e`. Linux evidence below uses the observed rootless Docker daemon; the configured image must be rebuilt with `yolo setup` after runtime source changes. Setup embeds the deterministic runtime source digest in the image label `org.yoloharness.source-digest`; the real-Docker gate verifies that label before using the image.
 
 ID       Retained evidence                                      Status
 WRC-01   Whole-runtime shipped launcher/image synthetic provider roundtrip  PASS (`shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network`; test-owned Docker config/endpoint, production metadata remains the tagged base image)
@@ -10,7 +10,7 @@ WRC-04   Exactly one /workspace bind and prohibited targets       PASS scoped sh
 WRC-05   Outside absolute/parent path controls                   PASS shipped launcher boundary (parent/root-relative and outside-resolving symlink negatives; in-workspace positive control)
 WRC-06   Symlink namespace controls                              PASS scoped shipped launcher boundary (outside-resolving symlink negative plus `/etc/hosts` Docker-managed container-target positive control; broader namespace remains bounded)
 WRC-07   Nested mount rejection                                  PASS shipped negative/control: newline-cwd is rejected before Docker mount parsing; escaped-newline parser regression PASS
-WRC-08   Multi-link regular-file rejection                       PASS test/container-launcher.test.mjs
+WRC-08   Multi-link regular-file rejection                       PASS shipped CLI subtest `WRC-08 shipped CLI rejects a hardlink alias before model execution` (negative hardlink alias leaves outside sentinel unchanged and emits no provider request; same-runtime ordinary single-link control completes; unit regression retained)
 WRC-09   Project secret warning / intentional exposure            PASS scoped shipped control (warning emitted; synthetic `.env`, key, and token fixtures readable only through `/workspace`; no confidentiality claim)
 WRC-10   Rootless-only UID0 mapping, read-only root, tmpfs, canary PASS scoped controls (rebuilt image canary and shipped create flags pass; full daemon-observed row remains partial)
 WRC-11   Daemon resource/security inspection                      PASS scoped shipped runtime inspect (`qa/wrc-baseline-raw/runtime-inspect.stdout`)
@@ -26,10 +26,10 @@ WRC-20   Observed Linux rootless evidence tied to image/commit     PARTIAL (Dock
 WRC-21   Native macOS Docker Desktop                              DEFERRED (approved Linux-only milestone; Ryan runs after Linux ships)
 
 Offline verification
-- npm test: PASS (86 pass, 6 skipped; 92 total)
+- npm test: PASS (87 pass, 6 skipped; 93 total)
 - `YOLO_REAL_DOCKER=1 node --test test/shipped-preflight.test.mjs`: PASS (4 pass; raw command/output/status in `qa/wrc-baseline-raw/shipped-preflight.*`; disposable wrapper fixtures, no runtime container or credential handoff)
 - node --test test/container-launcher.test.mjs: PASS (17 pass)
-- `YOLO_EVIDENCE_DIR=qa/wrc-baseline-raw YOLO_REAL_DOCKER=1 node --test test/real-docker.test.mjs`: PASS (2 pass, 0 fail; includes WRC-09 warning/readability, WRC-16A synthetic 401/reauth-required and token non-disclosure, WRC-18 derivative history/export scan, plus retained lifecycle, inspection, provenance, and cleanup controls)
+- `YOLO_EVIDENCE_DIR=qa/wrc-baseline-raw YOLO_REAL_DOCKER=1 node --test test/real-docker.test.mjs`: PASS (3 pass, 0 fail, 0 skipped; includes nested WRC-08 shipped hardlink negative/control, WRC-09 warning/readability, WRC-16A synthetic 401/reauth-required and token non-disclosure, WRC-18 derivative history/export scan, plus retained lifecycle, inspection, provenance, and cleanup controls)
 - node --check src/cli.mjs src/container-launcher.mjs: PASS
 - git diff --check: PASS
 

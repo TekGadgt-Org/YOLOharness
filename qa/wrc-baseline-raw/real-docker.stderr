@@ -1,2 +1,0 @@
-npm notice run yoloharness@0.1.0 test:docker
-npm notice run YOLO_REAL_DOCKER=1 node --test test/real-docker.test.mjs

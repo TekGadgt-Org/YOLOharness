@@ -1,0 +1,49 @@
+{"at":"2026-09-06T02:20:56.027Z","kind":"fs.promises.readFile","args":["/tmp/yoloharness-real-hZrr2w/home/.config/yoloharness/config.json"]}
+{"at":"2026-09-06T02:20:56.028Z","kind":"fs.promises.access","args":["/tmp/yoloharness-real-hZrr2w/bin/docker"]}
+{"at":"2026-09-06T02:20:56.028Z","kind":"fs.promises.readFile","args":["/tmp/yoloharness-real-hZrr2w/home/.local/share/yoloharness/image.json"]}
+{"at":"2026-09-06T02:20:56.029Z","kind":"fs.promises.readFile","args":["file:///opt/hermes/workspace/YOLOharness/.worktrees/phase1/package.json"]}
+{"at":"2026-09-06T02:20:56.029Z","kind":"fs.promises.readdir","args":["file:///opt/hermes/workspace/YOLOharness/.worktrees/phase1/src/"]}
+{"at":"2026-09-06T02:20:56.037Z","kind":"fs.promises.readFile","args":["file:///opt/hermes/workspace/YOLOharness/.worktrees/phase1/assets/runtime/Dockerfile"]}
+{"at":"2026-09-06T02:20:56.037Z","kind":"fs.promises.readFile","args":["file:///opt/hermes/workspace/YOLOharness/.worktrees/phase1/package.json"]}
+{"at":"2026-09-06T02:20:56.037Z","kind":"fs.promises.readFile","args":["file:///opt/hermes/workspace/YOLOharness/.worktrees/phase1/src/auth.mjs"]}
+{"at":"2026-09-06T02:20:56.037Z","kind":"fs.promises.readFile","args":["file:///opt/hermes/workspace/YOLOharness/.worktrees/phase1/src/bootstrap.mjs"]}
+{"at":"2026-09-06T02:20:56.038Z","kind":"fs.promises.readFile","args":["file:///opt/hermes/workspace/YOLOharness/.worktrees/phase1/src/cli.mjs"]}
+{"at":"2026-09-06T02:20:56.038Z","kind":"fs.promises.readFile","args":["file:///opt/hermes/workspace/YOLOharness/.worktrees/phase1/src/config.mjs"]}
+{"at":"2026-09-06T02:20:56.038Z","kind":"fs.promises.readFile","args":["file:///opt/hermes/workspace/YOLOharness/.worktrees/phase1/src/container-executor.mjs"]}
+{"at":"2026-09-06T02:20:56.038Z","kind":"fs.promises.readFile","args":["file:///opt/hermes/workspace/YOLOharness/.worktrees/phase1/src/container-launcher.mjs"]}
+{"at":"2026-09-06T02:20:56.038Z","kind":"fs.promises.readFile","args":["file:///opt/hermes/workspace/YOLOharness/.worktrees/phase1/src/container-runtime.mjs"]}
+{"at":"2026-09-06T02:20:56.039Z","kind":"fs.promises.readFile","args":["file:///opt/hermes/workspace/YOLOharness/.worktrees/phase1/src/docker-executor.mjs"]}
+{"at":"2026-09-06T02:20:56.039Z","kind":"fs.promises.readFile","args":["file:///opt/hermes/workspace/YOLOharness/.worktrees/phase1/src/events.mjs"]}
+{"at":"2026-09-06T02:20:56.039Z","kind":"fs.promises.readFile","args":["file:///opt/hermes/workspace/YOLOharness/.worktrees/phase1/src/index.mjs"]}
+{"at":"2026-09-06T02:20:56.040Z","kind":"fs.promises.readFile","args":["file:///opt/hermes/workspace/YOLOharness/.worktrees/phase1/src/provider.mjs"]}
+{"at":"2026-09-06T02:20:56.040Z","kind":"fs.promises.readFile","args":["file:///opt/hermes/workspace/YOLOharness/.worktrees/phase1/src/responses.mjs"]}
+{"at":"2026-09-06T02:20:56.040Z","kind":"fs.promises.readFile","args":["file:///opt/hermes/workspace/YOLOharness/.worktrees/phase1/src/runtime.mjs"]}
+{"at":"2026-09-06T02:20:56.064Z","kind":"child_process.spawnSync","args":["/usr/bin/docker","image,inspect,--format,{{json .}},sha256:b4bcf09d6a1a5dfc7e929076a9ca252a48c51333a807064b8de53b02788bb6c5"]}
+{"at":"2026-09-06T02:20:56.107Z","kind":"fs.promises.readFile","args":["/tmp/yoloharness-real-hZrr2w/home/.config/yoloharness/credentials.json"]}
+{"at":"2026-09-06T02:20:56.107Z","kind":"fs.promises.realpath","args":["/tmp/yoloharness-real-hZrr2w/workspace"]}
+{"at":"2026-09-06T02:20:56.108Z","kind":"fs.promises.lstat","args":["/tmp/yoloharness-real-hZrr2w/workspace"]}
+{"at":"2026-09-06T02:20:56.108Z","kind":"fs.promises.readFile","args":["/proc/self/mountinfo"]}
+{"at":"2026-09-06T02:20:56.108Z","kind":"fs.promises.readdir","args":["/tmp/yoloharness-real-hZrr2w/workspace"]}
+{"at":"2026-09-06T02:20:56.108Z","kind":"fs.promises.lstat","args":["/tmp/yoloharness-real-hZrr2w/workspace/.env"]}
+{"at":"2026-09-06T02:20:56.108Z","kind":"fs.promises.lstat","args":["/tmp/yoloharness-real-hZrr2w/workspace/container-known-target"]}
+{"at":"2026-09-06T02:20:56.108Z","kind":"fs.promises.readlink","args":["/tmp/yoloharness-real-hZrr2w/workspace/container-known-target"]}
+{"at":"2026-09-06T02:20:56.108Z","kind":"fs.promises.lstat","args":["/tmp/yoloharness-real-hZrr2w/workspace/fixture.key"]}
+{"at":"2026-09-06T02:20:56.108Z","kind":"fs.promises.lstat","args":["/tmp/yoloharness-real-hZrr2w/workspace/fixture.token"]}
+{"at":"2026-09-06T02:20:56.109Z","kind":"child_process.spawn","args":["/tmp/yoloharness-real-hZrr2w/bin/docker","info,--format,{{json .SecurityOptions}}"]}
+{"at":"2026-09-06T02:20:56.132Z","kind":"child_process.spawnSync","args":["/usr/bin/docker","info,--format,{{json .SecurityOptions}}"]}
+{"at":"2026-09-06T02:20:56.182Z","kind":"child_process.spawn","args":["/tmp/yoloharness-real-hZrr2w/bin/docker","create,--pull=never,--name,yoloharness-7def045a-a146-4835-8f19-3a7e2d01d5a2,--label,yoloharness.run=4b0d10dc-a023-4aa0-a1fe-47ebe9713671,--init,-i,--user,0:0,--network,bridge,--read-only,--cap-drop=ALL,--security-opt,no-new-privileges,--pids-limit,128,--memory,512m,--cpus,1,--tmpfs,/tmp:rw,noexec,nosuid,size=64m,--tmpfs,/home/worker:rw,noexec,nosuid,size=16m,--mount,type=bind,src=/tmp/yoloharness-real-hZrr2w/workspace,dst=/workspace,readonly=false,bind-propagation=rprivate,--workdir,/workspace,--env,HOME=/home/worker,--env,XDG_CONFIG_HOME=/home/worker/.config,--env,XDG_DATA_HOME=/home/worker/.local/share,sha256:b4bcf09d6a1a5dfc7e929076a9ca252a48c51333a807064b8de53b02788bb6c5,node,/app/src/container-runtime.mjs"]}
+{"at":"2026-09-06T02:20:56.205Z","kind":"child_process.spawnSync","args":["/usr/bin/docker","create,--pull=never,--name,yoloharness-7def045a-a146-4835-8f19-3a7e2d01d5a2,--label,yoloharness.run=4b0d10dc-a023-4aa0-a1fe-47ebe9713671,--init,-i,--user,0:0,--network,yoloharness-internal-1073038,--read-only,--cap-drop=ALL,--security-opt,no-new-privileges,--pids-limit,128,--memory,512m,--cpus,1,--tmpfs,/tmp:rw,noexec,nosuid,size=64m,--tmpfs,/home/worker:rw,noexec,nosuid,size=16m,--mount,type=bind,src=/tmp/yoloharness-real-hZrr2w/workspace,dst=/workspace,readonly=false,bind-propagation=rprivate,--workdir,/workspace,--env,HOME=/home/worker,--env,XDG_CONFIG_HOME=/home/worker/.config,--env,XDG_DATA_HOME=/home/worker/.local/share,sha256:93d29d38d45868b11fd1cf693bec562e4f953ad9fc0da7becc26a6f42f69a86a,node,/app/src/container-runtime.mjs"]}
+{"at":"2026-09-06T02:20:56.314Z","kind":"child_process.spawnSync","args":["/usr/bin/docker","inspect,1f26ded9d3d7ffa0194ddb4f4ac48fd506030f30cb733dea5eba3af4d277dce1"]}
+{"at":"2026-09-06T02:20:56.340Z","kind":"child_process.spawn","args":["/tmp/yoloharness-real-hZrr2w/bin/docker","inspect,--format,{{json .}},1f26ded9d3d7ffa0194ddb4f4ac48fd506030f30cb733dea5eba3af4d277dce1"]}
+{"at":"2026-09-06T02:20:56.365Z","kind":"child_process.spawnSync","args":["/usr/bin/docker","inspect,--format,{{json .}},1f26ded9d3d7ffa0194ddb4f4ac48fd506030f30cb733dea5eba3af4d277dce1"]}
+{"at":"2026-09-06T02:20:56.390Z","kind":"child_process.spawn","args":["/tmp/yoloharness-real-hZrr2w/bin/docker","start,--attach,--interactive,1f26ded9d3d7ffa0194ddb4f4ac48fd506030f30cb733dea5eba3af4d277dce1"]}
+{"at":"2026-09-06T02:20:56.414Z","kind":"child_process.spawnSync","args":["/usr/bin/docker","start,--attach,--interactive,1f26ded9d3d7ffa0194ddb4f4ac48fd506030f30cb733dea5eba3af4d277dce1"]}
+{"at":"2026-09-06T02:20:56.796Z","kind":"child_process.spawnSync","args":["/usr/bin/docker","inspect,1f26ded9d3d7ffa0194ddb4f4ac48fd506030f30cb733dea5eba3af4d277dce1"]}
+{"at":"2026-09-06T02:20:56.821Z","kind":"child_process.spawn","args":["/tmp/yoloharness-real-hZrr2w/bin/docker","inspect,--format,{{json .}},1f26ded9d3d7ffa0194ddb4f4ac48fd506030f30cb733dea5eba3af4d277dce1"]}
+{"at":"2026-09-06T02:20:56.844Z","kind":"child_process.spawnSync","args":["/usr/bin/docker","inspect,--format,{{json .}},1f26ded9d3d7ffa0194ddb4f4ac48fd506030f30cb733dea5eba3af4d277dce1"]}
+{"at":"2026-09-06T02:20:56.870Z","kind":"child_process.spawn","args":["/tmp/yoloharness-real-hZrr2w/bin/docker","kill,--signal,KILL,1f26ded9d3d7ffa0194ddb4f4ac48fd506030f30cb733dea5eba3af4d277dce1"]}
+{"at":"2026-09-06T02:20:56.892Z","kind":"child_process.spawnSync","args":["/usr/bin/docker","kill,--signal,KILL,1f26ded9d3d7ffa0194ddb4f4ac48fd506030f30cb733dea5eba3af4d277dce1"]}
+{"at":"2026-09-06T02:20:56.915Z","kind":"child_process.spawn","args":["/tmp/yoloharness-real-hZrr2w/bin/docker","rm,--force,1f26ded9d3d7ffa0194ddb4f4ac48fd506030f30cb733dea5eba3af4d277dce1"]}
+{"at":"2026-09-06T02:20:56.939Z","kind":"child_process.spawnSync","args":["/usr/bin/docker","rm,--force,1f26ded9d3d7ffa0194ddb4f4ac48fd506030f30cb733dea5eba3af4d277dce1"]}
+{"at":"2026-09-06T02:20:57.006Z","kind":"child_process.spawn","args":["/tmp/yoloharness-real-hZrr2w/bin/docker","inspect,1f26ded9d3d7ffa0194ddb4f4ac48fd506030f30cb733dea5eba3af4d277dce1"]}
+{"at":"2026-09-06T02:20:57.031Z","kind":"child_process.spawnSync","args":["/usr/bin/docker","inspect,1f26ded9d3d7ffa0194ddb4f4ac48fd506030f30cb733dea5eba3af4d277dce1"]}

@@ -108,6 +108,7 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
   } catch (error) {
     if (timer.signal.aborted) {
       status = signal.aborted ? 'interrupted' : 'deadline';
+      if (typeof error?.partialResult === 'string') result = error.partialResult;
       errors.push(error?.message === 'cleanup_unknown' ? 'cleanup_unknown: executor cleanup grace expired' : status === 'deadline' ? 'deadline exceeded; partial result may be incomplete' : 'interrupted by SIGINT');
     }
     else { status = 'failed'; errors.push(error?.code === 'reauth_required' ? 'reauth_required' : error instanceof Error ? error.message : String(error)); }

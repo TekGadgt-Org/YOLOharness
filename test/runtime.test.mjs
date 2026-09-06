@@ -26,9 +26,9 @@ test('fixture completes with a final version 1 record', async () => {
 
 test('deadline cancels cooperative and hanging providers and preserves partial result', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'yolo-'));
-  const provider = { async next({ signal }) { await new Promise((resolve, reject) => { signal.addEventListener('abort', () => reject(signal.reason), { once: true }); }); } };
+  const provider = { async next({ signal }) { await new Promise((resolve, reject) => { signal.addEventListener('abort', () => reject(Object.assign(signal.reason, { partialResult: 'partial streamed answer' })), { once: true }); }); } };
   const record = await runOnce({ prompt: 'slow', minutes: 0.001, workspace, provider });
-  assert.equal(record.status, 'deadline'); assert.ok(record.errors.length);
+  assert.equal(record.status, 'deadline'); assert.equal(record.result, 'partial streamed answer'); assert.ok(record.errors.length);
 });
 
 test('real mode never falls back to fixture', async () => {

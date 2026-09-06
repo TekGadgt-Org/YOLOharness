@@ -1,6 +1,6 @@
-# Independent shipped-CLI verification report
+# Independent shipped-CLI verification report (historical snapshot)
 
-Date: 2026-09-05 UTC
+Date: 2026-09-05 UTC; not the current baseline. Current row evidence is in `qa/real-docker-evidence.md` and `qa/wrc-linux-evidence-index.md`.
 Workspace: `/opt/hermes/workspace/YOLOharness/.worktrees/phase1`
 Host: Linux 6.8.0-138-generic x86_64, kernel 6.8.0-138-generic
 Node: v22.23.2
@@ -62,7 +62,7 @@ WRC row-by-row disposition
 | WRC-16A | PASS scoped | Synthetic access-token bootstrap and one 401 map to `reauth_required`; no refresh token in argv/env/logs and no retry/refresh. |
 | WRC-16B | N/A | Amended contract selects Option A; no relay resource or invocation is applicable. |
 | WRC-17 | PASS offline | Existing auth rotation, atomic persistence, and multi-line event-log reopen tests pass under `npm test`. |
-| WRC-18 | PASS scoped | Derivative build/history/export scan excludes synthetic ignored secrets; allowlisted CA remains usable. |
+| WRC-18 | HISTORICAL PASS scoped only | Historical derivative build/history/export scan excludes synthetic ignored secrets; it did not exercise shipped `yolo setup`. Current shipped-setup evidence is retained separately under `qa/wrc-baseline-raw/wrc-18-setup.*`. |
 | WRC-19 | PASS scoped | Runtime inspection finds no Docker socket/nested daemon exposure; declared provider tool control passes. |
 | WRC-20 | PARTIAL | Linux rootless/image/source linkage and applicable shipped probes pass. Broader aggregation/daemon matrix is not claimed complete. |
 | WRC-21 | DEFERRED | Native macOS Docker Desktop evidence cannot be generated on this Linux host. |

@@ -16,12 +16,12 @@ This ledger records the implementation delta on the sole backend writer lane. It
 
 ## Verification
 
-- `npm test`: 88 passed, 0 failed, 6 skipped (94 tests), captured in `qa/wrc-baseline-raw/`.
+- `npm test`: 88 passed, 0 failed, 9 skipped (97 tests), captured in `qa/wrc-baseline-raw/`.
 - `node --test test/container-launcher.test.mjs`: 19 passed, 0 failed, 0 skipped.
 - `npm run test:docker`: 3 passed, 0 failed, 0 skipped from the current rootless image (`sha256:7d40fa5f991fc167366b31f082c1a9ee5c2e3ca779f8d69e1a997fcf78f58f08`, source label `sha256:fad13e8ac9129acf775b6f5b11624929872d32108be657312cadf204490ca122`); the shipped provider row includes named WRC-05/06 boundary, WRC-08 hardlink negative/control, WRC-10/11 resource, WRC-19 nested-Docker, WRC-09 warning/readability, WRC-16A access/401 fail-closed, WRC-18 history/export scans, lifecycle controls, and short-delay controls; current raw stdout/status is retained in `qa/wrc-baseline-raw/`.
 - `git diff --check`: passed.
 - Rebuild used the inherited `rootless` context (Docker 29.8.0, security option `name=rootless`) without endpoint redirection or real credentials. Exact-owned post-run container inventory is empty; pre-existing images/networks are not claimed as test-owned.
-- Reconciliation rerun on 2026-09-05 at `a01bf98`: `npm test` passed 84/86 (2 skipped), the opt-in shipped real-Docker gate passed 2/2, and `git diff --check` passed. Full command output and per-finding mapping are in `qa/remediation-checklist.md`; this does not close the explicitly partial/unrun rows below.
+- Historical reconciliation at `a01bf98` remains traceability only; it reported 84 passed/86 total and is not the current baseline. The current checkout reports 88 passed/97 total (9 skipped); current row-specific evidence is listed below.
 
 ## Residual acceptance blockers
 

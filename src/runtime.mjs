@@ -56,7 +56,7 @@ function abortable(promise, signal) {
 
 function skillCatalogMessage(skills) {
   const catalog = Object.values(skills ?? {}).map(skill => ({ name: skill.name, source: skill.source, description: skill.description ?? null, resources: Object.keys(skill.resources ?? {}) }));
-  return { type: 'skill_catalog', content: JSON.stringify(catalog) };
+  return { role: 'developer', content: JSON.stringify(catalog) };
 }
 
 function awaitExecutorCleanup(promise, signal, graceMs) {

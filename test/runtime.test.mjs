@@ -113,7 +113,7 @@ test('provider discovers skills from bounded metadata before loading and receive
     assert.deepEqual(tools, [EXEC_TOOL, SKILL_LOAD_TOOL]);
     step += 1;
     if (step === 1) {
-      const catalog = messages.find(message => message.type === 'skill_catalog');
+      const catalog = messages.find(message => message.role === 'developer');
       assert.ok(catalog);
       assert.match(catalog.content, /demo/);
       assert.match(catalog.content, /local/);

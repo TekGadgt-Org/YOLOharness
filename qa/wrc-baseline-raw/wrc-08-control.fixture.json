@@ -1,0 +1,20 @@
+{
+  "cwd": "/tmp/yoloharness-real-JiUETG/workspace",
+  "layout": {
+    "workspace": "/tmp/yoloharness-real-JiUETG/workspace",
+    "ordinaryFile": "/tmp/yoloharness-real-JiUETG/workspace/single-link-control.txt",
+    "outsideSentinel": "/tmp/yoloharness-real-JiUETG/outside-hardlink-sentinel.txt"
+  },
+  "sentinelBefore": {
+    "path": "/tmp/yoloharness-real-JiUETG/outside-hardlink-sentinel.txt",
+    "bytes": 25,
+    "sha256": "c0bd53461d392a065e83022e71b7fbbada67f4132e4d378e789f7eb86af1bea2",
+    "nlink": 1
+  },
+  "sentinelAfter": {
+    "path": "/tmp/yoloharness-real-JiUETG/outside-hardlink-sentinel.txt",
+    "bytes": 25,
+    "sha256": "c0bd53461d392a065e83022e71b7fbbada67f4132e4d378e789f7eb86af1bea2",
+    "nlink": 1
+  }
+}

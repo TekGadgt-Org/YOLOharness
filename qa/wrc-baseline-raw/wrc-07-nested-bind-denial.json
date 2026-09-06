@@ -1,0 +1,6 @@
+{
+  "command": "unshare --user --map-root-user --mount -- mount --bind <workspace> <nested-target>",
+  "status": 1,
+  "output": "unshare: write failed /proc/self/uid_map: Operation not permitted\n",
+  "control": "ordinary nested directory read succeeded"
+}

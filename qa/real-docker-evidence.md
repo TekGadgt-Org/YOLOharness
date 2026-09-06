@@ -1,11 +1,11 @@
 # Real Docker phase1 gate evidence
 
 Run date: 2026-09-06 UTC (fresh rerun after WRC-08 shipped CLI probe)
-Candidate source checkout: HEAD `3f2ffaa85aae689bf568765cfb463fc273caa82a` with retained working-tree evidence; cross-row index: `qa/wrc-linux-evidence-index.md`
+Candidate source checkout: HEAD `daa9f90a9a8969c504aee1f64833df7926ec4c6c` with retained working-tree evidence; cross-row index: `qa/wrc-linux-evidence-index.md`
 Docker server: 29.8.0, context `rootless`
 Kernel: `6.8.0-138-generic`; cgroup version 2; rootless security option observed; storage `overlayfs`.
-Base image: `yoloharness-local:0.1.0`, immutable ID `sha256:7d40fa5f991fc167366b31f082c1a9ee5c2e3ca779f8d69e1a997fcf78f58f08` (RepoTags includes the installation-owned tag).
-Embedded source label: `sha256:fad13e8ac9129acf775b6f5b11624929872d32108be657312cadf204490ca122`, verified against the current deterministic checkout digest by the shipped test; stale labels and untagged substituted images are rejected before credentials/bootstrap.
+Base image: `yoloharness-local:0.1.0`, immutable ID `sha256:7c881f86ae5cb83d2700128381e7d75a028170bf862858792f3959a573221e2d` (RepoTags includes the installation-owned tag).
+Embedded source label: `sha256:5a9eaf94b2012bdb48251774dcb3397828261b5768ac8879ce778614f26b7a8e`, verified against the current deterministic checkout digest by the shipped test; stale labels and untagged substituted images are rejected before credentials/bootstrap.
 The shipped-path provider row derives a separate ephemeral CA-only image from that base. Its ID is intentionally ephemeral and is not configured as the production image; the test asserts the base label before deriving it.
 
 Commands:

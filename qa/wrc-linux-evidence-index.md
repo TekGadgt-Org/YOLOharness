@@ -1,9 +1,9 @@
 # Fresh Linux WRC evidence index
 
-Candidate source checkout: HEAD `3f2ffaa85aae689bf568765cfb463fc273caa82a` (working tree includes the retained WRC evidence updates)
-Runtime source digest: `sha256:fad13e8ac9129acf775b6f5b11624929872d32108be657312cadf204490ca122`
+Candidate source checkout: HEAD `daa9f90a9a8969c504aee1f64833df7926ec4c6c` (working tree includes the retained WRC evidence updates)
+Runtime source digest: `sha256:5a9eaf94b2012bdb48251774dcb3397828261b5768ac8879ce778614f26b7a8e`
 Production image: `yoloharness-local:0.1.0`
-Production image ID: `sha256:7d40fa5f991fc167366b31f082c1a9ee5c2e3ca779f8d69e1a997fcf78f58f08`
+Production image ID: `sha256:7c881f86ae5cb83d2700128381e7d75a028170bf862858792f3959a573221e2d`
 Host: Linux `6.8.0-138-generic x86_64`, Node `v22.23.2`
 Daemon: rootless Docker `29.8.0`, context `rootless`, cgroup v2, security options `seccomp/profile=builtin`, `rootless`, `cgroupns`
 

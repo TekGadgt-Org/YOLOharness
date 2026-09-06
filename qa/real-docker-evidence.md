@@ -1,11 +1,11 @@
 # Real Docker phase1 gate evidence
 
 Run date: 2026-09-06 UTC (fresh rerun after WRC-08 shipped CLI probe)
-Candidate source commit: `ea783e0`; cross-row index: `qa/wrc-linux-evidence-index.md`
+Candidate source commit: `19e738b`; cross-row index: `qa/wrc-linux-evidence-index.md`
 Docker server: 29.8.0, context `rootless`
 Kernel: `6.8.0-138-generic`; cgroup version 2; rootless security option observed; storage `overlayfs`.
-Base image: `yoloharness-local:0.1.0`, immutable ID `sha256:dc073cdc43f6967b5d84acc6dc65565493a6e22a56c88f3eca0011312074d261` (RepoTags includes the installation-owned tag).
-Embedded source label: `sha256:89d149d12f9bd411775b1b5dc0bee41cac92f8e11798858a898616bcdbecf027`, verified against the current deterministic checkout digest by the shipped test; stale labels and untagged substituted images are rejected before credentials/bootstrap.
+Base image: `yoloharness-local:0.1.0`, immutable ID `sha256:7d40fa5f991fc167366b31f082c1a9ee5c2e3ca779f8d69e1a997fcf78f58f08` (RepoTags includes the installation-owned tag).
+Embedded source label: `sha256:fad13e8ac9129acf775b6f5b11624929872d32108be657312cadf204490ca122`, verified against the current deterministic checkout digest by the shipped test; stale labels and untagged substituted images are rejected before credentials/bootstrap.
 The shipped-path provider row derives a separate ephemeral CA-only image from that base. Its ID is intentionally ephemeral and is not configured as the production image; the test asserts the base label before deriving it.
 
 Commands:
@@ -14,7 +14,7 @@ Commands:
 - `YOLO_EVIDENCE_DIR=qa/wrc-baseline-raw YOLO_REAL_DOCKER=1 node --test test/real-docker.test.mjs` (exit 0; 3 passed including named WRC-08 shipped hardlink negative/control and WRC-05/06, WRC-10/11, WRC-19 shipped boundary probes)
 - `npm test`
 
-- The current candidate result is 3 passed, 0 failed, 0 skipped, with full suite 87 passed, 0 failed, 6 skipped (93 total). The focused WRC-03 preflight result is 4 passed, 0 failed. Row-specific stdout, stderr, status, and timestamps are retained under `qa/wrc-baseline-raw/wrc-*.{stdout,stderr,status}`.
+- The current candidate result is 3 passed, 0 failed, 0 skipped, with full suite 88 passed, 0 failed, 6 skipped (94 total). The focused WRC-03 preflight result is 4 passed, 0 failed. Row-specific stdout, stderr, status, and timestamps are retained under `qa/wrc-baseline-raw/wrc-*.{stdout,stderr,status}`.
 
 After the trusted-client policy was changed to resolve Docker once from the invoker's PATH and preserve normal Docker context/host selection, the current configured image was inspected and `test/real-docker.test.mjs` was rerun. All three current shipped tests passed: the CA-only internal-network provider roundtrip (including the named WRC-08 nested subtest) and the read-only-root/rootless UID0 write/delete canary. The embedded source digest matched the current runtime source.
 

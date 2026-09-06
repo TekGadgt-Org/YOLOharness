@@ -14,7 +14,7 @@ test('doctor reports missing controls and recognizes an offline ready fixture', 
   const home = await temp();
   const missing = await doctorStatus({ env: { HOME: home, PATH: '' } });
   assert.equal(missing.ready, false);
-  assert.deepEqual(missing.checks.map(check => check.name), ['docker', 'runtime_image', 'client_id', 'credentials', 'model']);
+  assert.deepEqual(missing.checks.map(check => check.name), ['docker', 'docker_daemon', 'runtime_image', 'client_id', 'credentials', 'model']);
   assert.ok(missing.checks.every(check => check.ok === false));
 
   const bin = await temp();
@@ -27,9 +27,28 @@ test('doctor reports missing controls and recognizes an offline ready fixture', 
   await writeFile(join(config, 'yoloharness', 'credentials.json'), JSON.stringify({ accessToken: 'token', refreshToken: 'refresh', clientId: 'client', expiresAt: Date.now() + 60_000 }));
   await writeFile(join(config, 'yoloharness', 'config.json'), JSON.stringify({ version: 1, model: 'model-x' }));
   await (await import('node:fs/promises')).chmod(join(bin, 'docker'), 0o755);
-  const ready = await doctorStatus({ env: { HOME: home, PATH: bin, YOLO_CLIENT_ID: 'client' } });
+  const ready = await doctorStatus({
+    env: { HOME: home, PATH: bin, YOLO_CLIENT_ID: 'client' },
+    exec: async (_command, args) => ({
+      stdout: args[0] === 'info' ? 'Docker daemon ready\\n' : JSON.stringify({ Id: `sha256:${'a'.repeat(64)}`, RepoTags: ['yoloharness-local:0.1.0'], Config: { Labels: { 'org.yoloharness.source-digest': `sha256:${'b'.repeat(64)}` }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }),
+      stderr: '',
+    }),
+  });
   assert.equal(ready.ready, true);
   assert.ok(ready.checks.every(check => check.ok));
+});
+
+test('doctor reports daemon and immutable image inspection failures', async () => {
+  const home = await temp(); const bin = await temp();
+  await writeFile(join(bin, 'docker'), '#!/bin/sh\\n');
+  await (await import('node:fs/promises')).chmod(join(bin, 'docker'), 0o755);
+  const status = await doctorStatus({
+    env: { HOME: home, PATH: bin },
+    exec: async (_command, args) => { throw new Error(args[0] === 'info' ? 'daemon unavailable' : 'image missing'); },
+  });
+  assert.equal(status.checks.find(check => check.name === 'docker_daemon').ok, false);
+  assert.equal(status.checks.find(check => check.name === 'runtime_image').ok, false);
+  assert.match(status.checks.find(check => check.name === 'docker_daemon').detail, /daemon/i);
 });
 
 test('local skill overrides shared skill and load returns selected bounded resource', async () => {

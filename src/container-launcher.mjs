@@ -66,9 +66,13 @@ export class ContainerLauncher {
       if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
       id = await verifyOwnedContainer(this.command, id, name, label, this.spawn);
       owned = true;
+      const bootstrapFrame = encodeBootstrap({ ...bootstrap, skills: await snapshotSkills(source) });
       attached = this.spawn(this.command, ['start', '--attach', '--interactive', id], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: DOCKER_ENV() });
-      const result = await attachedOperation(attached, encodeBootstrap({ ...bootstrap, skills: await snapshotSkills(source) }), signal);
-      if (reason) return { version: 1, run_id: null, status: reason.code === 'deadline' ? 'deadline' : 'interrupted', effect_state: 'uncertain', result: null, evidence: [], artifacts: [], errors: [reason.message] };
+      const result = await attachedOperation(attached, bootstrapFrame, signal);
+      if (reason) {
+        const partial = lastReceipt(result.out);
+        return { ...(partial ?? { version: 1, run_id: null, result: null, evidence: [], artifacts: [] }), status: reason.code === 'deadline' ? 'deadline' : 'interrupted', effect_state: 'uncertain', errors: [...(partial?.errors ?? []), reason.message] };
+      }
       if (result.overflow) throw Object.assign(new Error('container output limit exceeded'), { code: 'output_limit' });
       if (result.code !== 0) throw new Error(result.err.trim() || `container exited (${result.code})`);
       const lines = result.out.trim().split(/\r?\n/).filter(Boolean);
@@ -81,6 +85,16 @@ export class ContainerLauncher {
       else if (createAttempted) await reconcileUnknownCreate(this.command, name, label, this.spawn);
     }
   }
+}
+
+function lastReceipt(output) {
+  for (const line of output.trim().split(/\r?\n/).reverse()) {
+    try {
+      const value = JSON.parse(line);
+      if (value?.version === 1 && typeof value.result === 'string' && Array.isArray(value.evidence) && Array.isArray(value.artifacts)) return value;
+    } catch {}
+  }
+  return null;
 }
 
 async function containerIdentity(command, spawn, opts) {
@@ -121,7 +135,7 @@ function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT, signal } = {}
 function attachedOperation(child, input, signal) {
   return new Promise((resolve, reject) => {
     let out = ''; let err = ''; let done = false; let overflow = false;
-    const abort = () => { child.kill('SIGKILL'); finish(resolve, { code: null, out, err, overflow }); };
+    const abort = () => { child.kill('SIGKILL'); setImmediate(() => finish(resolve, { code: null, out, err, overflow })); };
     const finish = (fn, value) => { if (done) return; done = true; signal?.removeEventListener('abort', abort); fn(value); };
     const collect = (which, chunk) => { const text = String(chunk); if (which === 'out') out += text; else err += text; if (Buffer.byteLength(which === 'out' ? out : err) > MAX_OUTPUT) { overflow = true; child.kill('SIGKILL'); } };
     child.stdout?.on('data', chunk => collect('out', chunk)); child.stderr?.on('data', chunk => collect('err', chunk));

@@ -655,13 +655,18 @@ test('saved model reaches the production configured provider request body withou
   }
 });
 
-test('packed package bin runs offline from an extracted artifact', async () => {
+test('packed package installs and runs its bin offline from an unrelated cwd', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'yolo-pack-'));
   try {
     const packed = execFileSync('npm', ['pack', '--pack-destination', dir], { cwd: process.cwd(), encoding: 'utf8' }).trim().split(/\r?\n/).at(-1);
     execFileSync('tar', ['-xzf', join(dir, packed), '-C', dir]);
-    const result = spawnSync(process.execPath, [join(dir, 'package', 'src/cli.mjs'), '--fixture', '--json', 'offline smoke'], { encoding: 'utf8' });
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /unknown option|fixture/i);
+    const home = join(dir, 'home'); const data = join(dir, 'data'); const cwd = join(dir, 'unrelated');
+    await mkdir(cwd, { recursive: true });
+    const installed = spawnSync(process.execPath, [join(dir, 'package', 'install.mjs')], { cwd: join(dir, 'package'), env: { ...process.env, HOME: home, XDG_DATA_HOME: data }, encoding: 'utf8' });
+    assert.equal(installed.status, 0, installed.stderr);
+    const bin = join(home, '.local', 'bin');
+    const result = spawnSync(join(bin, 'yolo'), ['--help'], { cwd, env: { ...process.env, HOME: home, XDG_DATA_HOME: data, PATH: `${bin}:${process.env.PATH}` }, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Usage: yolo/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

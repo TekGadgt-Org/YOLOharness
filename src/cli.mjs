@@ -238,21 +238,31 @@ async function configCommand(args, io) {
   const model = validateModel(args[2]); const store = new ConfigStore(configPath()); await store.load(); await store.save(model); io.stdout.write(`saved model ${model}\n`); return 0;
 }
 
-export async function doctorStatus({ env = process.env } = {}) {
+export async function doctorStatus({ env = process.env, exec = execFileAsync } = {}) {
   const checks = [];
   const add = (name, ok, detail) => checks.push({ name, ok: Boolean(ok), detail });
-  let docker = false;
+  let docker = false; let dockerCommand;
   for (const directory of (typeof env.PATH === 'string' ? env.PATH : '').split(':')) {
     if (!directory) continue;
-    try { await access(join(directory, 'docker'), fsConstants.X_OK); docker = true; break; } catch {}
+    try { await access(join(directory, 'docker'), fsConstants.X_OK); docker = true; dockerCommand = join(directory, 'docker'); break; } catch {}
   }
   add('docker', docker, docker ? 'Docker executable found on PATH' : 'Docker executable missing from PATH');
-  let image = false;
+  let daemon = false;
+  if (docker) {
+    try { await exec(dockerCommand, ['info', '--format', '{{json .ServerVersion}}'], { env }); daemon = true; }
+    catch {}
+  }
+  add('docker_daemon', daemon, daemon ? 'Docker daemon is reachable' : 'Docker daemon is unavailable; start Docker or select a working context');
+  let image = false; let imageDetail = 'runtime image is not configured; run `yolo setup`';
   try {
     const value = JSON.parse(await readFile(imageMetadataPath(env), 'utf8'));
-    image = value?.version === 1 && /^sha256:[0-9a-f]{64}$/i.test(value.imageId ?? '') && /^sha256:[0-9a-f]{64}$/i.test(value.sourceDigest ?? '') && typeof value.sourceVersion === 'string' && value.sourceVersion.length > 0;
-  } catch {}
-  add('runtime_image', image, image ? 'runtime image metadata is present' : 'runtime image is not configured; run `yolo setup`');
+    if (value?.version === 1 && /^sha256:[0-9a-f]{64}$/i.test(value.imageId ?? '') && /^sha256:[0-9a-f]{64}$/i.test(value.sourceDigest ?? '') && typeof value.sourceVersion === 'string' && value.sourceVersion.length > 0 && daemon) {
+      const inspected = JSON.parse((await exec(dockerCommand, ['image', 'inspect', '--format', '{{json .}}', value.imageId], { env })).stdout);
+      image = inspected.Id === value.imageId && inspected.RepoTags?.includes(RUNTIME_IMAGE_TAG) && inspected.Config?.Labels?.['org.yoloharness.source-digest'] === value.sourceDigest && JSON.stringify(inspected.Config?.Entrypoint) === JSON.stringify(RUNTIME_ENTRYPOINT);
+      imageDetail = image ? 'installation-owned immutable runtime image is ready' : 'configured runtime image failed immutable identity/tag/source/entrypoint checks';
+    } else if (daemon) imageDetail = 'runtime image metadata is malformed; run `yolo setup`';
+  } catch (error) { if (daemon) imageDetail = `configured runtime image could not be inspected: ${error.message}`; }
+  add('runtime_image', image, imageDetail);
   const clientId = typeof env.YOLO_CLIENT_ID === 'string' && env.YOLO_CLIENT_ID.length > 0;
   add('client_id', clientId, clientId ? 'client ID is configured' : 'YOLO_CLIENT_ID is missing');
   let credentials = false;

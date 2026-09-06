@@ -303,7 +303,7 @@ test('abort starts exact cleanup while an attach client never closes', async () 
       if (operation === 'info') { setImmediate(() => stdout.emit('data', '["name=rootless"]')); close(0); }
       else if (operation === 'create') { ownedName = args[args.indexOf('--name') + 1]; ownedLabel = args[args.indexOf('--label') + 1].split('=').slice(1).join('='); setImmediate(() => stdout.emit('data', ownedId)); close(0); }
       else if (operation === 'inspect' && cleanupCount === 0) { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: ownedId, Name: `/${ownedName}`, Config: { Labels: { 'yoloharness.run': ownedLabel } } }))); close(0); }
-      else if (operation === 'start') { setImmediate(() => controller.abort(new Error('stuck attach cancellation'))); }
+      else if (operation === 'start') { setImmediate(() => { stdout.emit('data', JSON.stringify({ version: 1, run_id: 'run-partial', status: 'deadline', effect_state: 'uncertain', result: 'partial answer', evidence: [], artifacts: [], errors: ['deadline exceeded'] }) + '\n'); controller.abort(new Error('stuck attach cancellation')); }); }
       else if (operation === 'kill') { cleanupCount += 1; close(0); }
       else if (operation === 'rm') { cleanupCount += 1; close(0); }
       else if (operation === 'inspect') { setImmediate(() => { stderr.emit('data', 'Error: No such container: ' + ownedId); close(1); }); }
@@ -312,6 +312,8 @@ test('abort starts exact cleanup while an attach client never closes', async () 
     const launcher = new ContainerLauncher({ image: 'sha256:' + 'a'.repeat(64), workspace, spawn, timeoutMs: 1000 });
     const result = await launcher.launch({ prompt: 'stuck attach', model: 'synthetic-model', deadline: Date.now() + 10_000, accessToken: 'synthetic-access', expiresAt: Date.now() + 20_000 }, { signal: controller.signal });
     assert.equal(result.status, 'interrupted');
+    assert.equal(result.result, 'partial answer');
+    assert.equal(result.effect_state, 'uncertain');
     assert.ok(cleanupStarted, 'cleanup did not start while attach remained open');
     assert.equal(operations.filter(operation => operation === 'rm').length, 1);
     assert.equal(cleanupCount, 2, 'exact cleanup should issue one kill and one rm');

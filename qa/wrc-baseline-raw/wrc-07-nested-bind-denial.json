@@ -1,5 +1,24 @@
 {
-  "command": "unshare --user --map-root-user --mount -- mount --bind <workspace> <nested-target>",
+  "version": 1,
+  "command": [
+    "unshare",
+    "--user",
+    "--map-root-user",
+    "--mount",
+    "--",
+    "mount",
+    "--bind",
+    "/tmp/yoloharness-wrc07-fLi1nP",
+    "/tmp/yoloharness-wrc07-fLi1nP/nested"
+  ],
+  "cwd": "/tmp/yoloharness-wrc07-fLi1nP",
+  "environment": {
+    "platform": "linux",
+    "kernel": "Linux 6.8.0-138-generic",
+    "uid": 999,
+    "euid": 999
+  },
+  "phase": "safe unprivileged nested-bind fixture setup",
   "status": 1,
   "output": "unshare: write failed /proc/self/uid_map: Operation not permitted\n",
   "control": "ordinary nested directory read succeeded"

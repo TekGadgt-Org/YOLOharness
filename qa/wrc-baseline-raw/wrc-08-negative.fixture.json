@@ -1,18 +1,18 @@
 {
-  "cwd": "/tmp/yoloharness-real-JiUETG/workspace",
+  "cwd": "/tmp/yoloharness-real-usrKfm/workspace",
   "layout": {
-    "workspace": "/tmp/yoloharness-real-JiUETG/workspace",
-    "hardlinkAlias": "/tmp/yoloharness-real-JiUETG/workspace/hardlink-alias.txt",
-    "outsideSentinel": "/tmp/yoloharness-real-JiUETG/outside-hardlink-sentinel.txt"
+    "workspace": "/tmp/yoloharness-real-usrKfm/workspace",
+    "hardlinkAlias": "/tmp/yoloharness-real-usrKfm/workspace/hardlink-alias.txt",
+    "outsideSentinel": "/tmp/yoloharness-real-usrKfm/outside-hardlink-sentinel.txt"
   },
   "sentinelBefore": {
-    "path": "/tmp/yoloharness-real-JiUETG/outside-hardlink-sentinel.txt",
+    "path": "/tmp/yoloharness-real-usrKfm/outside-hardlink-sentinel.txt",
     "bytes": 25,
     "sha256": "c0bd53461d392a065e83022e71b7fbbada67f4132e4d378e789f7eb86af1bea2",
     "nlink": 2
   },
   "sentinelAfter": {
-    "path": "/tmp/yoloharness-real-JiUETG/outside-hardlink-sentinel.txt",
+    "path": "/tmp/yoloharness-real-usrKfm/outside-hardlink-sentinel.txt",
     "bytes": 25,
     "sha256": "c0bd53461d392a065e83022e71b7fbbada67f4132e4d378e789f7eb86af1bea2",
     "nlink": 2

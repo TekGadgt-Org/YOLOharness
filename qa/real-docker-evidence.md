@@ -1,7 +1,7 @@
 # Real Docker phase1 gate evidence
 
-Run date: 2026-09-06 UTC (fresh rerun after WRC-08 shipped CLI probe)
-Candidate source checkout: HEAD `daa9f90a9a8969c504aee1f64833df7926ec4c6c` with retained working-tree evidence; cross-row index: `qa/wrc-linux-evidence-index.md`
+Run date: 2026-09-06 UTC (fresh rerun after WRC-02 emitted-payload correction)
+Candidate source checkout: source candidate `daa9f90a9a8969c504aee1f64833df7926ec4c6c`; this evidence-only refresh follows that frozen candidate; cross-row index: `qa/wrc-linux-evidence-index.md`
 Docker server: 29.8.0, context `rootless`
 Kernel: `6.8.0-138-generic`; cgroup version 2; rootless security option observed; storage `overlayfs`.
 Base image: `yoloharness-local:0.1.0`, immutable ID `sha256:7c881f86ae5cb83d2700128381e7d75a028170bf862858792f3959a573221e2d` (RepoTags includes the installation-owned tag).
@@ -26,6 +26,7 @@ Exact real-Docker test names:
 - The first row invokes `src/cli.mjs` as an OS subprocess from a disposable workspace. It does not call `main` with a launcher factory, instantiate `ContainerLauncher` directly, or mount the repository. The Docker client is resolved once from the invoker's PATH and the normal Docker context/host configuration is preserved; the test-owned PATH wrapper remains a declared synthetic routing fixture only.
 
 - The synthetic HTTPS provider ran in a separate container attached only to a pre-created `--internal` network, with alias `chatgpt.com`, no published ports, and SAN `chatgpt.com`; it captured the request nonce, remote container address, and provider PID.
+- WRC-02 retained a provider-only hostile SSE delta (`provider-only-$(touch /host/provider-output-canary) ; /etc/shadow`) separately from the hostile request body. `wrc-02-provider-payload.txt` is the emitted payload; `wrc-02-host-trace.jsonl` is explicitly test-process-scoped instrumentation with timestamps, and `wrc-02-command`/`wrc-02-status` retain the negative/control invocation result. The unique emitted marker is absent from traced host operations and Docker argv.
 - The first provider request produced a tool call; the runtime executed `printf` inside the whole-runtime container; the second provider request contained the paired function-call output and returned `whole-runtime-ok`.
 - The same shipped-CLI row then ran `yolo --json -t 0.05 deadline-probe`. It synchronized on a `/workspace/deadline-started` marker, exited 124 after the deadline, verified that the descendant's delayed `/workspace/deadline-late` write never appeared, and observed an empty exact-owned runtime inventory after cleanup.
 - The same shipped-CLI row then sent OS SIGINT after `/workspace/sigint-started`; the child exited 130, `/workspace/sigint-late` never appeared, and the exact generated runtime name was absent after cleanup. It also ran independent stdout-only and stderr-only 1 MiB+ overflow commands (bounded failure receipt, exit 124, exact cleanup) plus matching short-delay controls that wrote markers and completed.

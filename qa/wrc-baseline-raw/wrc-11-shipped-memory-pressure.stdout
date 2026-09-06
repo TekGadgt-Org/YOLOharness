@@ -1,7 +1,7 @@
 child_status=137
 low 0
 high 0
-max 2604
-oom 1
+max 3411
+oom 39
 oom_kill 1
 oom_group_kill 0

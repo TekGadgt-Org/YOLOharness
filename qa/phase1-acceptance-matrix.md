@@ -2,9 +2,9 @@
 
 This matrix records the whole-runtime migration on the current feature branch. Synthetic HOME/XDG/auth/provider fixtures only; no live provider requests or real credentials. Fresh cross-row evidence is indexed in `qa/wrc-linux-evidence-index.md` at the current checkout (HEAD `daa9f90a9a8969c504aee1f64833df7926ec4c6c`). Linux evidence below uses the observed rootless Docker daemon; the configured image must be rebuilt with `yolo setup` after runtime source changes. Setup embeds the deterministic runtime source digest in the image label `org.yoloharness.source-digest`; the real-Docker gate verifies that label before using the image.
 
-ID       Retained evidence                                      Status
+ID       Retained evidence                                      Status (current source candidate `daa9f90`; evidence-only refresh follows)
 WRC-01   Whole-runtime shipped launcher/image synthetic provider roundtrip  PASS (`shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network`; test-owned Docker config/endpoint, production metadata remains the tagged base image)
-WRC-02   Launcher fixed argv / model text never host-executed   PASS scoped (synthetic provider emits shell metacharacters/host paths; test-only host child/filesystem trace records fixed launcher operations, Docker argv excludes model-derived values, and host canary is unchanged)
+WRC-02   Launcher fixed argv / model text never host-executed   PASS scoped (provider-only hostile SSE payload is retained separately from the hostile request; test-only host child/filesystem trace records fixed launcher operations, Docker argv excludes both model input and emitted values, and host canary is unchanged)
 WRC-03   Missing Docker/daemon/image fail-closed                PASS scoped shipped preflight probes (`test/shipped-preflight.test.mjs`; unavailable client, unavailable daemon, absent image, and valid preflight control; synthetic fixtures only)
 WRC-04   Exactly one /workspace bind and prohibited targets       PASS scoped shipped runtime inspect plus generated in-container absence probes for host home/proc/device/socket targets; exhaustive host namespace claims excluded
 WRC-05   Outside absolute/parent path controls                   PASS shipped `boundary-probe` (real outside sentinel absolute/parent read/write attempts fail; workspace write/read/delete control passes)
@@ -12,8 +12,8 @@ WRC-06   Symlink namespace controls                              PASS shipped `b
 WRC-07   Nested mount rejection                                  RESIDUAL shipped newline-cwd rejection and escaped-newline parser regression; nested-bind denial/non-recursive evidence remains unavailable
 WRC-08   Multi-link regular-file rejection                       PASS shipped CLI subtest `WRC-08 shipped CLI rejects a hardlink alias before model execution` (negative hardlink alias leaves outside sentinel unchanged and emits no provider request; same-runtime ordinary single-link control completes; unit regression retained)
 WRC-09   Project secret warning / intentional exposure            PASS scoped shipped control (warning emitted; synthetic `.env`, key, and token fixtures readable only through `/workspace`; no confidentiality claim)
-WRC-10   Rootless-only UID0 mapping, read-only root, tmpfs, canary RESIDUAL shipped bounded control; full named inspection remains incomplete
-WRC-11   Daemon resource/security inspection                      PASS scoped (shipped concurrent PID pressure records configured 128 limit and child fork denial; bounded 700 MiB heap pressure records child status 137 and cgroup oom_kill; runtime probe verifies Seccomp 2/NoNewPrivs 1 and daemon limits)
+WRC-10   Rootless-only UID0 mapping, read-only root, tmpfs, canary PASS scoped shipped daemon inspection and bounded control (approved rootless 0:0 mapping)
+WRC-11   Daemon resource/security inspection                      PASS scoped (shipped generated concurrent PID pressure records configured 128 limit and child fork denial; bounded 700 MiB heap pressure records child status 137 and cgroup oom_kill; below-limit shipped controls survive; runtime probe verifies Seccomp 2/NoNewPrivs 1 and daemon limits)
 WRC-12   Started-child deadline and exact absence                  PASS scoped shipped deadline/no-late-write control (started marker, exit 124, delayed descendant write absent, exact owned runtime inventory empty); broader matrix remains partial
 WRC-13   Real OS SIGINT and exact absence                         PASS scoped shipped subprocess control (SIGINT after started marker exits 130, delayed write absent, exact owned runtime inventory empty)
 WRC-14   Independent stdout/stderr overflow cleanup               PASS scoped shipped subprocess controls (stdout-only and stderr-only 1 MiB overflow exit 124 and exact owned runtime inventory empty; short-delay controls succeed)
@@ -22,7 +22,7 @@ WRC-16A  Access-only bootstrap; refresh absent; 401 fail-closed   PASS scoped sh
 WRC-17   Host refresh rotation and atomic persistence             PASS existing auth integration tests
 WRC-18   Allowlisted build context / secret-free layers           PASS scoped shipped setup context/layer probe (`wrc-18-setup.*`; package/src-only context and history/export secret scan)
 WRC-19   No Docker/Podman socket/nested Docker; declared tools only | PASS scoped shipped `nested-docker-probe` (generated Docker/Podman attempts fail closed; `sh` control succeeds; exhaustive executable inventory remains bounded)
-WRC-20   Observed Linux rootless evidence tied to image/commit     PARTIAL (current identities and row-level results retained; WRC-02/07/11 residual boundaries remain)
+WRC-20   Observed Linux rootless evidence tied to image/commit     PARTIAL (current identities and row-level results retained; WRC-07 is environment-bounded and WRC-21 deferred; no whole-matrix release approval)
 WRC-21   Native macOS Docker Desktop                              DEFERRED (approved Linux-only milestone; Ryan runs after Linux ships)
 
 Offline verification

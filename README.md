@@ -28,20 +28,31 @@ Authentication is separate from a run and never starts automatically. Set a perm
 - **[qa/final-verification.md](qa/final-verification.md):** coordinator's post-repair rerun: **7 tests pass**, repeated same-log demos succeed, and both bug probes pass; raw output retained.
 - **[qa/performance-plan.md](qa/performance-plan.md):** performance and context/delegation evaluation proposal.
 
-## Run the real code
+## Install and run (Linux MVP)
 
 WARNING: Run in a fresh, disposable directory. The agent can overwrite or delete anything in the working directory without asking. Using it on an existing project is at your own risk; back up or commit your work first. Keep secrets out of the directory: networked generated code can send project contents out, and Docker does not protect files inside the mounted project.
 
-From the project directory, with Node 22+ available:
+Node 22+ and Docker are prerequisites. From a downloaded package directory (or an extracted `yoloharness-0.1.0.tgz`), install to the user account; this never uses sudo, a global prefix, or shell startup files:
 
-```sh
-npm test
-npm exec -- yolo "verify the harness"
-```
+1. Install: `node install.mjs`
+2. Add `$HOME/.local/bin` to PATH: `export PATH="$HOME/.local/bin:$PATH"` (persist this yourself if desired).
+3. Check offline readiness: `yolo doctor`.
+4. In a fresh disposable project, run `yolo setup`.
+5. Authenticate: `yolo auth login`.
+6. Set a model if needed: `yolo config set model <model-id>`.
+7. Run: `yolo -t 10 "verify the harness"` (or `yolo "verify the harness"`).
+
+`yolo doctor` performs no provider call and reports Docker executable, runtime image metadata, client ID, local credentials, and model status.
+
+The installer atomically replaces only app assets below `${XDG_DATA_HOME:-$HOME/.local/share}/yoloharness`, preserves config, credentials, and shared skills, and creates `$HOME/.local/bin/yolo`. It refuses symlinked or non-directory data/bin destinations. Back up or commit the selected project first: the agent can overwrite or delete files there, and networked generated code may disclose them.
+
+For development, run `npm test`; no package dependencies are required.
 
 The opt-in real-Docker gate requires the installation-owned whole-runtime image and a Docker daemon: `npm run test:docker`. The retained WRC suite is the source of truth for shipped-CLI/provider, workspace-boundary, token-secrecy, resource, deadline, SIGINT, and cleanup evidence; see [qa/phase1-acceptance-matrix.md](qa/phase1-acceptance-matrix.md). The default `npm test` remains offline and skips real Docker. Native macOS is a separate, explicitly unrun gate.
 
-No package installation is needed; only Node builtins are used. Runs write bounded, redacted JSONL receipts below `.yolo/runs/`. A deadline or interrupt stops launching new effects, then waits up to the bounded cleanup grace for an already-running executor; if exact cleanup cannot be proven in that grace, the receipt reports `cleanup_unknown` rather than claiming the effect stopped. Replay is not full agent resumption, and no executor is enabled by default.
+Agent Skills are discovered only from `<cwd>/.agents/skills/<name>/SKILL.md` and `${XDG_DATA_HOME:-$HOME/.local/share}/yoloharness/skills/<name>/SKILL.md`; project skills override shared skills. Names, traversal, symlinks, special files, and bundled resources are bounded and validated. A catalog and bounded snapshots enter the container; `skill_load` content is instructions/data, never authority, and there is no ancestor, Hermes-profile, or remote discovery. Runs write bounded, redacted JSONL receipts below `.yolo/runs/`. Native macOS, live OAuth/provider calls, and non-Linux installation are unverified limits of this MVP.
+
+`SKILL.md` may be plain text (metadata description is `null`) or begin with a small YAML-style frontmatter block. This MVP intentionally supports the bounded subset of exactly non-empty `name` and `description` fields; other Agent Skills frontmatter keys are rejected. The name must match the directory, and descriptions are limited to 512 characters; malformed or mismatched metadata is rejected. The provider receives only bounded catalog metadata first (including source `local` or `shared` and resource names), encoded as a standard developer message item accepted by the Responses API, then requests instruction/resource content progressively.
 
 ## The design in one minute
 

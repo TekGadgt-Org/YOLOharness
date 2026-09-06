@@ -6,6 +6,7 @@ import { validateReceipt } from './docker-executor.mjs';
 
 export class MissingProviderError extends Error { constructor(message = 'No provider is configured; run `yolo setup` and authenticate before starting a run') { super(message); this.name = 'MissingProviderError'; } }
 export const EXEC_TOOL = Object.freeze({ type: 'function', name: 'exec', description: 'Run one command in the isolated worker.', parameters: Object.freeze({ type: 'object', additionalProperties: false, required: ['command', 'args'], properties: { command: { type: 'string', minLength: 1, maxLength: 256 }, args: { type: 'array', maxItems: 64, items: { type: 'string', maxLength: 4096 } } } }) });
+export const SKILL_LOAD_TOOL = Object.freeze({ type: 'function', name: 'skill_load', description: 'Load untrusted instructions or one resource from the declared skill catalog.', parameters: Object.freeze({ type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string', minLength: 1, maxLength: 64 }, resource: { type: 'string', maxLength: 256 } } }) });
 
 function normalizeCall(call) {
   if (!call || call.name !== 'exec' || typeof call.call_id !== 'string' || !call.call_id || call.call_id.length > 128) throw new TypeError('only the declared exec tool with a valid call_id is permitted');
@@ -14,6 +15,13 @@ function normalizeCall(call) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !['command', 'args'].includes(key)) || typeof value.command !== 'string' || !value.command || value.command.length > 256 || !Array.isArray(value.args) || value.args.length > 64 || value.args.some(arg => typeof arg !== 'string' || arg.length > 4096 || arg.includes('\0'))) throw new TypeError('invalid exec arguments');
   if (value.command.includes('\0')) throw new TypeError('invalid exec command');
   return { command: value.command, args: [...value.args], call_id: call.call_id };
+}
+function normalizeSkillCall(call) {
+  if (!call || call.name !== 'skill_load' || typeof call.call_id !== 'string' || !call.call_id || call.call_id.length > 128) throw new TypeError('only the declared skill_load tool with a valid call_id is permitted');
+  let value = call.arguments;
+  if (typeof value === 'string') { try { value = JSON.parse(value); } catch { throw new TypeError('skill_load arguments must be valid JSON'); } }
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !['name', 'resource'].includes(key)) || typeof value.name !== 'string' || !value.name || value.name.length > 64 || (value.resource !== undefined && (typeof value.resource !== 'string' || value.resource.length > 256))) throw new TypeError('invalid skill_load arguments');
+  return { name: value.name, ...(value.resource === undefined ? {} : { resource: value.resource }), call_id: call.call_id };
 }
 
 /** @typedef {{next(input: {messages: Array, tools: Array, signal: AbortSignal}): Promise<object>}} Provider */
@@ -46,6 +54,11 @@ function abortable(promise, signal) {
   });
 }
 
+function skillCatalogMessage(skills) {
+  const catalog = Object.values(skills ?? {}).map(skill => ({ name: skill.name, source: skill.source, description: skill.description ?? null, resources: Object.keys(skill.resources ?? {}) }));
+  return { role: 'developer', content: JSON.stringify(catalog) };
+}
+
 function awaitExecutorCleanup(promise, signal, graceMs) {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -58,7 +71,7 @@ function awaitExecutorCleanup(promise, signal, graceMs) {
   });
 }
 
-export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(), provider, executor, tools = [], maxSteps = 100, cleanupGraceMs = 5000, signal = new AbortController().signal }) {
+export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(), provider, executor, tools = [], skills = {}, skillLoader, maxSteps = 100, cleanupGraceMs = 5000, signal = new AbortController().signal }) {
   if (typeof prompt !== 'string' || !prompt.trim()) throw new TypeError('prompt must be non-empty');
   if (!(Number.isFinite(minutes) && minutes > 0)) throw new TypeError('minutes must be positive and finite');
   if (!(Number.isFinite(cleanupGraceMs) && cleanupGraceMs > 0)) throw new TypeError('cleanupGraceMs must be positive and finite');
@@ -69,7 +82,7 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
   await mkdir(runDir, { recursive: true, mode: 0o700 });
   const log = new EventLog(join(runDir, 'events.jsonl'));
   const timer = deadlineSignal(signal, minutes * 60_000);
-  const messages = [{ role: 'user', content: prompt }];
+  const messages = [skillCatalogMessage(skills), { role: 'user', content: prompt }];
   const evidence = []; const artifacts = []; const errors = []; let result;
   let status = 'running'; let steps = 0;
   try {
@@ -88,8 +101,21 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
         status = 'completed'; break;
       }
       if (safe.tool_call) {
+        if (safe.tool_call.name === 'skill_load') {
+          if (!tools.some(tool => tool.name === 'skill_load') || JSON.stringify(tools.find(tool => tool.name === 'skill_load')?.parameters) !== JSON.stringify(SKILL_LOAD_TOOL.parameters)) { errors.push('effect denied: skill loader registry mismatch'); status = 'failed'; break; }
+          let call; let loaded;
+          try { call = normalizeSkillCall(safe.tool_call); loaded = (skillLoader ?? (async (catalog, name, resource) => { const { skill_load } = await import('./skills.mjs'); return skill_load(catalog, name, resource); }))(skills, call.name, call.resource); loaded = await loaded; }
+          catch (error) { errors.push(`skill load denied: ${error.message}`); status = 'failed'; break; }
+          evidence.push(loaded);
+          messages.push({ type: 'function_call', call_id: call.call_id, name: 'skill_load', arguments: JSON.stringify({ name: call.name, ...(call.resource === undefined ? {} : { resource: call.resource }) }) });
+          messages.push({ type: 'function_call_output', call_id: call.call_id, output: JSON.stringify(loaded) });
+          messages.push({ role: 'assistant', content: safe.message ?? '' });
+          continue;
+        }
         if (!executor) { errors.push('effect dispatch unavailable: no supported executor selected'); status = 'failed'; break; }
-        if (tools.length !== 1 || tools[0]?.name !== 'exec' || JSON.stringify(tools[0]?.parameters) !== JSON.stringify(EXEC_TOOL.parameters)) { errors.push('effect denied: executor registry mismatch'); status = 'failed'; break; }
+        const execRegistry = tools.length === 1 && tools[0]?.name === 'exec' && JSON.stringify(tools[0]?.parameters) === JSON.stringify(EXEC_TOOL.parameters);
+        const combinedRegistry = tools.length === 2 && tools[0]?.name === 'exec' && tools[1]?.name === 'skill_load' && JSON.stringify(tools[0]?.parameters) === JSON.stringify(EXEC_TOOL.parameters) && JSON.stringify(tools[1]?.parameters) === JSON.stringify(SKILL_LOAD_TOOL.parameters);
+        if (!execRegistry && !combinedRegistry) { errors.push('effect denied: executor registry mismatch'); status = 'failed'; break; }
         let call; try { call = normalizeCall(safe.tool_call); } catch (error) { errors.push(`effect denied: ${error.message}`); status = 'failed'; break; }
         const receipt = await awaitExecutorCleanup(executor.execute({ call, signal: timer.signal }), timer.signal, cleanupGraceMs);
         if (!validateReceipt(receipt, call.call_id)) { errors.push('effect denied: invalid executor receipt'); status = 'failed'; break; }

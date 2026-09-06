@@ -30,7 +30,7 @@ const AUTH_ENDPOINTS = Object.freeze({
   verificationUrl: 'https://auth.openai.com/codex/device',
   redirectUri: 'https://auth.openai.com/deviceauth/callback',
 });
-function usage() { return 'Usage: yolo [-t MINUTES] [--json] <prompt>\n       yolo setup\n       yolo config set model <model-id>\n       yolo auth login|status|logout\n       yolo --help\n       yolo --version'; }
+function usage() { return 'Usage: yolo [-t MINUTES] [--json] <prompt>\n       yolo setup\n       yolo doctor\n       yolo config set model <model-id>\n       yolo auth login|status|logout\n       yolo --help\n       yolo --version'; }
 export function parseArgs(args) {
   let minutes = 10; let json = false; const prompt = [];
   for (let i = 0; i < args.length; i += 1) {
@@ -53,6 +53,7 @@ export function parseArgs(args) {
 export async function main(args = process.argv.slice(2), io = { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr }, { clientFactory } = {}) {
   try {
     if (args[0] === 'setup') return await setupCommand(io);
+    if (args[0] === 'doctor') return await doctorCommand(io);
     if (args[0] === 'auth') return await authCommand(args.slice(1), io, { clientFactory });
     if (args[0] === 'config') return await configCommand(args.slice(1), io);
     const options = parseArgs(args);
@@ -235,6 +236,17 @@ export async function resolveModel() {
 async function configCommand(args, io) {
   if (args.length !== 3 || args[0] !== 'set' || args[1] !== 'model') throw new TypeError('usage: yolo config set model <model-id>');
   const model = validateModel(args[2]); const store = new ConfigStore(configPath()); await store.load(); await store.save(model); io.stdout.write(`saved model ${model}\n`); return 0;
+}
+
+export async function doctorCommand(io) {
+  const checks = [];
+  try { await resolveDockerCommand(); checks.push(['Docker executable', true]); } catch { checks.push(['Docker executable', false]); }
+  try { await readFile(imageMetadataPath(), 'utf8'); checks.push(['runtime image metadata', true]); } catch { checks.push(['runtime image metadata', false]); }
+  checks.push(['Codex client ID', typeof process.env.YOLO_CLIENT_ID === 'string' && process.env.YOLO_CLIENT_ID.length > 0]);
+  try { const credentials = await new AuthStore(process.env.YOLO_AUTH_FILE ?? join(configRoot(), 'yoloharness', 'credentials.json')).load(); checks.push(['credentials', Boolean(credentials?.accessToken)]); } catch { checks.push(['credentials', false]); }
+  try { await resolveModel(); checks.push(['model', true]); } catch { checks.push(['model', false]); }
+  for (const [name, ok] of checks) io.stdout.write(`${ok ? 'ok' : 'missing'}: ${name}\n`);
+  return checks.every(([, ok]) => ok) ? 0 : 1;
 }
 
 function authConfig(store, clientId = process.env.YOLO_CLIENT_ID, allowOverrides = true) { return { clientId, ...(allowOverrides ? { issueUrl: process.env.YOLO_AUTH_ISSUE_URL ?? AUTH_ENDPOINTS.issueUrl, pollUrl: process.env.YOLO_AUTH_POLL_URL ?? AUTH_ENDPOINTS.pollUrl, tokenUrl: process.env.YOLO_AUTH_TOKEN_URL ?? AUTH_ENDPOINTS.tokenUrl, verificationUrl: process.env.YOLO_AUTH_VERIFY_URL ?? AUTH_ENDPOINTS.verificationUrl, redirectUri: process.env.YOLO_AUTH_REDIRECT_URI ?? AUTH_ENDPOINTS.redirectUri } : AUTH_ENDPOINTS), store }; }

@@ -42,6 +42,81 @@ Node 22+ and Docker are prerequisites. From a downloaded package directory (or a
 
 The installer atomically replaces only app assets below `${XDG_DATA_HOME:-$HOME/.local/share}/yoloharness`, preserves config, credentials, and shared skills, and creates `$HOME/.local/bin/yolo`. It refuses symlinked or non-directory data/bin destinations. Back up or commit the selected project first: the agent can overwrite or delete files there, and networked generated code may disclose them.
 
+## Uninstall
+
+YOLOharness does not have an uninstall command yet. Stop any active `yolo` run before removing it.
+
+These Bash commands remove the launcher, installed app, image metadata, and the exact Docker image recorded by `yolo setup`. They keep your credentials, model setting, and shared skills so a later reinstall can reuse them. If you want to purge credentials too, run `yolo auth logout` now, before removing the launcher. Logout only deletes the local credential file; it does not remotely revoke the OAuth token.
+
+```bash
+case ${XDG_DATA_HOME:-} in
+  /*) data_home=$XDG_DATA_HOME ;;
+  *) data_home="$HOME/.local/share" ;;
+esac
+case ${XDG_CONFIG_HOME:-} in
+  /*) config_home=$XDG_CONFIG_HOME ;;
+  *) config_home="$HOME/.config" ;;
+esac
+app_root="$data_home/yoloharness"
+config_root="$config_home/yoloharness"
+launcher="$HOME/.local/bin/yolo"
+image_metadata="$app_root/image.json"
+expected_launcher="$app_root/app/src/cli.mjs"
+
+printf 'launcher: %s\napp data: %s\nconfig: %s\n' \
+  "$launcher" "$app_root" "$config_root"
+
+if [ -f "$image_metadata" ]; then
+  image_id="$(node -e '
+    const fs = require("node:fs");
+    const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    if (!/^sha256:[0-9a-f]{64}$/i.test(value.imageId)) process.exit(2);
+    process.stdout.write(value.imageId);
+  ' "$image_metadata")" || {
+    printf 'Refusing to remove an image: %s is malformed.\n' "$image_metadata" >&2
+    exit 1
+  }
+  docker image rm "$image_id" || {
+    printf 'Image removal failed; keeping installation metadata.\n' >&2
+    exit 1
+  }
+fi
+
+if [ -L "$launcher" ] && [ "$(readlink "$launcher")" = "$expected_launcher" ]; then
+  rm -- "$launcher"
+elif [ -e "$launcher" ] || [ -L "$launcher" ]; then
+  printf 'Refusing to remove unexpected launcher: %s\n' "$launcher" >&2
+  exit 1
+fi
+
+[ ! -e "$app_root/app" ] || rm -r -- "$app_root/app"
+rm -f -- "$image_metadata"
+rmdir "$app_root" 2>/dev/null || true
+hash -r
+```
+
+`docker image rm` fails rather than forcing removal if another container still uses that image. Inspect and stop the container before retrying; do not replace it with a forced broad cleanup.
+
+To finish a full purge after logging out above, delete the saved model, remaining configuration, and shared skills:
+
+```bash
+[ ! -e "$config_root" ] || rm -r -- "$config_root"
+[ ! -e "$app_root" ] || rm -r -- "$app_root"
+```
+
+If you configured `YOLO_AUTH_FILE`, logout removes that custom file; deleting `$config_root` alone does not.
+
+The installer does not edit shell startup files. If you manually added `$HOME/.local/bin` to PATH solely for YOLOharness, remove that edit yourself. Do not remove it when other user-installed commands depend on the same directory.
+
+Each project keeps its own run receipts. From a project you have checked carefully, remove only those receipts with:
+
+```bash
+pwd
+rm -r -- .yolo
+```
+
+This does not remove files the agent created elsewhere in that project.
+
 For development, run `npm test`; no package dependencies are required.
 
 The opt-in real-Docker gate requires the installation-owned whole-runtime image and a Docker daemon: `npm run test:docker`. The retained tests under `test/` are the source of truth for shipped-CLI/provider, workspace-boundary, token-secrecy, resource, deadline, SIGINT, and cleanup behavior. The default `npm test` remains offline and skips real Docker. Native macOS is a separate, explicitly unrun gate.

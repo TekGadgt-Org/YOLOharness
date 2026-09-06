@@ -38,6 +38,26 @@ test('doctor reports missing controls and recognizes an offline ready fixture', 
   assert.equal(ready.ready, true);
   assert.ok(ready.checks.every(check => check.ok));
   assert.match(ready.checks.find(check => check.name === 'client_id').detail, /built-in/i);
+
+  await writeFile(join(config, 'yoloharness', 'credentials.json'), JSON.stringify({ accessToken: 'token', refreshToken: 'refresh', clientId: 'client', expiresAt: Date.now() - 1 }));
+  const expired = await doctorStatus({
+    env: { HOME: home, PATH: bin },
+    exec: async (_command, args) => ({
+      stdout: args[0] === 'info' ? 'Docker daemon ready\\n' : JSON.stringify({ Id: `sha256:${'a'.repeat(64)}`, RepoTags: ['yoloharness-local:0.1.0'], Config: { Labels: { 'org.yoloharness.source-digest': `sha256:${'b'.repeat(64)}` }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }),
+      stderr: '',
+    }),
+  });
+  assert.equal(expired.ready, false);
+  assert.equal(expired.checks.find(check => check.name === 'client_id').ok, true);
+  assert.equal(expired.checks.find(check => check.name === 'credentials').ok, false);
+});
+
+test('README numbered setup flow requires only yolo auth login for authentication', async () => {
+  const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
+  const numberedFlow = readme.match(/Node 22\+ and Docker are prerequisites\.[\s\S]*?7\. Run: `yolo/);
+  assert.ok(numberedFlow, 'README numbered setup flow should remain present');
+  assert.match(numberedFlow[0], /5\. Authenticate: `yolo auth login`/);
+  assert.doesNotMatch(numberedFlow[0], /YOLO_CLIENT_ID/);
 });
 
 test('doctor reports daemon and immutable image inspection failures', async () => {

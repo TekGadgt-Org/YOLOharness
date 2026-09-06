@@ -23,10 +23,6 @@ Authentication is separate from a run and never starts automatically. Run `yolo 
 - **[memory/memory-design.md](memory/memory-design.md):** provenance, scope, expiry, contradictions, compaction, and forgetting.
 - **[security/threat-model.md](security/threat-model.md):** adversarial design review and concrete negative tests, not a security certification.
 - **[ux/interaction-design.md](ux/interaction-design.md):** proposed `yolo` CLI and explicitly mocked operator screens. The shipped CLI supports only the bounded container path and explicitly configured provider paths.
-- **[qa/maintainability.md](qa/maintainability.md):** the argument against rebuilding what Codex/Hermes already do.
-- **[qa/qa-report.md](qa/qa-report.md):** independent initial QA (historical FAIL; both reproduced bugs were repaired).
-- **[qa/final-verification.md](qa/final-verification.md):** coordinator's post-repair rerun: **7 tests pass**, repeated same-log demos succeed, and both bug probes pass; raw output retained.
-- **[qa/performance-plan.md](qa/performance-plan.md):** performance and context/delegation evaluation proposal.
 
 ## Install and run (Linux MVP)
 
@@ -48,7 +44,7 @@ The installer atomically replaces only app assets below `${XDG_DATA_HOME:-$HOME/
 
 For development, run `npm test`; no package dependencies are required.
 
-The opt-in real-Docker gate requires the installation-owned whole-runtime image and a Docker daemon: `npm run test:docker`. The retained WRC suite is the source of truth for shipped-CLI/provider, workspace-boundary, token-secrecy, resource, deadline, SIGINT, and cleanup evidence; see [qa/phase1-acceptance-matrix.md](qa/phase1-acceptance-matrix.md). The default `npm test` remains offline and skips real Docker. Native macOS is a separate, explicitly unrun gate.
+The opt-in real-Docker gate requires the installation-owned whole-runtime image and a Docker daemon: `npm run test:docker`. The retained tests under `test/` are the source of truth for shipped-CLI/provider, workspace-boundary, token-secrecy, resource, deadline, SIGINT, and cleanup behavior. The default `npm test` remains offline and skips real Docker. Native macOS is a separate, explicitly unrun gate.
 
 Agent Skills are discovered only from `<cwd>/.agents/skills/<name>/SKILL.md` and `${XDG_DATA_HOME:-$HOME/.local/share}/yoloharness/skills/<name>/SKILL.md`; project skills override shared skills. Names, traversal, symlinks, special files, and bundled resources are bounded and validated. A catalog and bounded snapshots enter the container; `skill_load` content is instructions/data, never authority, and there is no ancestor, Hermes-profile, or remote discovery. Runs write bounded, redacted JSONL receipts below `.yolo/runs/`. Native macOS, live OAuth/provider calls, and non-Linux installation are unverified limits of this MVP.
 

@@ -1,1 +1,0 @@
-provider-only-$(touch /host/provider-output-canary) ; /etc/shadow

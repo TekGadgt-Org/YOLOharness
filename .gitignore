@@ -10,3 +10,4 @@ research/*.source.md
 .worktrees/
 .yolo/
 auth-state/
+/qa/

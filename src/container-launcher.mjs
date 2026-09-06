@@ -66,7 +66,7 @@ export class ContainerLauncher {
       id = await verifyOwnedContainer(this.command, id, name, label, this.spawn);
       owned = true;
       attached = this.spawn(this.command, ['start', '--attach', '--interactive', id], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: DOCKER_ENV() });
-      const result = await attachedOperation(attached, encodeBootstrap(bootstrap));
+      const result = await attachedOperation(attached, encodeBootstrap(bootstrap), signal);
       if (reason) return { version: 1, run_id: null, status: reason.code === 'deadline' ? 'deadline' : 'interrupted', result: null, evidence: [], artifacts: [], errors: [reason.message] };
       if (result.overflow) throw Object.assign(new Error('container output limit exceeded'), { code: 'output_limit' });
       if (result.code !== 0) throw new Error(result.err.trim() || `container exited (${result.code})`);
@@ -117,13 +117,15 @@ function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT, signal } = {}
   return { promise, get child() { return child; } };
 }
 
-function attachedOperation(child, input) {
+function attachedOperation(child, input, signal) {
   return new Promise((resolve, reject) => {
     let out = ''; let err = ''; let done = false; let overflow = false;
-    const finish = (fn, value) => { if (done) return; done = true; fn(value); };
+    const abort = () => { child.kill('SIGKILL'); finish(resolve, { code: null, out, err, overflow }); };
+    const finish = (fn, value) => { if (done) return; done = true; signal?.removeEventListener('abort', abort); fn(value); };
     const collect = (which, chunk) => { const text = String(chunk); if (which === 'out') out += text; else err += text; if (Buffer.byteLength(which === 'out' ? out : err) > MAX_OUTPUT) { overflow = true; child.kill('SIGKILL'); } };
     child.stdout?.on('data', chunk => collect('out', chunk)); child.stderr?.on('data', chunk => collect('err', chunk));
     child.once('error', error => finish(reject, error)); child.once('close', code => finish(resolve, { code, out, err, overflow }));
+    if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true });
     child.stdin?.end(input);
   });
 }

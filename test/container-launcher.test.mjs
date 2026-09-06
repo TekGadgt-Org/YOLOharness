@@ -279,3 +279,41 @@ test('launcher uses one absolute deadline and does not create after slow preflig
     assert.deepEqual(operations, ['info']);
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
+
+test('abort starts exact cleanup while an attach client never closes', async () => {
+  const workspace = await mkdtemp('/tmp/yolo-launcher-stuck-attach-');
+  const controller = new AbortController();
+  const operations = [];
+  const ownedId = '0123456789abcdef'.repeat(4);
+  let ownedName;
+  let ownedLabel;
+  let cleanupStarted;
+  let cleanupCount = 0;
+  try {
+    const spawn = (_command, args) => {
+      const operation = args[0]; operations.push(operation);
+      const listeners = new Map();
+      const stdout = new EventEmitter(); const stderr = new EventEmitter();
+      const result = {
+        stdout, stderr, stdin: { end() {} },
+        kill() { if (operation === 'start') cleanupStarted ??= Date.now(); },
+        once(event, fn) { listeners.set(event, fn); },
+      };
+      const close = code => setImmediate(() => listeners.get('close')?.(code));
+      if (operation === 'info') { setImmediate(() => stdout.emit('data', '["name=rootless"]')); close(0); }
+      else if (operation === 'create') { ownedName = args[args.indexOf('--name') + 1]; ownedLabel = args[args.indexOf('--label') + 1].split('=').slice(1).join('='); setImmediate(() => stdout.emit('data', ownedId)); close(0); }
+      else if (operation === 'inspect' && cleanupCount === 0) { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: ownedId, Name: `/${ownedName}`, Config: { Labels: { 'yoloharness.run': ownedLabel } } }))); close(0); }
+      else if (operation === 'start') { setImmediate(() => controller.abort(new Error('stuck attach cancellation'))); }
+      else if (operation === 'kill') { cleanupCount += 1; close(0); }
+      else if (operation === 'rm') { cleanupCount += 1; close(0); }
+      else if (operation === 'inspect') { setImmediate(() => { stderr.emit('data', 'Error: No such container: ' + ownedId); close(1); }); }
+      return result;
+    };
+    const launcher = new ContainerLauncher({ image: 'sha256:' + 'a'.repeat(64), workspace, spawn, timeoutMs: 1000 });
+    const result = await launcher.launch({ prompt: 'stuck attach', model: 'synthetic-model', deadline: Date.now() + 10_000, accessToken: 'synthetic-access', expiresAt: Date.now() + 20_000 }, { signal: controller.signal });
+    assert.equal(result.status, 'interrupted');
+    assert.ok(cleanupStarted, 'cleanup did not start while attach remained open');
+    assert.equal(operations.filter(operation => operation === 'rm').length, 1);
+    assert.equal(cleanupCount, 2, 'exact cleanup should issue one kill and one rm');
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});

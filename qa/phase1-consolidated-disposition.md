@@ -1,6 +1,6 @@
 # Phase 1 consolidated QA/security disposition
 
-This ledger records the implementation delta on the sole backend writer lane. Current source candidate is `86af2dbb4364a3f7a9e7caa409568423bce65df7`; evidence-only reconciliation commits are `dec3425` and `a3b5b08`. It does not claim release acceptance for deferred/platform-specific boundaries. The fresh cross-row evidence index is `qa/wrc-linux-evidence-index.md`; the complete original/residual finding map, classification, reproducible environmental evidence, and targeted shipped-CLI remediation checklist is `qa/remediation-checklist.md`.
+This ledger records the implementation delta on the sole backend writer lane. Current source candidate is `86af2dbb4364a3f7a9e7caa409568423bce65df7`; ordered evidence-only reconciliation commits are `dec3425`, `a3b5b08`, `e9b9d75`, and `de3dde7`. It does not claim release acceptance for deferred/platform-specific boundaries. The fresh cross-row evidence index is `qa/wrc-linux-evidence-index.md`; the complete original/residual finding map, classification, reproducible environmental evidence, and targeted shipped-CLI remediation checklist is `qa/remediation-checklist.md`.
 
 | Finding | WRC rows | Disposition and evidence |
 |---|---|---|

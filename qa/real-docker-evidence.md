@@ -1,7 +1,7 @@
 # Real Docker phase1 gate evidence
 
 Run date: 2026-09-06 UTC (fresh rerun after WRC-02 emitted-payload correction)
-Candidate source checkout: source candidate `86af2dbb4364a3f7a9e7caa409568423bce65df7`; evidence-only refresh commits are `dec3425` and `a3b5b08`; cross-row index: `qa/wrc-linux-evidence-index.md`
+Candidate source checkout: source candidate `86af2dbb4364a3f7a9e7caa409568423bce65df7`; ordered evidence-only refresh commits are `dec3425`, `a3b5b08`, `e9b9d75`, and `de3dde7`; cross-row index: `qa/wrc-linux-evidence-index.md`
 Docker server: 29.8.0, context `rootless`
 Kernel: `6.8.0-138-generic`; cgroup version 2; rootless security option observed; storage `overlayfs`.
 Base image: `yoloharness-local:0.1.0`, immutable ID `sha256:7c881f86ae5cb83d2700128381e7d75a028170bf862858792f3959a573221e2d` (RepoTags includes the installation-owned tag).

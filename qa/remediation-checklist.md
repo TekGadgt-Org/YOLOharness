@@ -1,6 +1,6 @@
 # Phase 1 finding reconciliation and remediation checklist
 
-Status: remediation in progress on 2026-09-06 UTC; the current feature head includes retained lifecycle evidence, exact-owned test cleanup, and the workspace symlink correction below.
+Status: remediation in progress on 2026-09-06 UTC; the current feature head includes retained lifecycle evidence, exact-owned test cleanup, and the workspace symlink correction below. Current evidence chain is frozen source candidate `86af2dbb4364a3f7` followed by evidence-only commits `dec3425`, `a3b5b08`, `e9b9d75`, and `de3dde7`.
 Scope: current shipped CLI, Linux rootless Docker evidence, synthetic credentials/provider only. This checklist is a ledger, not release approval. It preserves the historical reports and records every original finding, its WRC mapping, current classification, evidence, and the exact shipped-path checks required for any remaining actionable work.
 
 ## Evidence and execution context
@@ -55,7 +55,7 @@ The complete real-Docker build output, command, stderr, status, timestamps, imag
 
 ## WRC row closure checklist
 
-The following is the non-duplicated current row disposition. “Partial/unrun” is intentionally preserved; it is not a waiver.
+The following is the non-duplicated current row disposition. “Partial/unrun” is intentionally preserved only for explicitly bounded or deferred rows; it is not a waiver.
 
 - WRC-01: PASS scoped shipped derivative/provider network; retain synthetic-only boundary.
 - WRC-02: PASS scoped. The synthetic provider emits a provider-only unique shell-metacharacter/host-looking SSE payload; `wrc-02-provider-payload.txt` retains that emitted data separately from the request, while `wrc-02-host-trace.jsonl` records fixed launcher child/filesystem calls and Docker argv excludes both input and emitted model-derived values. The unique host canary is unchanged. The trace is explicitly test-only instrumentation, not kernel-wide tracing.

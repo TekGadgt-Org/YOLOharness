@@ -1,6 +1,6 @@
 # Fresh Linux WRC evidence index
 
-Candidate source checkout: source candidate `86af2dbb4364a3f7a9e7caa409568423bce65df7`; evidence-only updates are commits `dec3425` and `a3b5b08` captured after that frozen candidate.
+Candidate source checkout: source candidate `86af2dbb4364a3f7a9e7caa409568423bce65df7`; ordered evidence-only updates are commits `dec3425`, `a3b5b08`, `e9b9d75`, and `de3dde7` captured after that frozen candidate.
 Runtime source digest: `sha256:5a9eaf94b2012bdb48251774dcb3397828261b5768ac8879ce778614f26b7a8e`
 Production image: `yoloharness-local:0.1.0`
 Production image ID: `sha256:7c881f86ae5cb83d2700128381e7d75a028170bf862858792f3959a573221e2d`

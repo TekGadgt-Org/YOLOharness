@@ -71,7 +71,7 @@ Cleanup and failure notes
 
 - Positive passing gates left no containers matching `label=yoloharness.run` and no networks matching `yoloharness-internal*`.
 - The first real-Docker attempt exposed an intermittent cleanup timing failure: at the deadline assertion, a test-owned runtime was still listed. A subsequent exact-ID cleanup removed only that owned container; the immediate rerun and `npm run test:docker` both passed with empty final inventories.
-- This is not a reproducible acceptance failure across the two subsequent complete gates, but it is a release-confidence residual: the deadline assertion can race the daemon's cleanup. The failing run must not be erased from the QA history merely because the retained raw files were refreshed by later successful runs.
+- This is not a reproducible acceptance failure across the two subsequent complete gates. The retained fact is limited to a test-owned runtime still being observed at the deadline cleanup assertion; the original root cause is unproven and the exact source candidate is irrecoverable. The failing run must not be erased from the QA history merely because the retained raw files were refreshed by later successful runs.
 - Historical WRC-20 disposition was PARTIAL; the current finite applicable Linux aggregation is recorded separately as COMPLETE. WRC-21 remains DEFERRED by contract. No release approval is inferred.
 
 Coverage gaps / environmental blockers

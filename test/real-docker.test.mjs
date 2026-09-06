@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readdir, readFile, writeFile, rm, access, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, writeFile, rm, access, symlink, link } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -22,7 +22,7 @@ const waitFor = async (path, timeout = 10_000) => {
 };
 const restoreEnv = (old) => { for (const [key, value] of Object.entries(old)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } };
 
-async function fixture() {
+async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'yoloharness-real-'));
   const workspace = join(root, 'workspace');
   const outsideSentinel = join(root, 'outside-sentinel.txt');
@@ -203,6 +203,42 @@ async function fixture() {
     assert.equal(sigintExit.code, 130, `${sigintErr}${sigintOut}`); await new Promise(resolve => setTimeout(resolve, 600));
     assert.equal(await access(join(workspace, 'sigint-late')).then(() => true).catch(() => false), false);
     const sigintArgs = JSON.parse((await readFile(join(root, 'docker-argv.jsonl'), 'utf8')).trim().split(/\r?\n/).at(-1)); assertOwnedRuntimeAbsent(sigintArgs);
+
+    await t.test('WRC-08 shipped CLI rejects a hardlink alias before model execution', async () => {
+      const hardlinkSource = join(root, 'outside-hardlink-sentinel.txt');
+      const hardlinkAlias = join(workspace, 'hardlink-alias.txt');
+      await writeFile(hardlinkSource, 'outside hardlink sentinel');
+      await link(hardlinkSource, hardlinkAlias);
+      const requestsBefore = (await readdir(capture)).filter(name => /^request-\d+\.json$/.test(name)).length;
+      const negative = spawn(process.execPath, [new URL('../src/cli.mjs', import.meta.url).pathname, '--json', 'hardlink negative probe'], {
+        cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let negativeOut = ''; let negativeErr = '';
+      negative.stdout.on('data', chunk => { negativeOut += chunk; });
+      negative.stderr.on('data', chunk => { negativeErr += chunk; });
+      const negativeExit = await new Promise(resolve => negative.once('close', (code, signal) => resolve({ code, signal })));
+      assert.equal(negativeExit.code, 1);
+      assert.equal(negativeExit.signal, null);
+      assert.equal(negativeOut, '');
+      assert.match(negativeErr, /workspace contains a multiply-linked file: hardlink-alias\.txt/);
+      assert.equal(await readFile(hardlinkSource, 'utf8'), 'outside hardlink sentinel');
+      assert.equal((await readdir(capture)).filter(name => /^request-\d+\.json$/.test(name)).length, requestsBefore);
+      await rm(hardlinkAlias);
+
+      const ordinaryFile = join(workspace, 'single-link-control.txt');
+      await writeFile(ordinaryFile, 'ordinary single-link control');
+      const positive = spawn(process.execPath, [new URL('../src/cli.mjs', import.meta.url).pathname, '--json', 'single-link positive control'], {
+        cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let positiveOut = ''; let positiveErr = '';
+      positive.stdout.on('data', chunk => { positiveOut += chunk; });
+      positive.stderr.on('data', chunk => { positiveErr += chunk; });
+      const positiveExit = await new Promise(resolve => positive.once('close', (code, signal) => resolve({ code, signal })));
+      assert.equal(positiveExit.code, 0, `${positiveErr}${positiveOut}`);
+      assert.equal(positiveExit.signal, null);
+      assert.equal(JSON.parse(positiveOut.trim()).status, 'completed');
+      await rm(ordinaryFile);
+    });
 
     for (const [prompt, marker] of [['stdout-overflow-probe', 'stdout-control'], ['stderr-overflow-probe', 'stderr-control']]) {
       const overflow = await runProbe(prompt, '0.2'); assert.equal(overflow.code, 124, `${overflow.err}${overflow.out}`); assert.match(overflow.out, /output limit/i);

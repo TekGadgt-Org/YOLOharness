@@ -450,6 +450,11 @@ test('configured final image has read-only root and rootless UID0 workspace writ
 });
 
 test('WRC-11 final image bounded PID and memory enforcement has below-limit controls', { skip: skip || process.env.YOLO_WRC11_ONLY !== '1' }, async () => {
+  const daemonSecurityOptions = JSON.parse(docker('info', '--format', '{{json .SecurityOptions}}').trim());
+  assert.ok(Array.isArray(daemonSecurityOptions));
+  assert.ok(daemonSecurityOptions.includes('name=seccomp,profile=builtin'), 'daemon must report builtin seccomp');
+  assert.ok(daemonSecurityOptions.includes('name=rootless'), 'daemon must report rootless mode');
+  if (process.env.YOLO_EVIDENCE_DIR) await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-11-daemon-security-options.stdout'), `${JSON.stringify(daemonSecurityOptions)}\n`);
   const below = docker('run', '--rm', '--pull=never', '--pids-limit', '8', '--memory', '64m', '--entrypoint', 'node', configuredImage, '-e', "require('fs').writeFileSync('/tmp/below-limit','ok')");
   assert.equal(below, '');
   const pidProbe = docker('run', '--rm', '--pull=never', '--pids-limit', '8', '--entrypoint', 'node', configuredImage, '-e', "const cp=require('child_process');let rejected=0;for(let i=0;i<64;i++){const child=cp.spawnSync(process.execPath,['-e','process.exit(0)']);if(child.error||child.status===null)rejected++};process.exit(rejected>0?0:1)");

@@ -1,7 +1,7 @@
 # Real Docker phase1 gate evidence
 
 Run date: 2026-09-06 UTC (fresh rerun after WRC-02 emitted-payload correction)
-Candidate source checkout: source candidate `daa9f90a9a8969c504aee1f64833df7926ec4c6c`; this evidence-only refresh follows that frozen candidate; cross-row index: `qa/wrc-linux-evidence-index.md`
+Candidate source checkout: source candidate `86af2dbb4364a3f7a9e7caa409568423bce65df7`; evidence-only refresh commits are `dec3425` and `a3b5b08`; cross-row index: `qa/wrc-linux-evidence-index.md`
 Docker server: 29.8.0, context `rootless`
 Kernel: `6.8.0-138-generic`; cgroup version 2; rootless security option observed; storage `overlayfs`.
 Base image: `yoloharness-local:0.1.0`, immutable ID `sha256:7c881f86ae5cb83d2700128381e7d75a028170bf862858792f3959a573221e2d` (RepoTags includes the installation-owned tag).
@@ -42,11 +42,11 @@ Exact real-Docker test names:
 - A hostile XDG metadata fixture pointing at the untagged CA derivative failed with `runtime image is not the installation-owned image tag` while its credential path was intentionally absent; the tagged base metadata then restored the positive control.
 - A disposable cwd containing a literal newline failed closed with `workspace path contains unsupported control characters`; the ordinary disposable cwd completed successfully.
 
-- Preflight returned Docker server version `29.8.0`, with daemon security option `name=rootless`.
+- Preflight returned Docker server version `29.8.0`; the WRC-11 test asserts and retains daemon security options `name=seccomp,profile=builtin`, `name=rootless`, and `name=cgroupns` in `wrc-11-daemon-security-options.stdout`.
 - The whole-runtime container was created with `--pull=never`, read-only root, dropped capabilities, no-new-privileges, bounded PID/memory/CPU limits, bounded `/tmp` and synthetic-home tmpfs, and exactly one writable `/workspace` bind. The image canary observed `/app` as read-only and confirmed write/delete on the project bind.
 - `runtime-inspect.stdout` is the daemon's post-start inspection of the shipped runtime before cleanup; assertions cover read-only root, dropped capabilities, no-new-privileges, PID/memory/CPU limits, exactly one `/workspace` bind, absence of host secret/socket mounts, explicit network attachment, and absence of token/Docker selector variables from the container environment.
 - Cleanup removed the exact owned provider, runtime IDs, network, temporary CA/key/capture/workspace roots, and wrapper root. The remaining stopped Docker container on the daemon (`objective_chatelet`) is pre-existing and not owned by this test.
 - The offline launcher regression `uncertain create waits for stable absence and removes a delayed daemon container` passed: exact name+label reconciliation observed a delayed ID, removed it, verified not-found, and required stable absence.
 - The mountinfo regression `mountinfo decoding preserves escaped newline targets for nested-mount checks` passed; Linux `\\012` escapes now decode before nested-target comparison.
 
-The test is opt-in because it requires a rootless Docker daemon, OpenSSL, and prebuilt image. It uses only synthetic credentials/config; no live OAuth/provider request or real credential was used. Rootless behavior is daemon/kernel dependent. Finite applicable Linux WRC-20 aggregation is retained; WRC-07 remains environment-bounded, WRC-21/native macOS remains deferred, and this evidence does not claim whole-matrix or release approval.
+The test is opt-in because it requires a rootless Docker daemon, OpenSSL, and prebuilt image. It uses only synthetic credentials/config; no live OAuth/provider request or real credential was used. Rootless behavior is daemon/kernel dependent. Finite applicable Linux WRC-20 aggregation is complete for the retained rows, with WRC-07 explicitly environment-bounded and WRC-21/native macOS explicitly deferred; this evidence does not claim whole-matrix or release approval.

@@ -1,6 +1,6 @@
 # Fresh Linux WRC evidence index
 
-Candidate source checkout: source candidate `86af2db`; this evidence-only update is captured after that frozen candidate.
+Candidate source checkout: source candidate `86af2dbb4364a3f7a9e7caa409568423bce65df7`; evidence-only updates are commits `dec3425` and `a3b5b08` captured after that frozen candidate.
 Runtime source digest: `sha256:5a9eaf94b2012bdb48251774dcb3397828261b5768ac8879ce778614f26b7a8e`
 Production image: `yoloharness-local:0.1.0`
 Production image ID: `sha256:7c881f86ae5cb83d2700128381e7d75a028170bf862858792f3959a573221e2d`
@@ -29,7 +29,7 @@ Current row index (the status is intentionally not a waiver):
 | WRC-08 | Named nested shipped CLI hardlink negative/control in `test/real-docker.test.mjs` | PASS: exit 1 before provider/model execution, outside sentinel unchanged byte-for-byte (25 bytes, matching SHA-256 before/after), no new provider request; same-runtime ordinary single-link control completes. Fixture layout and sentinel/link-count before/after evidence are retained in `qa/wrc-baseline-raw/wrc-08-{negative,control}.fixture.json`. |
 | WRC-09 | Shipped warning/readability provider control | PASS scoped, synthetic project secrets intentionally exposed |
 | WRC-10 | Shipped create flags/runtime inspection plus `resource-probe` read-only-root/tmpfs/project control | PASS scoped: approved rootless UID0 mapping, read-only root, bounded tmpfs, one project bind, and daemon-observed shipped flags are retained |
-| WRC-11 | Shipped generated PID/memory pressure negatives and actual-limit below-limit controls plus runtime inspection | PASS scoped: resource control creates/waits for 8 children under the actual 128 PID limit and allocates/touches/releases 16 MiB under the actual 512 MiB limit; PID denial records 128, 700 MiB pressure records child status 137 and `memory.events` `oom_kill 1`, and runtime inspection verifies Seccomp 2/NoNewPrivs 1 |
+| WRC-11 | Shipped generated PID/memory pressure negatives and actual-limit below-limit controls plus runtime/daemon inspection | PASS scoped: resource control creates/waits for 8 children under the actual 128 PID limit and allocates/touches/releases 16 MiB under the actual 512 MiB limit; PID denial records 128, 700 MiB pressure records child status 137 and `memory.events` `oom_kill 1`, runtime inspection verifies Seccomp 2/NoNewPrivs 1, and `wrc-11-daemon-security-options.stdout` records daemon builtin seccomp/rootless options |
 | WRC-12 | Shipped deadline marker/no-late-write control | PASS scoped |
 | WRC-13 | Shipped SIGINT after started marker and daemon-confirmed runtime presence, plus same-command no-SIGINT control | PASS scoped: SIGINT returns 130 with no late write and exact cleanup; no-SIGINT control reaches delayed completion marker |
 | WRC-14 | Shipped independent stdout/stderr overflow and below-limit controls | PASS scoped |

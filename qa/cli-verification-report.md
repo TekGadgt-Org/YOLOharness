@@ -64,7 +64,7 @@ WRC row-by-row disposition
 | WRC-17 | PASS offline | Existing auth rotation, atomic persistence, and multi-line event-log reopen tests pass under `npm test`. |
 | WRC-18 | HISTORICAL PASS scoped only | Historical derivative build/history/export scan excludes synthetic ignored secrets; it did not exercise shipped `yolo setup`. Current shipped-setup evidence is retained separately under `qa/wrc-baseline-raw/wrc-18-setup.*`. |
 | WRC-19 | PASS scoped | Runtime inspection finds no Docker socket/nested daemon exposure; declared provider tool control passes. |
-| WRC-20 | PARTIAL | Linux rootless/image/source linkage and applicable shipped probes pass. Broader aggregation/daemon matrix is not claimed complete. |
+| WRC-20 | HISTORICAL PARTIAL | This historical report predates the reconciled finite applicable Linux aggregation. It remains traceability only; current disposition is recorded in `qa/wrc-linux-evidence-index.md` and is not whole-matrix or release approval. |
 | WRC-21 | DEFERRED | Native macOS Docker Desktop evidence cannot be generated on this Linux host. |
 
 Cleanup and failure notes
@@ -72,7 +72,7 @@ Cleanup and failure notes
 - Positive passing gates left no containers matching `label=yoloharness.run` and no networks matching `yoloharness-internal*`.
 - The first real-Docker attempt exposed an intermittent cleanup timing failure: at the deadline assertion, a test-owned runtime was still listed. A subsequent exact-ID cleanup removed only that owned container; the immediate rerun and `npm run test:docker` both passed with empty final inventories.
 - This is not a reproducible acceptance failure across the two subsequent complete gates, but it is a release-confidence residual: the deadline assertion can race the daemon's cleanup. The failing run must not be erased from the QA history merely because the retained raw files were refreshed by later successful runs.
-- WRC-20 remains PARTIAL and WRC-21 remains DEFERRED by contract. No release approval is inferred.
+- Historical WRC-20 disposition was PARTIAL; the current finite applicable Linux aggregation is recorded separately as COMPLETE. WRC-21 remains DEFERRED by contract. No release approval is inferred.
 
 Coverage gaps / environmental blockers
 

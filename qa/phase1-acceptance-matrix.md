@@ -9,7 +9,7 @@ WRC-03   Missing Docker/daemon/image fail-closed                PASS scoped ship
 WRC-04   Exactly one /workspace bind and prohibited targets       PASS scoped shipped runtime inspect plus generated in-container absence probes for host home/proc/device/socket targets; exhaustive host namespace claims excluded
 WRC-05   Outside absolute/parent path controls                   PASS shipped `boundary-probe` (real outside sentinel absolute/parent read/write attempts fail; workspace write/read/delete control passes)
 WRC-06   Symlink namespace controls                              PASS shipped `boundary-probe` (project symlink resolves to Docker-managed `/etc/hosts` read-only; outside host paths remain absent)
-WRC-07   Nested mount rejection                                  RESIDUAL shipped newline-cwd rejection and escaped-newline parser regression; nested-bind denial/non-recursive evidence remains unavailable
+WRC-07   Nested mount rejection                                  ENVIRONMENT-BOUNDED (safe unshare nested-bind fixture denied with uid_map Operation not permitted; ordinary nested-directory control passes; not a launcher nested-bind PASS; see `wrc-07-nested-bind-denial.json`)
 WRC-08   Multi-link regular-file rejection                       PASS shipped CLI subtest `WRC-08 shipped CLI rejects a hardlink alias before model execution` (negative hardlink alias leaves outside sentinel unchanged and emits no provider request; same-runtime ordinary single-link control completes; unit regression retained)
 WRC-09   Project secret warning / intentional exposure            PASS scoped shipped control (warning emitted; synthetic `.env`, key, and token fixtures readable only through `/workspace`; no confidentiality claim)
 WRC-10   Rootless-only UID0 mapping, read-only root, tmpfs, canary PASS scoped shipped daemon inspection and bounded control (approved rootless 0:0 mapping)
@@ -22,7 +22,7 @@ WRC-16A  Access-only bootstrap; refresh absent; 401 fail-closed   PASS scoped sh
 WRC-17   Host refresh rotation and atomic persistence             PASS existing auth integration tests
 WRC-18   Allowlisted build context / secret-free layers           PASS scoped shipped setup context/layer probe (`wrc-18-setup.*`; package/src-only context and history/export secret scan)
 WRC-19   No Docker/Podman socket/nested Docker; declared tools only | PASS scoped shipped `nested-docker-probe` (generated Docker/Podman attempts fail closed; `sh` control succeeds; exhaustive executable inventory remains bounded)
-WRC-20   Observed Linux rootless evidence tied to image/commit     PARTIAL (current identities and row-level results retained; WRC-07 is environment-bounded and WRC-21 deferred; no whole-matrix release approval)
+WRC-20   Observed Linux rootless evidence tied to image/commit     COMPLETE for finite applicable Linux aggregation (current identities, row-level evidence, WRC-07 environment-bounded disposition, and WRC-21 deferred disposition are retained; this is not whole-matrix or release approval)
 WRC-21   Native macOS Docker Desktop                              DEFERRED (approved Linux-only milestone; Ryan runs after Linux ships)
 
 Offline verification

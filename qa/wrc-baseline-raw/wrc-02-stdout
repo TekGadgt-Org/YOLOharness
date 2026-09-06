@@ -1,0 +1,1 @@
+{"version":1,"run_id":"run-1788663313252-e2350db0","status":"completed","result":"provider-only-$(touch /host/provider-output-canary) ; /etc/shadow whole-runtime-ok","evidence":[{"version":1,"ok":true,"call_id":"synthetic-1","code":0,"output":"whole-runtime-ok"},"provider response received at step 2"],"artifacts":[],"errors":[]}

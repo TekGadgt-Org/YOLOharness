@@ -8,10 +8,10 @@
     "--",
     "mount",
     "--bind",
-    "/tmp/yoloharness-wrc07-fLi1nP",
-    "/tmp/yoloharness-wrc07-fLi1nP/nested"
+    "/tmp/yoloharness-wrc07-i2IfhC",
+    "/tmp/yoloharness-wrc07-i2IfhC/nested"
   ],
-  "cwd": "/tmp/yoloharness-wrc07-fLi1nP",
+  "cwd": "/tmp/yoloharness-wrc07-i2IfhC",
   "environment": {
     "platform": "linux",
     "kernel": "Linux 6.8.0-138-generic",

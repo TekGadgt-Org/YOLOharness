@@ -76,7 +76,7 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
   if (!(Number.isFinite(minutes) && minutes > 0)) throw new TypeError('minutes must be positive and finite');
   if (!(Number.isFinite(cleanupGraceMs) && cleanupGraceMs > 0)) throw new TypeError('cleanupGraceMs must be positive and finite');
   if (!provider) throw new MissingProviderError();
-  if (signal.aborted) return { version: 1, run_id: null, status: 'interrupted', result: null, evidence: [], artifacts: [], errors: ['interrupted before start'] };
+  if (signal.aborted) return { version: 1, run_id: null, status: 'interrupted', effect_state: 'uncertain', result: null, evidence: [], artifacts: [], errors: ['interrupted before start'] };
   const runId = `run-${Date.now()}-${randomUUID().slice(0, 8)}`;
   const runDir = join(workspace, '.yolo', 'runs', runId);
   await mkdir(runDir, { recursive: true, mode: 0o700 });
@@ -142,5 +142,6 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
     timer.cancel();
     try { await log.append(runId, status === 'completed' ? 'run_completed' : 'run_stopped', { status, steps }); } catch (error) { errors.push(`receipt write failed: ${error.message}`); if (status === 'completed') status = 'failed'; }
   }
-  return { version: 1, run_id: runId, status, result: result ?? null, evidence, artifacts, errors };
+  const effectState = status === 'completed' ? 'none' : errors.some(error => String(error).includes('cleanup_unknown')) ? 'unknown' : status === 'deadline' || status === 'interrupted' ? 'uncertain' : 'none';
+  return { version: 1, run_id: runId, status, effect_state: effectState, result: result ?? null, evidence, artifacts, errors };
 }

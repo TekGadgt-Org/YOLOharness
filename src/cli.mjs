@@ -75,7 +75,7 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     const launcher = new ContainerLauncher({ image, workspace, command: dockerCommand, timeoutMs: options.minutes * 60_000 + 10_000 });
     const record = await launcher.launch({ prompt: options.prompt, model, deadline: Date.now() + options.minutes * 60_000, accessToken: credentials.accessToken, expiresAt: credentials.expiresAt }, { signal: controller.signal });
     process.removeListener('SIGINT', onInterrupt);
-    io.stdout.write(`${options.json ? JSON.stringify(record) : `${record.status}: ${record.result ?? record.errors.join('; ')}`}\n`);
+    io.stdout.write(`${options.json ? JSON.stringify(record) : `${record.status} run=${record.run_id ?? 'unknown'} effect_state=${record.effect_state ?? 'unknown'} evidence=${record.evidence?.length ?? 0} artifacts=${record.artifacts?.length ?? 0}: ${record.result ?? record.errors.join('; ')}`}\n`);
     return record.status === 'completed' ? 0 : record.status === 'interrupted' ? 130 : record.status === 'deadline' ? 124 : 1;
   } catch (error) {
     const message = error instanceof MissingProviderError ? error.message : error.message;
@@ -238,15 +238,40 @@ async function configCommand(args, io) {
   const model = validateModel(args[2]); const store = new ConfigStore(configPath()); await store.load(); await store.save(model); io.stdout.write(`saved model ${model}\n`); return 0;
 }
 
-export async function doctorCommand(io) {
+export async function doctorStatus({ env = process.env } = {}) {
   const checks = [];
-  try { await resolveDockerCommand(); checks.push(['Docker executable', true]); } catch { checks.push(['Docker executable', false]); }
-  try { await readFile(imageMetadataPath(), 'utf8'); checks.push(['runtime image metadata', true]); } catch { checks.push(['runtime image metadata', false]); }
-  checks.push(['Codex client ID', typeof process.env.YOLO_CLIENT_ID === 'string' && process.env.YOLO_CLIENT_ID.length > 0]);
-  try { const credentials = await new AuthStore(process.env.YOLO_AUTH_FILE ?? join(configRoot(), 'yoloharness', 'credentials.json')).load(); checks.push(['credentials', Boolean(credentials?.accessToken)]); } catch { checks.push(['credentials', false]); }
-  try { await resolveModel(); checks.push(['model', true]); } catch { checks.push(['model', false]); }
-  for (const [name, ok] of checks) io.stdout.write(`${ok ? 'ok' : 'missing'}: ${name}\n`);
-  return checks.every(([, ok]) => ok) ? 0 : 1;
+  const add = (name, ok, detail) => checks.push({ name, ok: Boolean(ok), detail });
+  let docker = false;
+  for (const directory of (typeof env.PATH === 'string' ? env.PATH : '').split(':')) {
+    if (!directory) continue;
+    try { await access(join(directory, 'docker'), fsConstants.X_OK); docker = true; break; } catch {}
+  }
+  add('docker', docker, docker ? 'Docker executable found on PATH' : 'Docker executable missing from PATH');
+  let image = false;
+  try {
+    const value = JSON.parse(await readFile(imageMetadataPath(env), 'utf8'));
+    image = value?.version === 1 && /^sha256:[0-9a-f]{64}$/i.test(value.imageId ?? '') && /^sha256:[0-9a-f]{64}$/i.test(value.sourceDigest ?? '') && typeof value.sourceVersion === 'string' && value.sourceVersion.length > 0;
+  } catch {}
+  add('runtime_image', image, image ? 'runtime image metadata is present' : 'runtime image is not configured; run `yolo setup`');
+  const clientId = typeof env.YOLO_CLIENT_ID === 'string' && env.YOLO_CLIENT_ID.length > 0;
+  add('client_id', clientId, clientId ? 'client ID is configured' : 'YOLO_CLIENT_ID is missing');
+  let credentials = false;
+  try {
+    const value = JSON.parse(await readFile(env.YOLO_AUTH_FILE ?? join(configRoot(env), 'yoloharness', 'credentials.json'), 'utf8'));
+    credentials = typeof value?.accessToken === 'string' && value.accessToken.length > 0 && typeof value?.refreshToken === 'string' && value.refreshToken.length > 0 && Number.isFinite(value.expiresAt) && value.expiresAt > Date.now();
+  } catch {}
+  add('credentials', credentials, credentials ? 'local credentials are present and unexpired' : 'usable local credentials are missing; run `yolo auth login`');
+  let model = false;
+  try { model = Boolean(env.YOLO_MODEL ? validateModel(env.YOLO_MODEL) : (await new ConfigStore(configPath(env)).load())?.model); } catch {}
+  add('model', model, model ? 'model is configured' : 'model is missing; run `yolo config set model <model-id>`');
+  return { version: 1, ready: checks.every(check => check.ok), checks };
+}
+
+export async function doctorCommand(io) {
+  const status = await doctorStatus();
+  for (const check of status.checks) io.stdout.write(`${check.ok ? 'ready' : 'missing'} ${check.name}: ${check.detail}\n`);
+  io.stdout.write(`doctor: ${status.ready ? 'ready' : 'not ready'}\n`);
+  return status.ready ? 0 : 1;
 }
 
 function authConfig(store, clientId = process.env.YOLO_CLIENT_ID, allowOverrides = true) { return { clientId, ...(allowOverrides ? { issueUrl: process.env.YOLO_AUTH_ISSUE_URL ?? AUTH_ENDPOINTS.issueUrl, pollUrl: process.env.YOLO_AUTH_POLL_URL ?? AUTH_ENDPOINTS.pollUrl, tokenUrl: process.env.YOLO_AUTH_TOKEN_URL ?? AUTH_ENDPOINTS.tokenUrl, verificationUrl: process.env.YOLO_AUTH_VERIFY_URL ?? AUTH_ENDPOINTS.verificationUrl, redirectUri: process.env.YOLO_AUTH_REDIRECT_URI ?? AUTH_ENDPOINTS.redirectUri } : AUTH_ENDPOINTS), store }; }

@@ -68,7 +68,7 @@ export class ContainerLauncher {
       owned = true;
       attached = this.spawn(this.command, ['start', '--attach', '--interactive', id], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: DOCKER_ENV() });
       const result = await attachedOperation(attached, encodeBootstrap({ ...bootstrap, skills: await snapshotSkills(source) }), signal);
-      if (reason) return { version: 1, run_id: null, status: reason.code === 'deadline' ? 'deadline' : 'interrupted', result: null, evidence: [], artifacts: [], errors: [reason.message] };
+      if (reason) return { version: 1, run_id: null, status: reason.code === 'deadline' ? 'deadline' : 'interrupted', effect_state: 'uncertain', result: null, evidence: [], artifacts: [], errors: [reason.message] };
       if (result.overflow) throw Object.assign(new Error('container output limit exceeded'), { code: 'output_limit' });
       if (result.code !== 0) throw new Error(result.err.trim() || `container exited (${result.code})`);
       const lines = result.out.trim().split(/\r?\n/).filter(Boolean);

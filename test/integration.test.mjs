@@ -24,6 +24,21 @@ test('shipped argument parser rejects the host-runtime fixture option', () => {
   assert.throws(() => parseArgs(['--fixture', 'offline']), /unknown option|fixture/);
 });
 
+test('configured provider preserves streamed partial text when the response aborts', async () => {
+  const provider = new ConfiguredProvider({ credentials: { accessToken: 'token' }, url: 'https://provider.invalid/responses', model: 'model', fetch: async () => ({
+    ok: true,
+    body: (async function* () {
+      yield Buffer.from('data: {"type":"response.output_text.delta","delta":"partial"}\n\n');
+      throw Object.assign(new Error('deadline exceeded'), { code: 'stream_incomplete' });
+    })(),
+  }) });
+  await assert.rejects(() => provider.next({ messages: [], tools: [], signal: new AbortController().signal }), error => {
+    assert.equal(error.message, 'deadline exceeded');
+    assert.equal(error.partialResult, 'partial');
+    return true;
+  });
+});
+
 test('model configuration roundtrips in XDG config and preserves exact spelling', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'yolo-config-')); const path = join(dir, 'yoloharness', 'config.json');
   const store = new ConfigStore(path); await store.save('Provider/MODEL:v2');

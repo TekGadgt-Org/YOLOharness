@@ -6,8 +6,31 @@ import { tmpdir } from 'node:os';
 import { collectSkills, loadSkill, skill_load, MAX_SKILL_BUNDLE } from '../src/skills.mjs';
 import { installPackage } from '../src/installer.mjs';
 import { encodeBootstrap, MAX_BOOTSTRAP } from '../src/bootstrap.mjs';
+import { doctorStatus } from '../src/cli.mjs';
 
 const temp = () => mkdtemp(join(tmpdir(), 'yolo-install-test-'));
+
+test('doctor reports missing controls and recognizes an offline ready fixture', async () => {
+  const home = await temp();
+  const missing = await doctorStatus({ env: { HOME: home, PATH: '' } });
+  assert.equal(missing.ready, false);
+  assert.deepEqual(missing.checks.map(check => check.name), ['docker', 'runtime_image', 'client_id', 'credentials', 'model']);
+  assert.ok(missing.checks.every(check => check.ok === false));
+
+  const bin = await temp();
+  await writeFile(join(bin, 'docker'), '#!/bin/sh\n');
+  const data = join(home, '.local', 'share');
+  const config = join(home, '.config');
+  await mkdir(join(data, 'yoloharness'), { recursive: true });
+  await mkdir(join(config, 'yoloharness'), { recursive: true });
+  await writeFile(join(data, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId: `sha256:${'a'.repeat(64)}`, sourceDigest: `sha256:${'b'.repeat(64)}`, sourceVersion: '0.1.0' }));
+  await writeFile(join(config, 'yoloharness', 'credentials.json'), JSON.stringify({ accessToken: 'token', refreshToken: 'refresh', clientId: 'client', expiresAt: Date.now() + 60_000 }));
+  await writeFile(join(config, 'yoloharness', 'config.json'), JSON.stringify({ version: 1, model: 'model-x' }));
+  await (await import('node:fs/promises')).chmod(join(bin, 'docker'), 0o755);
+  const ready = await doctorStatus({ env: { HOME: home, PATH: bin, YOLO_CLIENT_ID: 'client' } });
+  assert.equal(ready.ready, true);
+  assert.ok(ready.checks.every(check => check.ok));
+});
 
 test('local skill overrides shared skill and load returns selected bounded resource', async () => {
   const root = await temp();

@@ -7,8 +7,8 @@ WRC-01   Whole-runtime shipped launcher/image synthetic provider roundtrip  PASS
 WRC-02   Launcher fixed argv / model text never host-executed   RESIDUAL (selector/secret values are excluded; fixed host process/filesystem instrumentation is not retained)
 WRC-03   Missing Docker/daemon/image fail-closed                PASS scoped shipped preflight probes (`test/shipped-preflight.test.mjs`; unavailable client, unavailable daemon, absent image, and valid preflight control; synthetic fixtures only)
 WRC-04   Exactly one /workspace bind and prohibited targets       PASS scoped shipped runtime inspect (`qa/wrc-baseline-raw/runtime-inspect.stdout`)
-WRC-05   Outside absolute/parent path controls                   RESIDUAL shipped workspace control; real outside-sentinel read/write attempts remain unretained
-WRC-06   Symlink namespace controls                              RESIDUAL known target control passes; project symlink namespace behavior remains unretained
+WRC-05   Outside absolute/parent path controls                   PASS shipped `boundary-probe` (real outside sentinel absolute/parent read/write attempts fail; workspace write/read/delete control passes)
+WRC-06   Symlink namespace controls                              PASS shipped `boundary-probe` (project symlink resolves to Docker-managed `/etc/hosts` read-only; outside host paths remain absent)
 WRC-07   Nested mount rejection                                  RESIDUAL shipped newline-cwd rejection and escaped-newline parser regression; nested-bind denial/non-recursive evidence remains unavailable
 WRC-08   Multi-link regular-file rejection                       PASS shipped CLI subtest `WRC-08 shipped CLI rejects a hardlink alias before model execution` (negative hardlink alias leaves outside sentinel unchanged and emits no provider request; same-runtime ordinary single-link control completes; unit regression retained)
 WRC-09   Project secret warning / intentional exposure            PASS scoped shipped control (warning emitted; synthetic `.env`, key, and token fixtures readable only through `/workspace`; no confidentiality claim)

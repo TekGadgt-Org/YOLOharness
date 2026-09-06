@@ -23,8 +23,8 @@ Current row index (the status is intentionally not a waiver):
 | WRC-02 | Same shipped subprocess plus fixed Docker argv and hostile inherited environment/prompt data path | RESIDUAL: selector/secret values are excluded and model input remains data, but fixed host process/filesystem instrumentation for malicious model data is not retained |
 | WRC-03 | `test/shipped-preflight.test.mjs`: four named OS-subprocess controls | PASS |
 | WRC-04 | Same shipped subprocess, daemon `runtime-inspect.stdout` | PASS scoped: one `/workspace` bind and prohibited target absence |
-| WRC-05 | Named shipped `boundary-probe` absolute/parent and `/workspace` write/read/delete control | RESIDUAL: workspace control passes, but real outside-sentinel read/write attempts are not retained |
-| WRC-06 | Named shipped `boundary-probe` known container target and outside-path control | RESIDUAL: known target is readable and host-root paths are absent, but the project symlink resolution/read-only behavior is not directly exercised |
+| WRC-05 | Named shipped `boundary-probe` absolute/parent and `/workspace` write/read/delete control | PASS for retained Linux bind boundary: absolute host-path and `/workspace/../` read/write attempts fail, outside sentinel remains unchanged, and workspace artifact write/read/delete succeeds |
+| WRC-06 | Named shipped `boundary-probe` known container target and outside-path control | PASS for retained Linux namespace boundary: the project symlink to Docker-managed `/etc/hosts` resolves read-only, while outside host paths remain absent |
 | WRC-07 | Shipped newline-cwd negative and mountinfo escaped-newline regression | RESIDUAL: these are not a nested-bind fixture; exact safe nested-bind denial/non-recursive evidence remains unavailable in this environment |
 | WRC-08 | Named nested shipped CLI hardlink negative/control in `test/real-docker.test.mjs` | PASS: exit 1 before provider/model execution, outside sentinel unchanged, no new provider request; same-runtime ordinary single-link control completes |
 | WRC-09 | Shipped warning/readability provider control | PASS scoped, synthetic project secrets intentionally exposed |
@@ -38,7 +38,7 @@ Current row index (the status is intentionally not a waiver):
 | WRC-17 | Existing synthetic host refresh rotation/event-log tests | PASS offline synthetic |
 | WRC-18 | Test-owned derivative build/history/export/config scan | PASS scoped allowlisted build context |
 | WRC-19 | Named shipped `nested-docker-probe` Docker/Podman/socket negatives and shell declared-tool control | RESIDUAL: socket/tool absence and `sh` control pass, but generated Docker/Podman CLI and nested-operation attempts are not retained |
-| WRC-20 | This index plus raw daemon/image/source/row evidence | PARTIAL: exact current identities and applicable shipped results are linked; WRC-02/05/06/07/10/11/15/19 still require contract-exact negative/control evidence |
+| WRC-20 | This index plus raw daemon/image/source/row evidence | PARTIAL: exact current identities and applicable shipped results are linked; WRC-02/07/10/11/15/19 still require contract-exact negative/control evidence |
 | WRC-21 | Native macOS Docker Desktop gate | DEFERRED by approved Linux-only milestone; no Linux substitution claimed |
 
 Historical snapshots remain in `qa/wrc-finding-test-inventory.md` and `qa/run-117-docker-policy-diagnostic.md`; they are not current evidence. No real credentials, live provider request, host trust change, privilege escalation, or unowned resource deletion was used. Post-run owned container and network inventories are empty in the retained raw capture; pre-existing daemon resources are preserved.

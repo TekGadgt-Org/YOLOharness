@@ -30,6 +30,7 @@ const AUTH_ENDPOINTS = Object.freeze({
   verificationUrl: 'https://auth.openai.com/codex/device',
   redirectUri: 'https://auth.openai.com/deviceauth/callback',
 });
+export const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 function usage() { return 'Usage: yolo [-t MINUTES] [--json] <prompt>\n       yolo setup\n       yolo doctor\n       yolo config set model <model-id>\n       yolo auth login|status|logout\n       yolo --help\n       yolo --version'; }
 export function parseArgs(args) {
   let minutes = 10; let json = false; const prompt = [];
@@ -191,7 +192,6 @@ export async function runtimeCredentials(minutes) {
   if (!credentials?.accessToken || !credentials?.refreshToken || !Number.isFinite(credentials.expiresAt)) throw new MissingProviderError('no usable credentials; run `yolo auth login`');
   const required = Date.now() + minutes * 60_000 + 30_000;
   if (credentials.expiresAt <= required) {
-    if (!credentials.clientId) throw new MissingProviderError('credential lifetime is insufficient and cannot be refreshed; run `yolo auth login`');
     credentials = await new AuthClient(authConfig(store, credentials.clientId, false)).refresh(credentials);
   }
   if (!Number.isFinite(credentials.expiresAt) || credentials.expiresAt <= required) throw new MissingProviderError('access token lifetime does not cover the requested deadline; run `yolo auth login`');
@@ -221,7 +221,6 @@ export async function configuredProvider() {
   const path = process.env.YOLO_AUTH_FILE ?? join(configRoot(), 'yoloharness', 'credentials.json');
   const credentials = await new AuthStore(path).load();
   if (!credentials) throw new MissingProviderError();
-  if (typeof credentials.clientId !== 'string' || !credentials.clientId) throw new MissingProviderError();
   const authClient = new AuthClient(authConfig(new AuthStore(path), credentials.clientId, false));
   return new ConfiguredProvider({ credentials, url: process.env.YOLO_RESPONSES_URL, model, authClient });
 }
@@ -263,8 +262,7 @@ export async function doctorStatus({ env = process.env, exec = execFileAsync } =
     } else if (daemon) imageDetail = 'runtime image metadata is malformed; run `yolo setup`';
   } catch (error) { if (daemon) imageDetail = `configured runtime image could not be inspected: ${error.message}`; }
   add('runtime_image', image, imageDetail);
-  const clientId = typeof env.YOLO_CLIENT_ID === 'string' && env.YOLO_CLIENT_ID.length > 0;
-  add('client_id', clientId, clientId ? 'client ID is configured' : 'YOLO_CLIENT_ID is missing');
+  add('client_id', true, 'device-auth client ID is built-in');
   let credentials = false;
   try {
     const value = JSON.parse(await readFile(env.YOLO_AUTH_FILE ?? join(configRoot(env), 'yoloharness', 'credentials.json'), 'utf8'));
@@ -284,13 +282,13 @@ export async function doctorCommand(io) {
   return status.ready ? 0 : 1;
 }
 
-function authConfig(store, clientId = process.env.YOLO_CLIENT_ID, allowOverrides = true) { return { clientId, ...(allowOverrides ? { issueUrl: process.env.YOLO_AUTH_ISSUE_URL ?? AUTH_ENDPOINTS.issueUrl, pollUrl: process.env.YOLO_AUTH_POLL_URL ?? AUTH_ENDPOINTS.pollUrl, tokenUrl: process.env.YOLO_AUTH_TOKEN_URL ?? AUTH_ENDPOINTS.tokenUrl, verificationUrl: process.env.YOLO_AUTH_VERIFY_URL ?? AUTH_ENDPOINTS.verificationUrl, redirectUri: process.env.YOLO_AUTH_REDIRECT_URI ?? AUTH_ENDPOINTS.redirectUri } : AUTH_ENDPOINTS), store }; }
+function authConfig(store, clientId, allowOverrides = true) { return { clientId: typeof clientId === 'string' && clientId.length > 0 ? clientId : CODEX_CLIENT_ID, ...(allowOverrides ? { issueUrl: process.env.YOLO_AUTH_ISSUE_URL ?? AUTH_ENDPOINTS.issueUrl, pollUrl: process.env.YOLO_AUTH_POLL_URL ?? AUTH_ENDPOINTS.pollUrl, tokenUrl: process.env.YOLO_AUTH_TOKEN_URL ?? AUTH_ENDPOINTS.tokenUrl, verificationUrl: process.env.YOLO_AUTH_VERIFY_URL ?? AUTH_ENDPOINTS.verificationUrl, redirectUri: process.env.YOLO_AUTH_REDIRECT_URI ?? AUTH_ENDPOINTS.redirectUri } : AUTH_ENDPOINTS), store }; }
 export async function authCommand(args, io, { clientFactory } = {}) {
   const path = process.env.YOLO_AUTH_FILE ?? join(configRoot(), 'yoloharness', 'credentials.json'); const store=new AuthStore(path);
   if(args[0]==='status'){const c=await store.load();io.stdout.write(c?`authenticated (expires ${c.expiresAt?new Date(c.expiresAt).toISOString():'unknown'})\n`:'not authenticated\n');return 0;}
   if(args[0]==='logout'){await store.clear();io.stdout.write('local credentials removed\n');return 0;}
   if(args[0]!=='login') throw new TypeError('usage: yolo auth login|status|logout');
-  const client=clientFactory ? clientFactory(store) : new AuthClient(authConfig(store, process.env.YOLO_CLIENT_ID, false)); const attempt=await client.begin(); io.stdout.write(`Open ${attempt.verificationUrl} and enter ${attempt.userCode}\n`); await client.finish(attempt); io.stdout.write('authenticated\n');
+  const client=clientFactory ? clientFactory(store) : new AuthClient(authConfig(store, undefined, false)); const attempt=await client.begin(); io.stdout.write(`Open ${attempt.verificationUrl} and enter ${attempt.userCode}\n`); await client.finish(attempt); io.stdout.write('authenticated\n');
   if (io.stdin?.isTTY) {
     const current = await new ConfigStore(configPath()).load();
     const { createInterface } = await import('node:readline/promises'); const rl = createInterface({ input: io.stdin, output: io.stdout }); let interrupted = false;

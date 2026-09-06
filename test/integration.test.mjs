@@ -15,10 +15,36 @@ import { configuredProvider } from '../src/cli.mjs';
 import { runOnce, EXEC_TOOL } from '../src/runtime.mjs';
 import { ConfiguredProvider } from '../src/provider.mjs';
 import { ConfigStore, validateModel, ConfigError, configPath, configRoot } from '../src/config.mjs';
-import { main, parseArgs, resolveModel } from '../src/cli.mjs';
+import { main, parseArgs, resolveModel, runtimeCredentials, CODEX_CLIENT_ID } from '../src/cli.mjs';
 
 const json = (res, value, status=200) => { res.writeHead(status, {'content-type':'application/json'}); res.end(JSON.stringify(value)); };
 function server(handler) { return new Promise(async resolve => { const s=http.createServer(handler); await new Promise(r=>s.listen(0,'127.0.0.1',r)); resolve({s, base:`http://127.0.0.1:${s.address().port}`}); }); }
+
+test('production auth login uses the built-in Codex client ID without an environment variable', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-auth-built-in-')); const old = { home: process.env.HOME, xdg: process.env.XDG_CONFIG_HOME, file: process.env.YOLO_AUTH_FILE, client: process.env.YOLO_CLIENT_ID, fetch: globalThis.fetch };
+  const calls = []; const output = []; const errors = []; const realSetTimeout = globalThis.setTimeout;
+  try {
+    process.env.HOME = dir; delete process.env.XDG_CONFIG_HOME; process.env.YOLO_AUTH_FILE = join(dir, 'credentials.json'); delete process.env.YOLO_CLIENT_ID;
+    globalThis.setTimeout = (callback, _delay, ...args) => { callback(...args); return { unref() {} }; };
+    globalThis.fetch = async (url, init) => { calls.push({ url, init }); if (url === 'https://auth.openai.com/api/accounts/deviceauth/usercode') return new Response(JSON.stringify({ user_code: 'CODE', device_auth_id: 'device', interval: 1 }), { headers: { 'content-type': 'application/json' } }); if (url === 'https://auth.openai.com/api/accounts/deviceauth/token') return new Response(JSON.stringify({ authorization_code: 'authorization', code_verifier: 'verifier' }), { headers: { 'content-type': 'application/json' } }); if (url === 'https://auth.openai.com/oauth/token') return new Response(JSON.stringify({ access_token: 'access', refresh_token: 'refresh', expires_in: 3600 }), { headers: { 'content-type': 'application/json' } }); throw new Error(`unexpected URL ${url}`); };
+    assert.equal(await main(['auth', 'login'], { stdin: { isTTY: false }, stdout: { write(value) { output.push(value); } }, stderr: { write(value) { errors.push(value); } } }), 0, errors.join(''));
+    assert.match(output[0], /https:\/\/auth\.openai\.com\/codex\/device/); assert.match(output[0], /CODE/);
+    assert.equal(JSON.parse(calls[0].init.body).client_id, CODEX_CLIENT_ID);
+    assert.equal(new URLSearchParams(calls[2].init.body).get('client_id'), CODEX_CLIENT_ID);
+    assert.equal(calls[0].url, 'https://auth.openai.com/api/accounts/deviceauth/usercode'); assert.equal(calls[2].url, 'https://auth.openai.com/oauth/token');
+  } finally { globalThis.setTimeout = realSetTimeout; for (const [key, value] of Object.entries({ HOME: old.home, XDG_CONFIG_HOME: old.xdg, YOLO_AUTH_FILE: old.file, YOLO_CLIENT_ID: old.client })) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } globalThis.fetch = old.fetch; }
+});
+
+test('legacy credentials without clientId refresh with the built-in ID and existing unexpired credentials are unchanged', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-auth-legacy-')); const path = join(dir, 'credentials.json'); const old = { home: process.env.HOME, xdg: process.env.XDG_CONFIG_HOME, file: process.env.YOLO_AUTH_FILE, client: process.env.YOLO_CLIENT_ID, fetch: globalThis.fetch };
+  try {
+    process.env.HOME = dir; delete process.env.XDG_CONFIG_HOME; process.env.YOLO_AUTH_FILE = path; delete process.env.YOLO_CLIENT_ID;
+    const valid = { accessToken: 'valid', refreshToken: 'refresh', expiresAt: Date.now() + 3600_000 }; await new AuthStore(path).save(valid); const before = await readFile(path, 'utf8');
+    assert.deepEqual(await runtimeCredentials(1), valid); assert.equal(await readFile(path, 'utf8'), before);
+    let body; globalThis.fetch = async (_url, init) => { body = new URLSearchParams(init.body); return new Response(JSON.stringify({ access_token: 'fresh', refresh_token: 'next', expires_in: 100000 }), { headers: { 'content-type': 'application/json' } }); };
+    const refreshed = await runtimeCredentials(120); assert.equal(refreshed.accessToken, 'fresh'); assert.equal(body.get('client_id'), CODEX_CLIENT_ID);
+  } finally { for (const [key, value] of Object.entries({ HOME: old.home, XDG_CONFIG_HOME: old.xdg, YOLO_AUTH_FILE: old.file, YOLO_CLIENT_ID: old.client })) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } globalThis.fetch = old.fetch; }
+});
 
 test('shipped argument parser rejects the host-runtime fixture option', () => {
   assert.throws(() => parseArgs(['--fixture', 'offline']), /unknown option|fixture/);

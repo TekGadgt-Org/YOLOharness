@@ -15,7 +15,8 @@ test('doctor reports missing controls and recognizes an offline ready fixture', 
   const missing = await doctorStatus({ env: { HOME: home, PATH: '' } });
   assert.equal(missing.ready, false);
   assert.deepEqual(missing.checks.map(check => check.name), ['docker', 'docker_daemon', 'runtime_image', 'client_id', 'credentials', 'model']);
-  assert.ok(missing.checks.every(check => check.ok === false));
+  assert.equal(missing.checks.find(check => check.name === 'client_id').ok, true);
+  assert.ok(missing.checks.filter(check => check.name !== 'client_id').every(check => check.ok === false));
 
   const bin = await temp();
   await writeFile(join(bin, 'docker'), '#!/bin/sh\n');
@@ -28,7 +29,7 @@ test('doctor reports missing controls and recognizes an offline ready fixture', 
   await writeFile(join(config, 'yoloharness', 'config.json'), JSON.stringify({ version: 1, model: 'model-x' }));
   await (await import('node:fs/promises')).chmod(join(bin, 'docker'), 0o755);
   const ready = await doctorStatus({
-    env: { HOME: home, PATH: bin, YOLO_CLIENT_ID: 'client' },
+    env: { HOME: home, PATH: bin },
     exec: async (_command, args) => ({
       stdout: args[0] === 'info' ? 'Docker daemon ready\\n' : JSON.stringify({ Id: `sha256:${'a'.repeat(64)}`, RepoTags: ['yoloharness-local:0.1.0'], Config: { Labels: { 'org.yoloharness.source-digest': `sha256:${'b'.repeat(64)}` }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }),
       stderr: '',
@@ -36,6 +37,7 @@ test('doctor reports missing controls and recognizes an offline ready fixture', 
   });
   assert.equal(ready.ready, true);
   assert.ok(ready.checks.every(check => check.ok));
+  assert.match(ready.checks.find(check => check.name === 'client_id').detail, /built-in/i);
 });
 
 test('doctor reports daemon and immutable image inspection failures', async () => {

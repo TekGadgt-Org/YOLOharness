@@ -44,18 +44,22 @@ function assertCreateContract(record, fixture, mode, selectedDockerEnv) {
   assert.deepEqual(values(argv, '--env'), ['HOME=/home/worker', 'XDG_CONFIG_HOME=/home/worker/.config', 'XDG_DATA_HOME=/home/worker/.local/share']);
 }
 
-async function assertStableAbsence(id, name, label, foreignId, foreignName) {
+async function assertStableAbsence(id, name, label, foreignId, foreignName, fixture = null) {
   const observations = [];
   for (let attempt = 0; attempt < 3; attempt += 1) {
     observations.push({
       id: docker('ps', '-aq', '--no-trunc', '--filter', `id=${id}`).trim(),
       name: docker('ps', '-aq', '--no-trunc', '--filter', `name=^/${name}$`).trim(),
       label: docker('ps', '-aq', '--no-trunc', '--filter', `label=yoloharness.run=${label}`).trim(),
+      provider: fixture ? docker('ps', '-aq', '--no-trunc', '--filter', `name=^/${fixture.provider}$`).trim() : '',
+      network: fixture ? docker('network', 'ls', '-q', '--filter', `name=^${fixture.network}$`).trim() : '',
+      image: fixture ? docker('image', 'ls', '-q', fixture.tag).trim() : '',
+      childMarker: fixture?.childMarker ? await readFile(fixture.childMarker, 'utf8').catch(() => '') : '',
       foreign: docker('ps', '-aq', '--no-trunc', '--filter', `name=^/${foreignName}$`).trim(),
     });
-    if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 250));
+    if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 275));
   }
-  assert.deepEqual(observations, observations.map(() => ({ id: '', name: '', label: '', foreign: foreignId })));
+  assert.deepEqual(observations, observations.map(() => ({ id: '', name: '', label: '', provider: '', network: '', image: '', childMarker: '', foreign: foreignId })));
 }
 
 async function cleanupOwned(fixture, foreignId = null) {
@@ -97,14 +101,17 @@ async function makeFixture(root) {
   const network = `yoloharness-identity-${process.pid}`; docker('network', 'create', '--internal', network);
   const providerScript = "const https=require('https'),fs=require('fs');let n=0;https.createServer({key:fs.readFileSync('/tls/server.key'),cert:fs.readFileSync('/tls/server.crt')},(q,r)=>{let b='';q.on('data',c=>b+=c);q.on('end',()=>{n++;r.writeHead(200,{'content-type':'text/event-stream'});if(n===1)r.end('data: '+JSON.stringify({type:'response.output_item.done',item:{type:'function_call',id:'identity-item',call_id:'identity-call',name:'exec',arguments:JSON.stringify({command:'sh',args:['-c','printf identity-canary > /workspace/identity-canary']})}})+'\\n\\ndata: '+JSON.stringify({type:'response.completed',response:{status:'completed'}})+'\\n\\n');else r.end('data: '+JSON.stringify({type:'response.output_text.delta',delta:'identity-runtime-ok'})+'\\n\\ndata: '+JSON.stringify({type:'response.completed',response:{status:'completed'}})+'\\n\\n')})}).listen(443,'0.0.0.0')";
   const provider = `${network}-provider`; docker('run', '--detach', '--pull=never', '--network', network, '--network-alias', 'chatgpt.com', '--name', provider, '--mount', `type=bind,src=${ca},dst=/tls,readonly=true`, '--entrypoint', 'node', tag, '-e', providerScript);
+  const childMarker = join(root, 'proxy-child.pid');
+  const childFixture = join(root, 'proxy-child.cjs'); await writeFile(childFixture, `const fs=require('fs');fs.writeFileSync(${JSON.stringify(childMarker)},String(process.pid));setInterval(()=>{},1000);`);
   const proxy = join(root, 'docker-proxy.cjs');
   await writeFile(proxy, `#!/usr/bin/env node
-const cp=require('child_process'),fs=require('fs');const a=process.argv.slice(2),base=${JSON.stringify(dockerPath)},net=${JSON.stringify(network)},id=${JSON.stringify(baseId)},der=${JSON.stringify(derivative)},log=${JSON.stringify(log)};const original=[...a],r={argv:original,env:{DOCKER_HOST:process.env.DOCKER_HOST,DOCKER_CONTEXT:process.env.DOCKER_CONTEXT}};
+const cp=require('child_process'),fs=require('fs');const a=process.argv.slice(2);let base=${JSON.stringify(dockerPath)};const net=${JSON.stringify(network)},id=${JSON.stringify(baseId)},der=${JSON.stringify(derivative)},log=${JSON.stringify(log)},childFixture=${JSON.stringify(childFixture)},childMarker=${JSON.stringify(childMarker)};const original=[...a],selection=['DOCKER_HOST','DOCKER_CONTEXT','DOCKER_CONFIG','DOCKER_TLS_VERIFY','DOCKER_CERT_PATH','PATH'],r={argv:original,env:Object.fromEntries(selection.map(k=>[k,process.env[k]??null])),events:[]};
 if(a[0]==='info'){fs.appendFileSync(log,JSON.stringify(r)+'\\n');const security=process.env.YOLO_TEST_MODE==='rootless'?['name=rootless','name=seccomp,profile=builtin']:['name=seccomp,profile=builtin'];process.stdout.write(JSON.stringify({OSType:'linux',OperatingSystem:process.env.YOLO_TEST_MODE==='darwin'?'Vendor A':'Vendor B',SecurityOptions:security}));process.exit(0)}
 if(a[0]==='create'){for(let i=a.length-1;i>=0;i--)if(a[i]==='--group-add')a.splice(i,2);if(process.env.YOLO_TEST_MODE==='rootful'){const u=a.indexOf('--user');if(u>=0)a[u+1]='0:0';for(let i=0;i<a.length;i++)if(a[i]==='--tmpfs')a[i+1]=a[i+1].replace(/uid=[0-9]+,gid=[0-9]+/,'uid=0,gid=0')}const n=a.indexOf('--network');if(n>=0)a[n+1]=net;if(a.includes(id))a[a.indexOf(id)]=der;r.image=a.at(-3);r.translatedArgv=[...a]}
-if(process.env.YOLO_PROXY_FAIL_START==='1'&&a[0]==='start'){r.stderr='induced proxy start failure\\n';r.status=91;fs.appendFileSync(log,JSON.stringify(r)+'\\n');process.stderr.write(r.stderr);process.exit(91)}
-let child;try{child=cp.spawn(base,a,{encoding:'utf8',env:process.env,stdio:a[0]==='start'?['pipe','pipe','pipe']:['ignore','pipe','pipe']})}catch(error){r.spawnError=error.message;r.status=91;fs.appendFileSync(log,JSON.stringify(r)+'\\n');process.stderr.write(error.message+'\\n');process.exit(91)}let out='',err='',done=false;const finish=code=>{if(done)return;done=true;clearTimeout(timer);r.stdout=out.trim();r.stderr=err.trim();r.status=code;fs.appendFileSync(log,JSON.stringify(r)+'\\n');process.exit(code??1)};const timer=setTimeout(()=>{r.timeout=true;child.kill('SIGKILL')},30000);child.once('error',error=>{r.spawnError=error.message;finish(91)});child.stdout?.on('data',c=>{out+=c;process.stdout.write(c)});child.stderr?.on('data',c=>{err+=c;process.stderr.write(c)});if(a[0]==='start'){child.stdin.on('error',()=>{});process.stdin.pipe(child.stdin)}child.once('close',code=>finish(code));`, { mode: 0o755 });
-  return { workspace, config, data, endpoint, baseId, network, provider, proxy, tag, identity, log };
+if(process.env.YOLO_PROXY_CHILD==='spawn-error'&&a[0]==='start'){base=childFixture+'-does-not-exist';r.events.push({type:'spawn'});}
+else if(process.env.YOLO_PROXY_CHILD==='timeout'&&a[0]==='start'){base=process.execPath;a.splice(0,a.length,childFixture);r.events.push({type:'spawn'});}
+let child;try{child=cp.spawn(base,a,{encoding:'utf8',env:process.env,stdio:a[0]==='start'?['pipe','pipe','pipe']:['ignore','pipe','pipe']})}catch(error){r.events.push({type:'spawn-throw',message:error.message});r.status=91;fs.appendFileSync(log,JSON.stringify(r)+'\\n');process.stderr.write(error.message+'\\n');process.exit(91)}let out='',err='',done=false;const finish=code=>{if(done)return;done=true;clearTimeout(timer);r.stdout=out.trim();r.stderr=err.trim();r.status=code;r.events.push({type:'close',code});if(process.env.YOLO_PROXY_CHILD==='timeout')fs.rmSync(childMarker,{force:true});fs.appendFileSync(log,JSON.stringify(r)+'\\n');process.exit(code??1)};const timer=setTimeout(()=>{r.timeout=true;r.events.push({type:'timeout'});child.kill('SIGKILL');r.events.push({type:'kill',signal:'SIGKILL'})},process.env.YOLO_PROXY_CHILD==='timeout'?250:30000);child.once('error',error=>{r.spawnError=error.message;r.events.push({type:'spawn-error',message:error.message});finish(91)});child.stdout?.on('data',c=>{out+=c;process.stdout.write(c)});child.stderr?.on('data',c=>{err+=c;process.stderr.write(c)});if(a[0]==='start'){child.stdin.on('error',()=>{});process.stdin.pipe(child.stdin)}child.once('close',code=>finish(code));`, { mode: 0o755 });
+  return { workspace, config, data, endpoint, baseId, network, provider, proxy, tag, identity, log, childMarker };
 }
 
 async function installPacked(root, env) {
@@ -124,7 +131,7 @@ test('installed v0.1.1 CLI retains complete identity lifecycle evidence', { skip
       if (mode === 'darwin') await writeFile(join(root, 'darwin.cjs'), "Object.defineProperty(process,'platform',{value:'darwin'});");
       const run = spawnSync(cli, ['--json', '-t', '0.1', `identity evidence ${mode}`], { cwd: fixture.workspace, env: modeEnv, encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 }); assert.equal(run.error, undefined, `${run.error?.message ?? ''}\n${run.stderr}\n${run.stdout}`); assert.equal(run.status, 0, `${run.stderr}\n${run.stdout}`);
       const receipt = JSON.parse(run.stdout.trim().split(/\r?\n/).at(-1)); assert.equal(receipt.status, 'completed'); assert.equal(receipt.result, 'identity-runtime-ok'); assert.ok(receipt.evidence.length >= 1); assert.equal(await readFile(join(fixture.workspace, 'identity-canary'), 'utf8'), 'identity-canary'); assert.deepEqual(JSON.parse(await readFile(join(fixture.workspace, '.yolo', 'last-receipt.json'), 'utf8')), receipt);
-      const records = await jsonl(fixture.log); const create = records.find(r => r.argv[0] === 'create'); assert.ok(create); assertCreateContract(create, fixture, mode === 'rootful' ? 'rootful' : mode, { DOCKER_HOST: fixture.endpoint });
+      const records = await jsonl(fixture.log); const create = records.find(r => r.argv[0] === 'create'); assert.ok(create); assertCreateContract(create, fixture, mode === 'rootful' ? 'rootful' : mode, { DOCKER_HOST: fixture.endpoint, DOCKER_CONTEXT: null, DOCKER_CONFIG: fixture.config.replace(/\/config$/, '/docker-config'), DOCKER_TLS_VERIFY: null, DOCKER_CERT_PATH: null, PATH: `${join(root, '')}:${process.env.PATH}` });
       const runLabel = create.argv[5].split('=')[1]; assert.match(create.stdout, /^[a-f0-9]{64}$/i); const createdId = create.stdout;
       const lifecycle = records.filter(r => ['info', 'create', 'inspect', 'start', 'stop', 'kill', 'rm'].includes(r.argv[0]));
       assert.deepEqual(lifecycle.map(r => r.argv[0]), ['info', 'create', 'inspect', 'start', 'inspect', 'stop', 'kill', 'rm', 'inspect']);
@@ -146,33 +153,35 @@ test('installed v0.1.0 CLI retains the historical rootless-only RED', { skip }, 
     const home = join(root, 'home'); const config = join(root, 'config'); const data = join(root, 'data'); await mkdir(join(config, 'yoloharness'), { recursive: true }); await mkdir(join(data, 'yoloharness'), { recursive: true });
     const oldDigest = execFileSync(process.execPath, ['--input-type=module', '-e', `import { runtimeSourceIdentity } from ${JSON.stringify(new URL(`file://${root}/src/cli.mjs`).href)}; console.log((await runtimeSourceIdentity()).sourceDigest)`], { encoding: 'utf8' }).trim();
     const historyLog = join(root, 'docker-history.log');
-    const fake = `#!/bin/sh\nprintf '%s\\n' "$*" >> ${historyLog}\nif [ "$1" = info ]; then printf '%s' '["name=seccomp,profile=builtin"]'; exit 0; fi\nif [ "$1" = image ]; then printf '%s' '{"Id":"sha256:${'a'.repeat(64)}","RepoTags":["yoloharness-local:0.1.0"],"Config":{"Labels":{"org.yoloharness.source-digest":"${oldDigest}"},"Entrypoint":["node","/app/src/container-runtime.mjs"]}}'; exit 0; fi\nprintf 'unexpected docker operation: %s\\n' "$1" >&2; exit 91\n`;
+    const fake = `#!/usr/bin/env node\nimport fs from 'node:fs';const a=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(historyLog)},JSON.stringify(a)+'\\n');if(a[0]==='info'){process.stdout.write('["name=seccomp,profile=builtin"]');process.exit(0)}if(a[0]==='image'){process.stdout.write(JSON.stringify({Id:'sha256:${'a'.repeat(64)}',RepoTags:['yoloharness-local:0.1.0'],Config:{Labels:{'org.yoloharness.source-digest':${JSON.stringify(oldDigest)}},Entrypoint:['node','/app/src/container-runtime.mjs']}}));process.exit(0)}process.stderr.write('unexpected docker operation: '+a[0]+'\\n');process.exit(91)\n`;
     const bin = join(root, 'bin'); await mkdir(bin); await writeFile(join(bin, 'docker'), fake, { mode: 0o755 });
     await writeFile(join(config, 'yoloharness', 'config.json'), JSON.stringify({ version: 1, model: 'synthetic-model' })); await writeFile(join(config, 'yoloharness', 'credentials.json'), JSON.stringify({ accessToken: 'synthetic', refreshToken: 'synthetic', expiresAt: Date.now() + 3_600_000 }));
     const installed = spawnSync(process.execPath, [join(packed, 'package', 'install.mjs')], { cwd: join(packed, 'package'), env: { ...process.env, HOME: home, XDG_CONFIG_HOME: config, XDG_DATA_HOME: data }, encoding: 'utf8' }); assert.equal(installed.status, 0, installed.stderr); await writeFile(join(data, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId: `sha256:${'a'.repeat(64)}`, sourceDigest: oldDigest, sourceVersion: '0.1.0' }));
     const run = spawnSync(join(home, '.local', 'bin', 'yolo'), ['--json', 'historical identity RED'], { cwd: root, env: { ...process.env, HOME: home, XDG_CONFIG_HOME: config, XDG_DATA_HOME: data, PATH: `${bin}:${process.env.PATH}`, YOLO_RESPONSES_URL: 'https://chatgpt.com/backend-api/codex/responses' }, encoding: 'utf8' });
     assert.equal(run.status, 1); assert.equal(run.stderr, 'starting bounded run (10 minutes)\nWarning: files in the selected project are intentionally exposed to the agent and may be disclosed\nrefusing launch: Docker rootless mode was not verified\n'); assert.equal(run.stdout, '');
-    const history = (await readFile(historyLog, 'utf8')).trim().split(/\r?\n/); assert.deepEqual(history, [
-      `image inspect --format {{json .}} sha256:${'a'.repeat(64)}`,
-      'info --format {{json .SecurityOptions}}',
+    const history = (await readFile(historyLog, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line)); assert.deepEqual(history, [
+      ['image', 'inspect', '--format', '{{json .}}', `sha256:${'a'.repeat(64)}`],
+      ['info', '--format', '{{json .SecurityOptions}}'],
     ]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('proxy start failure is bounded and cleanup retains exact ownership boundaries', { skip }, async () => {
+for (const childMode of ['spawn-error', 'timeout']) test(`proxy ${childMode} is bounded, reaped, and cleanup retains exact ownership boundaries`, { skip }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'yoloharness-proxy-failure-')); let foreignId; let fixture;
   try {
     fixture = await makeFixture(root); const cli = await installPacked(root, fixture);
-    const foreignName = `yoloharness-foreign-failure-${process.pid}`;
+    const foreignName = `yoloharness-foreign-${childMode}-${process.pid}`;
     foreignId = docker('create', '--pull=never', '--name', foreignName, image, 'sleep', '60').trim();
-    const modeEnv = { ...process.env, HOME: join(root, 'home'), XDG_CONFIG_HOME: fixture.config, XDG_DATA_HOME: fixture.data, DOCKER_CONFIG: join(root, 'docker-config'), DOCKER_HOST: fixture.endpoint, PATH: `${root}:${process.env.PATH}`, YOLO_TEST_MODE: 'rootless', YOLO_TEST_ROOTFUL: '0', YOLO_PROXY_FAIL_START: '1' };
+    const modeEnv = { ...process.env, HOME: join(root, 'home'), XDG_CONFIG_HOME: fixture.config, XDG_DATA_HOME: fixture.data, DOCKER_CONFIG: join(root, 'docker-config'), DOCKER_HOST: fixture.endpoint, DOCKER_CONTEXT: undefined, DOCKER_TLS_VERIFY: undefined, DOCKER_CERT_PATH: undefined, PATH: `${root}:${process.env.PATH}`, YOLO_TEST_MODE: 'rootless', YOLO_TEST_ROOTFUL: '0', YOLO_PROXY_CHILD: childMode };
     await writeFile(join(root, 'docker'), `#!/bin/sh\nexec ${fixture.proxy} "$@"`, { mode: 0o755 }); await writeFile(fixture.log, '');
-    const started = Date.now(); const run = spawnSync(cli, ['--json', '-t', '0.1', 'identity evidence induced-proxy-failure'], { cwd: fixture.workspace, env: modeEnv, encoding: 'utf8', timeout: 20_000, maxBuffer: 1024 * 1024 });
-    assert.ok(Date.now() - started < 20_000); assert.equal(run.error, undefined, run.error?.message); assert.notEqual(run.status, 0); assert.match(run.stderr, /induced proxy start failure/);
+    const started = Date.now(); const run = spawnSync(cli, ['--json', '-t', childMode === 'timeout' ? '1' : '0.1', `identity evidence induced-${childMode}`], { cwd: fixture.workspace, env: modeEnv, encoding: 'utf8', timeout: 20_000, maxBuffer: 1024 * 1024 });
+    const duration = Date.now() - started; assert.ok(duration < 20_000); assert.equal(run.error, undefined, run.error?.message); assert.notEqual(run.status, 0);
     const records = await jsonl(fixture.log); const create = records.find(r => r.argv[0] === 'create'); assert.ok(create); const createdId = create.stdout; const label = create.argv[5].split('=')[1];
-    assert.equal(records.some(r => r.spawnError || r.timeout), false); assert.equal(records.find(r => r.argv[0] === 'start').status, 91);
-    await assertStableAbsence(createdId, create.argv[3], label, foreignId, foreignName);
+    const start = records.find(r => r.argv[0] === 'start'); assert.ok(start); assert.deepEqual(start.env, { DOCKER_HOST: fixture.endpoint, DOCKER_CONTEXT: null, DOCKER_CONFIG: join(root, 'docker-config'), DOCKER_TLS_VERIFY: null, DOCKER_CERT_PATH: null, PATH: `${root}:${process.env.PATH}` });
+    if (childMode === 'spawn-error') assert.deepEqual(start.events.map(e => e.type), ['spawn', 'spawn-error', 'close']);
+    else assert.deepEqual(start.events.map(e => e.type), ['spawn', 'timeout', 'kill', 'close']);
+    assert.ok(duration >= (childMode === 'timeout' ? 200 : 0) && duration < 10_000);
     await cleanupOwned(fixture, foreignId);
-    assert.throws(() => docker('network', 'inspect', fixture.network)); assert.throws(() => docker('image', 'inspect', fixture.tag));
+    await assertStableAbsence(createdId, create.argv[3], label, foreignId, foreignName, fixture);
   } finally { if (foreignId) try { docker('rm', '--force', foreignId); } catch {} if (fixture) try { await cleanupOwned(fixture); } catch {} await rm(root, { recursive: true, force: true }); }
 });

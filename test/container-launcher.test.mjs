@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, link, symlink, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { ContainerLauncher, validateWorkspace, decodeMountInfoTargets } from '../src/container-launcher.mjs';
+import { ContainerLauncher, validateWorkspace, decodeMountInfoTargets, containerIdentity } from '../src/container-launcher.mjs';
 import { configuredImage, runtimeSourceIdentity } from '../src/cli.mjs';
 
 const child = (onCreate) => {
@@ -225,10 +225,68 @@ test('mountinfo decoding preserves escaped newline targets for nested-mount chec
   assert.deepEqual(targets, [`${source}\nnested`]);
 });
 
+test('rootful-shaped Docker security options select the host numeric identity and groups', async () => {
+  const identity = await containerIdentity('docker', undefined, {
+    getuid: () => 1234, getgid: () => 2345, getgroups: () => [2345, 3456, 3456],
+    operationFn: async () => '["name=seccomp,profile=builtin"]',
+  });
+  assert.deepEqual(identity, { uid: 1234, gid: 2345, groups: [3456], rootless: false });
+});
+
+test('rootless Docker keeps container root mapping and does not add host groups', async () => {
+  const identity = await containerIdentity('docker', undefined, {
+    getuid: () => 1234, getgid: () => 2345, getgroups: () => [2345, 3456],
+    operationFn: async () => '["name=rootless", "name=seccomp,profile=builtin"]',
+  });
+  assert.deepEqual(identity, { uid: 0, gid: 0, groups: [], rootless: true });
+});
+
+test('Docker identity rejects malformed info and user namespace remapping specifically', async () => {
+  await assert.rejects(containerIdentity('docker', undefined, { operationFn: async () => 'not-json' }), /malformed|unable to verify Docker security mode/i);
+  await assert.rejects(containerIdentity('docker', undefined, { operationFn: async () => '["name=userns"]' }), /user.?namespace remapping|unsupported/i);
+});
+
+test('host root under standard Docker remains explicit numeric 0:0 identity', async () => {
+  const identity = await containerIdentity('docker', undefined, {
+    getuid: () => 0, getgid: () => 0, getgroups: () => [0, 7],
+    operationFn: async () => '[]',
+  });
+  assert.deepEqual(identity, { uid: 0, gid: 0, groups: [7], rootless: false });
+});
+
+test('rootful consumer create argv carries selected ownership without duplicate primary group', async () => {
+  const workspace = await mkdtemp('/tmp/yolo-rootful-argv-');
+  const id = '0123456789abcdef'.repeat(4);
+  let createArgs;
+  try {
+    const spawn = (_command, args) => {
+      const listeners = new Map(); const stdout = new EventEmitter(); const stderr = new EventEmitter();
+      const result = { stdout, stderr, stdin: { end() {} }, kill() { setImmediate(() => listeners.get('close')?.(137)); }, once(event, fn) { listeners.set(event, fn); } };
+      const close = code => setImmediate(() => listeners.get('close')?.(code));
+      if (args[0] === 'info') { setImmediate(() => stdout.emit('data', '["name=seccomp,profile=builtin"]')); close(0); }
+      else if (args[0] === 'create') { createArgs = args; setImmediate(() => stdout.emit('data', id)); close(0); }
+      else if (args[0] === 'inspect' && !createArgs?._cleaned) { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: id, Name: `/${createArgs[createArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': createArgs[createArgs.indexOf('--label') + 1].split('=').slice(1).join('=') } } }))); close(0); }
+      else if (args[0] === 'start') { setImmediate(() => stdout.emit('data', '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n')); close(0); }
+      else if (args[0] === 'stop' || args[0] === 'kill') close(0);
+      else if (args[0] === 'rm') { createArgs._cleaned = true; close(0); }
+      else if (args[0] === 'inspect') { setImmediate(() => stderr.emit('data', `Error: No such container: ${id}`)); close(1); }
+      else throw new Error(`unexpected Docker operation: ${args[0]}`);
+      return result;
+    };
+    const launcher = new ContainerLauncher({ image: `sha256:${'a'.repeat(64)}`, workspace, spawn });
+    const record = await launcher.launch({ prompt: 'rootful', model: 'synthetic-model', deadline: Date.now() + 10_000, accessToken: 'synthetic-access', expiresAt: Date.now() + 20_000 });
+    assert.equal(record.result, 'ok');
+    const groups = createArgs.filter((value, index) => value === '--group-add' ? createArgs[index + 1] : null).filter(Boolean);
+    assert.equal(groups.includes(String(process.getgid())), false);
+    assert.match(createArgs[createArgs.indexOf('--tmpfs') + 1], new RegExp(`uid=${process.getuid()},gid=${process.getgid()},mode=700`));
+    assert.match(createArgs[createArgs.indexOf('--tmpfs', createArgs.indexOf('--tmpfs') + 1) + 1], new RegExp(`uid=${process.getuid()},gid=${process.getgid()},mode=700`));
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
 test('runtime source identity is a versioned sha256 digest', async () => {
   const identity = await runtimeSourceIdentity();
   assert.match(identity.sourceDigest, /^sha256:[0-9a-f]{64}$/);
-  assert.equal(identity.sourceVersion, '0.1.0');
+  assert.equal(identity.sourceVersion, '0.1.1');
 });
 
 test('configured image requires the complete versioned source-identity metadata', async () => {
@@ -240,7 +298,7 @@ test('configured image requires the complete versioned source-identity metadata'
     const identity = await runtimeSourceIdentity();
     const imageId = `sha256:${'a'.repeat(64)}`;
     await writeFile(join(data, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId, ...identity }));
-    assert.equal(await configuredImage({ inspect: async () => JSON.stringify({ Id: imageId, RepoTags: ['yoloharness-local:0.1.0'], Config: { Labels: { 'org.yoloharness.source-digest': identity.sourceDigest }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }) }), imageId);
+    assert.equal(await configuredImage({ inspect: async () => JSON.stringify({ Id: imageId, RepoTags: ['yoloharness-local:0.1.1'], Config: { Labels: { 'org.yoloharness.source-digest': identity.sourceDigest }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }) }), imageId);
   } finally {
     if (old === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = old;
     await rm(data, { recursive: true, force: true });
@@ -257,7 +315,7 @@ test('configured image rejects an image whose embedded source digest is stale', 
     const imageId = `sha256:${'a'.repeat(64)}`;
     await writeFile(join(data, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId, ...identity }));
     await assert.rejects(
-      configuredImage({ inspect: async () => JSON.stringify({ Id: imageId, RepoTags: ['yoloharness-local:0.1.0'], Config: { Labels: { 'org.yoloharness.source-digest': `sha256:${'b'.repeat(64)}` }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }) }),
+      configuredImage({ inspect: async () => JSON.stringify({ Id: imageId, RepoTags: ['yoloharness-local:0.1.1'], Config: { Labels: { 'org.yoloharness.source-digest': `sha256:${'b'.repeat(64)}` }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }) }),
       /source digest/i,
     );
   } finally {

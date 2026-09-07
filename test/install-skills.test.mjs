@@ -24,14 +24,14 @@ test('doctor reports missing controls and recognizes an offline ready fixture', 
   const config = join(home, '.config');
   await mkdir(join(data, 'yoloharness'), { recursive: true });
   await mkdir(join(config, 'yoloharness'), { recursive: true });
-  await writeFile(join(data, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId: `sha256:${'a'.repeat(64)}`, sourceDigest: `sha256:${'b'.repeat(64)}`, sourceVersion: '0.1.0' }));
+  await writeFile(join(data, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId: `sha256:${'a'.repeat(64)}`, sourceDigest: `sha256:${'b'.repeat(64)}`, sourceVersion: '0.1.1' }));
   await writeFile(join(config, 'yoloharness', 'credentials.json'), JSON.stringify({ accessToken: 'token', refreshToken: 'refresh', clientId: 'client', expiresAt: Date.now() + 60_000 }));
   await writeFile(join(config, 'yoloharness', 'config.json'), JSON.stringify({ version: 1, model: 'model-x' }));
   await (await import('node:fs/promises')).chmod(join(bin, 'docker'), 0o755);
   const ready = await doctorStatus({
     env: { HOME: home, PATH: bin },
     exec: async (_command, args) => ({
-      stdout: args[0] === 'info' ? 'Docker daemon ready\\n' : JSON.stringify({ Id: `sha256:${'a'.repeat(64)}`, RepoTags: ['yoloharness-local:0.1.0'], Config: { Labels: { 'org.yoloharness.source-digest': `sha256:${'b'.repeat(64)}` }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }),
+      stdout: args[0] === 'info' ? 'Docker daemon ready\\n' : JSON.stringify({ Id: `sha256:${'a'.repeat(64)}`, RepoTags: ['yoloharness-local:0.1.1'], Config: { Labels: { 'org.yoloharness.source-digest': `sha256:${'b'.repeat(64)}` }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }),
       stderr: '',
     }),
   });
@@ -43,7 +43,7 @@ test('doctor reports missing controls and recognizes an offline ready fixture', 
   const expired = await doctorStatus({
     env: { HOME: home, PATH: bin },
     exec: async (_command, args) => ({
-      stdout: args[0] === 'info' ? 'Docker daemon ready\\n' : JSON.stringify({ Id: `sha256:${'a'.repeat(64)}`, RepoTags: ['yoloharness-local:0.1.0'], Config: { Labels: { 'org.yoloharness.source-digest': `sha256:${'b'.repeat(64)}` }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }),
+      stdout: args[0] === 'info' ? 'Docker daemon ready\\n' : JSON.stringify({ Id: `sha256:${'a'.repeat(64)}`, RepoTags: ['yoloharness-local:0.1.1'], Config: { Labels: { 'org.yoloharness.source-digest': `sha256:${'b'.repeat(64)}` }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }),
       stderr: '',
     }),
   });
@@ -121,7 +121,7 @@ test('installer preserves config and rejects symlinked destinations', async () =
   const data = join(home, 'data');
   const source = await temp();
   await mkdir(join(source, 'src'), { recursive: true });
-  await writeFile(join(source, 'package.json'), '{"name":"yoloharness","version":"0.1.0"}');
+  await writeFile(join(source, 'package.json'), '{"name":"yoloharness","version":"0.1.1"}');
   await writeFile(join(source, 'src', 'cli.mjs'), '#!/usr/bin/env node\n');
   await installPackage(source, { home, dataHome: data });
   await writeFile(join(data, 'yoloharness', 'config.json'), 'keep');
@@ -154,7 +154,7 @@ test('skill bundle boundary remains compatible with the container bootstrap limi
 test('installer restores the previous app and leaves no temporary launcher after promotion failure', async () => {
   const home = await temp(); const data = join(home, 'data'); const source = await temp();
   await mkdir(join(source, 'src'), { recursive: true });
-  await writeFile(join(source, 'package.json'), '{"name":"yoloharness","version":"0.1.0"}');
+  await writeFile(join(source, 'package.json'), '{"name":"yoloharness","version":"0.1.1"}');
   await writeFile(join(source, 'src', 'cli.mjs'), 'new');
   await installPackage(source, { home, dataHome: data });
   const runtime = join(data, 'yoloharness', 'app');

@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const skip = process.env.YOLO_REAL_DOCKER !== '1';
-const image = process.env.YOLO_DOCKER_IMAGE ?? 'yoloharness-local:0.1.0';
+const image = process.env.YOLO_DOCKER_IMAGE ?? 'yoloharness-local:0.1.1';
 const docker = (...args) => execFileSync('docker', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
 test('final runtime image exposes the documented Python/Node/Git/sh baseline under shipped restrictions', { skip }, async () => {

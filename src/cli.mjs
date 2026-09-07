@@ -12,7 +12,7 @@ import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 const execFileAsync = promisify(execFile);
 
-const VERSION = '0.1.0';
+const VERSION = '0.1.1';
 const RUNTIME_IMAGE_TAG = `yoloharness-local:${VERSION}`;
 const RUNTIME_ENTRYPOINT = ['node', '/app/src/container-runtime.mjs'];
 // Kept local so production launcher errors do not require loading the agent

@@ -37,7 +37,9 @@ export class ContainerLauncher {
     const identity = await containerIdentity(this.command, this.spawn, { signal, timeoutMs: remaining() });
     if (signal?.aborted) throw signal.reason;
     if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
-    const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--init', '-i', '--user', `${identity.uid}:${identity.gid}`, '--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--cpus', '1', '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m', '--tmpfs', '/home/worker:rw,noexec,nosuid,size=16m', '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', this.image, 'node', '/app/src/container-runtime.mjs'];
+    const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--init', '-i', '--user', `${identity.uid}:${identity.gid}`];
+    for (const group of identity.groups) args.push('--group-add', String(group));
+    args.push('--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--cpus', '1', '--tmpfs', `/tmp:rw,noexec,nosuid,size=64m,uid=${identity.uid},gid=${identity.gid},mode=700`, '--tmpfs', `/home/worker:rw,noexec,nosuid,size=16m,uid=${identity.uid},gid=${identity.gid},mode=700`, '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', this.image, 'node', '/app/src/container-runtime.mjs');
     let id;
     let attached;
     let creating;
@@ -106,15 +108,25 @@ async function workspaceReceipt(workspace) {
   } catch { return null; }
 }
 
-async function containerIdentity(command, spawn, opts) {
-  const result = await operation(command, ['info', '--format', '{{json .SecurityOptions}}'], spawn, opts).promise;
+export async function containerIdentity(command, spawn, opts = {}) {
+  const result = opts.operationFn
+    ? await opts.operationFn()
+    : await operation(command, ['info', '--format', '{{json .SecurityOptions}}'], spawn, opts).promise;
   let options;
-  try { options = JSON.parse(result.trim()); } catch { throw new Error('unable to verify Docker rootless mode'); }
-  if (!Array.isArray(options) || !options.some(value => value === 'name=rootless')) throw new Error('refusing launch: Docker rootless mode was not verified');
-  // The approved compatibility exception uses the rootless daemon's UID 0
-  // mapping. This is not acceptable for rootful or unknown Docker, which was
-  // rejected above; no host chmod/chown is needed for normal project binds.
-  return { uid: 0, gid: 0 };
+  try { options = JSON.parse(String(result).trim()); } catch { throw new Error('unable to verify Docker security mode: malformed daemon info'); }
+  if (!Array.isArray(options) || options.some(value => typeof value !== 'string')) throw new Error('unable to verify Docker security mode: malformed daemon info');
+  if (options.some(value => /^name=userns(?:,|$)/i.test(value))) throw new Error('unsupported Docker user-namespace remapping security mode');
+  const rootless = options.some(value => /^name=rootless(?:,|$)/i.test(value));
+  if (rootless) return { uid: 0, gid: 0, groups: [], rootless: true };
+  const getuid = opts.getuid ?? process.getuid;
+  const getgid = opts.getgid ?? process.getgid;
+  const getgroups = opts.getgroups ?? process.getgroups;
+  if (typeof getuid !== 'function' || typeof getgid !== 'function' || typeof getgroups !== 'function') throw new Error('unsupported Docker identity semantics: host numeric identity is unavailable');
+  let uid; let gid; let groups;
+  try { uid = getuid(); gid = getgid(); groups = getgroups(); } catch (error) { throw new Error(`unable to read host numeric identity: ${error.message}`); }
+  const validId = value => Number.isInteger(value) && value >= 0 && value <= 0xffffffff;
+  if (!validId(uid) || !validId(gid) || !Array.isArray(groups) || groups.some(group => !validId(group))) throw new Error('unable to verify Docker security mode: invalid host numeric identity');
+  return { uid, gid, groups: [...new Set(groups)].filter(group => group !== gid), rootless: false };
 }
 
 function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT, signal } = {}) {

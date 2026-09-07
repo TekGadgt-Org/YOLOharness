@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { runtimeSourceIdentity } from '../src/cli.mjs';
 
 const enabled = process.env.YOLO_REAL_DOCKER === '1';
-const configuredImage = process.env.YOLO_DOCKER_IMAGE ?? 'yoloharness-local:0.1.0';
+const configuredImage = process.env.YOLO_DOCKER_IMAGE ?? 'yoloharness-local:0.1.1';
 const skip = !enabled;
 const dockerPath = execFileSync('command', ['-v', 'docker'], { shell: '/bin/sh', encoding: 'utf8' }).trim();
 const docker = (...args) => execFileSync(dockerPath, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -554,7 +554,7 @@ test('WRC-18 shipped setup uses only the package/src build context and emits sec
   const root = await mkdtemp(join(tmpdir(), 'yoloharness-wrc18-'));
   const bin = join(root, 'bin'); const captured = join(root, 'captured-context'); const config = join(root, 'config'); const data = join(root, 'data');
   const installation = join(root, 'installation');
-  const runTag = `yoloharness-wrc18:${process.pid}`; const installedTag = 'yoloharness-local:0.1.0';
+  const runTag = `yoloharness-wrc18:${process.pid}`; const installedTag = 'yoloharness-local:0.1.1';
   await mkdir(bin, { recursive: true }); await mkdir(config, { recursive: true }); await mkdir(data, { recursive: true }); await mkdir(installation, { recursive: true });
   await cp(new URL('../package.json', import.meta.url), join(installation, 'package.json'));
   await cp(new URL('../src', import.meta.url), join(installation, 'src'), { recursive: true });

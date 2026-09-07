@@ -19,9 +19,9 @@ const KNOWN_CONTAINER_SYMLINK_TARGETS = new Set(['/etc/hosts', '/etc/hostname', 
 const DOCKER_ENV = () => ({ ...process.env });
 
 export class ContainerLauncher {
-  constructor({ image, workspace = process.cwd(), command = 'docker', spawn = nodeSpawn, timeoutMs = 600000 } = {}) {
+  constructor({ image, workspace = process.cwd(), command = 'docker', spawn = nodeSpawn, timeoutMs = 600000, hostPlatform = process.platform } = {}) {
     if (!image || !workspace) throw new TypeError('container image and workspace are required');
-    this.image = image; this.workspace = workspace; this.command = command; this.spawn = spawn; this.timeoutMs = timeoutMs;
+    this.image = image; this.workspace = workspace; this.command = command; this.spawn = spawn; this.timeoutMs = timeoutMs; this.hostPlatform = hostPlatform;
   }
 
   async launch(bootstrap, { signal } = {}) {
@@ -34,7 +34,7 @@ export class ContainerLauncher {
     if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
     const name = `yoloharness-${randomUUID()}`;
     const label = randomUUID();
-    const identity = await containerIdentity(this.command, this.spawn, { signal, timeoutMs: remaining() });
+    const identity = await containerIdentity(this.command, this.spawn, { signal, timeoutMs: remaining(), hostPlatform: this.hostPlatform });
     if (signal?.aborted) throw signal.reason;
     if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
     const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--init', '-i', '--user', `${identity.uid}:${identity.gid}`];
@@ -114,17 +114,29 @@ export async function containerIdentity(command, spawn, opts = {}) {
     : await operation(command, ['info', '--format', '{{json .}}'], spawn, opts).promise;
   let options;
   try { options = JSON.parse(String(result).trim()); } catch { throw new Error('unable to verify Docker security mode: malformed daemon info'); }
+  const hostPlatform = opts.hostPlatform ?? process.platform;
+  const clientInfo = options?.ClientInfo;
+  const desktopClient = clientInfo === undefined ||
+    (clientInfo && typeof clientInfo === 'object' && !Array.isArray(clientInfo) &&
+      (clientInfo.Context === 'desktop-linux' || /docker\s+desktop/i.test(clientInfo.Name ?? '')));
+  const desktop = hostPlatform === 'darwin' &&
+    options?.OSType?.toLowerCase() === 'linux' &&
+    options?.OperatingSystem === 'Docker Desktop' &&
+    desktopClient;
+  const supportedLinux = hostPlatform === 'linux' &&
+    options?.OSType?.toLowerCase() === 'linux' &&
+    typeof options?.OperatingSystem === 'string' &&
+    !/^Docker Desktop$/i.test(options.OperatingSystem);
   if (!options || typeof options !== 'object' || Array.isArray(options) ||
-      process.platform !== 'linux' ||
-      options.OSType?.toLowerCase() !== 'linux' || typeof options.OperatingSystem !== 'string' ||
-      /docker\s+desktop|docker\s+for\s+mac|macos|darwin/i.test(options.OperatingSystem) ||
+      (!supportedLinux && !desktop) ||
       !Array.isArray(options.SecurityOptions) || options.SecurityOptions.some(value => typeof value !== 'string')) {
     throw new Error('unable to verify Docker security mode: unsupported or malformed Linux daemon info');
   }
   const securityOptions = options.SecurityOptions;
-  if (securityOptions.some(value => /^name=userns(?:,|$)/i.test(value))) throw new Error('unsupported Docker user-namespace remapping security mode');
+  if (!desktop && securityOptions.some(value => /^name=userns(?:,|$)/i.test(value))) throw new Error('unsupported Docker user-namespace remapping security mode');
   const rootless = securityOptions.some(value => /^name=rootless(?:,|$)/i.test(value));
   if (rootless) return { uid: 0, gid: 0, groups: [], rootless: true };
+  if (desktop) return { uid: 0, gid: 0, groups: [], rootless: false, desktop: true };
   const getuid = opts.getuid ?? process.getuid;
   const getgid = opts.getgid ?? process.getgid;
   const getgroups = opts.getgroups ?? process.getgroups;

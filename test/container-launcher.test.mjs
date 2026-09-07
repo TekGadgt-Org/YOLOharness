@@ -246,12 +246,66 @@ test('Docker identity rejects malformed info and user namespace remapping specif
   await assert.rejects(containerIdentity('docker', undefined, { operationFn: async () => JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=userns'] }) }), /user.?namespace remapping|unsupported/i);
 });
 
-test('Docker identity rejects Desktop, native macOS, and legacy array-shaped daemon info', async () => {
+test('Docker identity accepts verified macOS Docker Desktop as container root', async () => {
+  const identity = await containerIdentity('docker', undefined, {
+    hostPlatform: 'darwin',
+    operationFn: async () => JSON.stringify({
+      OSType: 'linux', OperatingSystem: 'Docker Desktop',
+      ClientInfo: { Context: 'desktop-linux' },
+      SecurityOptions: ['name=seccomp,profile=builtin'],
+    }),
+    getuid: () => 1234, getgid: () => 2345, getgroups: () => [7, 8],
+  });
+  assert.deepEqual(identity, { uid: 0, gid: 0, groups: [], rootless: false, desktop: true });
+});
+
+test('macOS Docker Desktop ECI-shaped security facts remain supported, but native Linux userns remapping is rejected', async () => {
+  const desktop = await containerIdentity('docker', undefined, {
+    hostPlatform: 'darwin',
+    operationFn: async () => JSON.stringify({ OSType: 'linux', OperatingSystem: 'Docker Desktop', ClientInfo: { Context: 'desktop-linux' }, SecurityOptions: ['name=userns', 'name=seccomp,profile=builtin'] }),
+  });
+  assert.deepEqual(desktop, { uid: 0, gid: 0, groups: [], rootless: false, desktop: true });
+  await assert.rejects(containerIdentity('docker', undefined, { hostPlatform: 'linux', operationFn: async () => JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=userns'] }) }), /user.?namespace remapping|unsupported/i);
+});
+
+test('macOS identity rejects non-Desktop, remote, malformed, and legacy daemon facts', async () => {
   for (const info of [
-    { OSType: 'linux', OperatingSystem: 'Docker Desktop', SecurityOptions: ['name=seccomp,profile=builtin'] },
-    { OSType: 'darwin', OperatingSystem: 'macOS', SecurityOptions: ['name=seccomp,profile=builtin'] },
+    { OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: [] },
+    { OSType: 'linux', OperatingSystem: 'Docker Desktop', ClientInfo: { Context: 'default' }, SecurityOptions: [] },
+    { OSType: 'linux', OperatingSystem: 'Docker Desktop', ClientInfo: { Context: 'desktop-linux' }, SecurityOptions: 'bad' },
     ['name=seccomp,profile=builtin'],
-  ]) await assert.rejects(containerIdentity('docker', undefined, { operationFn: async () => JSON.stringify(info) }), /unsupported|malformed/i);
+  ]) await assert.rejects(containerIdentity('docker', undefined, { hostPlatform: 'darwin', operationFn: async () => JSON.stringify(info) }), /unsupported|malformed/i);
+});
+
+test('old rootless-only behavior is a regression control on macOS Desktop', async () => {
+  await assert.doesNotReject(containerIdentity('docker', undefined, {
+    hostPlatform: 'darwin', operationFn: async () => JSON.stringify({ OSType: 'linux', OperatingSystem: 'Docker Desktop', ClientInfo: { Context: 'desktop-linux' }, SecurityOptions: ['name=rootless'] }),
+  }));
+});
+
+test('macOS Desktop consumer create argv uses 0:0 without supplementary groups', async () => {
+  const workspace = await mkdtemp('/tmp/yolo-macos-desktop-argv-');
+  const id = 'abcdef0123456789'.repeat(4); let createArgs;
+  try {
+    const spawn = (_command, args) => {
+      const listeners = new Map(); const stdout = new EventEmitter(); const stderr = new EventEmitter();
+      const result = { stdout, stderr, stdin: { end() {} }, kill() { setImmediate(() => listeners.get('close')?.(137)); }, once(event, fn) { listeners.set(event, fn); } };
+      const close = code => setImmediate(() => listeners.get('close')?.(code));
+      if (args[0] === 'info') { setImmediate(() => stdout.emit('data', JSON.stringify({ OSType: 'linux', OperatingSystem: 'Docker Desktop', ClientInfo: { Context: 'desktop-linux' }, SecurityOptions: ['name=userns'] }))); close(0); }
+      else if (args[0] === 'create') { createArgs = args; setImmediate(() => stdout.emit('data', id)); close(0); }
+      else if (args[0] === 'inspect' && !createArgs?._cleaned) { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: id, Name: `/${createArgs[createArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': createArgs[createArgs.indexOf('--label') + 1].split('=').slice(1).join('=') } } }))); close(0); }
+      else if (args[0] === 'start') { setImmediate(() => stdout.emit('data', '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n')); close(0); }
+      else if (args[0] === 'stop' || args[0] === 'kill') close(0);
+      else if (args[0] === 'rm') { createArgs._cleaned = true; close(0); }
+      else if (args[0] === 'inspect') { setImmediate(() => stderr.emit('data', `Error: No such container: ${id}`)); close(1); }
+      return result;
+    };
+    const launcher = new ContainerLauncher({ image: `sha256:${'d'.repeat(64)}`, workspace, spawn, hostPlatform: 'darwin' });
+    assert.equal((await launcher.launch({ prompt: 'desktop', model: 'synthetic-model', deadline: Date.now() + 10_000, accessToken: 'synthetic-access', expiresAt: Date.now() + 20_000 })).result, 'ok');
+    assert.equal(createArgs[createArgs.indexOf('--user') + 1], '0:0');
+    assert.equal(createArgs.includes('--group-add'), false);
+    assert.match(createArgs[createArgs.indexOf('--tmpfs') + 1], /uid=0,gid=0,mode=700/);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
 test('Docker identity accepts the maximum Docker numeric identity and rejects invalid boundaries', async () => {

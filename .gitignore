@@ -1,13 +1,15 @@
 node_modules/
 .DS_Store
-prototype/demo-events.jsonl
 .env
 .env.*
 !.env.example
 *.zip
-# Local third-party research downloads; canonical sources are linked in research/findings.md.
-research/*.source.md
 .worktrees/
 .yolo/
 auth-state/
 /qa/
+/prototype/
+/research/
+/security/
+/memory/
+/ux/

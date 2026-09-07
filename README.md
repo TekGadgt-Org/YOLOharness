@@ -17,12 +17,7 @@ Authentication is separate from a run and never starts automatically. Run `yolo 
 ## What is here
 
 - **[DESIGN.md](DESIGN.md):** the opinionated architecture and build plan. Start here.
-- **[research/findings.md](research/findings.md):** source-first comparison of public Codex, Hermes, and OpenClaw; Codex OAuth integration feasibility.
-- **[prototype/](prototype/):** historical dependency-free fixture kernel, runnable demo, and tests. **Not a live AI agent.**
 - **[src/](src/):** bounded one-shot CLI/runtime. Ordinary runs are container-only and fail closed when setup, credentials, or the immutable image is unavailable.
-- **[memory/memory-design.md](memory/memory-design.md):** provenance, scope, expiry, contradictions, compaction, and forgetting.
-- **[security/threat-model.md](security/threat-model.md):** adversarial design review and concrete negative tests, not a security certification.
-- **[ux/interaction-design.md](ux/interaction-design.md):** proposed `yolo` CLI and explicitly mocked operator screens. The shipped CLI supports only the bounded container path and explicitly configured provider paths.
 
 ## Install and run (Linux MVP)
 

@@ -34,7 +34,7 @@ Do not copy existing Hermes credentials into the project or commit auth state. N
 
 Target a disposable container for each run. Docker may be installed later by Ryan; no installation is requested now. Mount only the selected project, not the whole home, SSH directory, Docker socket, or credential store. Run without privilege, constrain resources, and make network access deliberate. Keep provider credentials outside the untrusted tool-execution environment; assess a small host-side auth/model broker rather than giving arbitrary shell tools access to refresh tokens. A container alone is not a complete sandbox.
 
-The shipped Linux MVP is an installable, container-only CLI. The historical prototype remains a local deterministic fixture and is not part of the package; neither path is a safe autonomous host-shell agent fallback. Skills are limited to project/shared roots, project precedence, bounded regular-file snapshots, and container-side loading.
+The shipped Linux MVP is an installable, container-only CLI. It has no autonomous host-shell fallback. Skills are limited to project/shared roots, project precedence, bounded regular-file snapshots, and container-side loading.
 
 ## Current authorization
 

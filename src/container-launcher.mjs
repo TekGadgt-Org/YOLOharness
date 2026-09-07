@@ -111,12 +111,19 @@ async function workspaceReceipt(workspace) {
 export async function containerIdentity(command, spawn, opts = {}) {
   const result = opts.operationFn
     ? await opts.operationFn()
-    : await operation(command, ['info', '--format', '{{json .SecurityOptions}}'], spawn, opts).promise;
+    : await operation(command, ['info', '--format', '{{json .}}'], spawn, opts).promise;
   let options;
   try { options = JSON.parse(String(result).trim()); } catch { throw new Error('unable to verify Docker security mode: malformed daemon info'); }
-  if (!Array.isArray(options) || options.some(value => typeof value !== 'string')) throw new Error('unable to verify Docker security mode: malformed daemon info');
-  if (options.some(value => /^name=userns(?:,|$)/i.test(value))) throw new Error('unsupported Docker user-namespace remapping security mode');
-  const rootless = options.some(value => /^name=rootless(?:,|$)/i.test(value));
+  if (!options || typeof options !== 'object' || Array.isArray(options) ||
+      process.platform !== 'linux' ||
+      options.OSType?.toLowerCase() !== 'linux' || typeof options.OperatingSystem !== 'string' ||
+      /docker\s+desktop|docker\s+for\s+mac|macos|darwin/i.test(options.OperatingSystem) ||
+      !Array.isArray(options.SecurityOptions) || options.SecurityOptions.some(value => typeof value !== 'string')) {
+    throw new Error('unable to verify Docker security mode: unsupported or malformed Linux daemon info');
+  }
+  const securityOptions = options.SecurityOptions;
+  if (securityOptions.some(value => /^name=userns(?:,|$)/i.test(value))) throw new Error('unsupported Docker user-namespace remapping security mode');
+  const rootless = securityOptions.some(value => /^name=rootless(?:,|$)/i.test(value));
   if (rootless) return { uid: 0, gid: 0, groups: [], rootless: true };
   const getuid = opts.getuid ?? process.getuid;
   const getgid = opts.getgid ?? process.getgid;
@@ -124,7 +131,7 @@ export async function containerIdentity(command, spawn, opts = {}) {
   if (typeof getuid !== 'function' || typeof getgid !== 'function' || typeof getgroups !== 'function') throw new Error('unsupported Docker identity semantics: host numeric identity is unavailable');
   let uid; let gid; let groups;
   try { uid = getuid(); gid = getgid(); groups = getgroups(); } catch (error) { throw new Error(`unable to read host numeric identity: ${error.message}`); }
-  const validId = value => Number.isInteger(value) && value >= 0 && value <= 0xffffffff;
+  const validId = value => Number.isInteger(value) && value >= 0 && value <= 0x7fffffff;
   if (!validId(uid) || !validId(gid) || !Array.isArray(groups) || groups.some(group => !validId(group))) throw new Error('unable to verify Docker security mode: invalid host numeric identity');
   return { uid, gid, groups: [...new Set(groups)].filter(group => group !== gid), rootless: false };
 }

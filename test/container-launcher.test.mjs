@@ -24,7 +24,7 @@ test('launcher never starts a container after create is cancelled', async () => 
   try {
     const launcher = new ContainerLauncher({ image: 'sha256:' + 'a'.repeat(64), workspace, timeoutMs: 1000, spawn: (_command, args) => {
       operations.push(args[0]);
-      if (args[0] === 'info') return { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn('["name=rootless"]')); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn(0)); } };
+      if (args[0] === 'info') return { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn(JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=rootless'] }))); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn(0)); } };
       if (args[0] === 'ps') return { stdout: { on() {} }, stderr: { on() {} }, once(event, fn) { if (event === 'close') setImmediate(() => fn(0)); } };
       if (args[0] === 'create') {
         const created = child();
@@ -60,7 +60,7 @@ async function uncertainCreateFixture({ failure = 'cancel', appearAfter = 8 } = 
       once(event, fn) { listeners.set(event, fn); },
     };
     if (operation === 'info') {
-      setImmediate(() => stdout.emit('data', '["name=rootless"]'));
+      setImmediate(() => stdout.emit('data', JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=rootless'] })));
       setImmediate(() => listeners.get('close')?.(0));
     } else if (operation === 'create') {
       ownedName = args[args.indexOf('--name') + 1];
@@ -133,7 +133,7 @@ test('launcher rejects a Docker create ID that is not the exact owned name and l
       operations.push(args[0]);
       const listeners = new Map();
       const foreignId = 'abcdef'.repeat(10) + 'abcd';
-      const output = args[0] === 'info' ? '["name=rootless"]' : args[0] === 'create' ? foreignId : JSON.stringify([{ Id: foreignId, Name: '/foreign', Config: { Labels: { 'yoloharness.run': 'other' } } }]);
+      const output = args[0] === 'info' ? JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=rootless'] }) : args[0] === 'create' ? foreignId : JSON.stringify([{ Id: foreignId, Name: '/foreign', Config: { Labels: { 'yoloharness.run': 'other' } } }]);
       const error = args[0] === 'inspect' ? '' : '';
       return { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn(output)); } }, stderr: { on(event, fn) { if (event === 'data' && error) setImmediate(() => fn(error)); } }, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); if (event === 'close') setImmediate(() => fn(args[0] === 'inspect' ? 0 : 0)); } };
     } });
@@ -155,7 +155,7 @@ test('uncertain create waits for stable absence and removes a delayed daemon con
     const launcher = new ContainerLauncher({ image: 'sha256:' + 'c'.repeat(64), workspace, timeoutMs: 1000, spawn: (_command, args) => {
       const quick = (code = 0) => ({ stdout: { on() {} }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn(code)); } });
       operations.push(args[0]);
-      if (args[0] === 'info') return { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn('["name=rootless"]')); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn(0)); } };
+      if (args[0] === 'info') return { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn(JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=rootless'] }))); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn(0)); } };
       if (args[0] === 'create') { ownedName = args[args.indexOf('--name') + 1]; ownedLabel = args[args.indexOf('--label') + 1].split('=').slice(1).join('='); const created = child(); setImmediate(() => created.kill('SIGKILL')); return created; }
       if (args[0] === 'ps') {
         const listeners = new Map();
@@ -188,7 +188,7 @@ test('uncertain create proves stable absence after the bounded reconciliation bu
     const launcher = new ContainerLauncher({ image: 'sha256:' + 'e'.repeat(64), workspace, timeoutMs: 1000, spawn: (_command, args) => {
       const listeners = new Map();
       const quick = (code = 0, output = '') => ({ stdout: { on(event, fn) { if (event === 'data' && output) setImmediate(() => fn(output)); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); if (event === 'close') setImmediate(() => fn(code)); } });
-      if (args[0] === 'info') return quick(0, '["name=rootless"]');
+      if (args[0] === 'info') return quick(0, JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=rootless'] }));
       if (args[0] === 'create') return { stdout: { on() {} }, stderr: { on() {} }, stdin: { end() {} }, kill() { setImmediate(() => listeners.get('close')?.(137)); }, once(event, fn) { listeners.set(event, fn); } };
       if (args[0] === 'ps') { const now = Date.now(); firstPsAt ??= now; lastPsAt = now; return quick(); }
       throw new Error(`unexpected docker operation: ${args[0]}`);
@@ -228,7 +228,7 @@ test('mountinfo decoding preserves escaped newline targets for nested-mount chec
 test('rootful-shaped Docker security options select the host numeric identity and groups', async () => {
   const identity = await containerIdentity('docker', undefined, {
     getuid: () => 1234, getgid: () => 2345, getgroups: () => [2345, 3456, 3456],
-    operationFn: async () => '["name=seccomp,profile=builtin"]',
+    operationFn: async () => JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=seccomp,profile=builtin'] }),
   });
   assert.deepEqual(identity, { uid: 1234, gid: 2345, groups: [3456], rootless: false });
 });
@@ -236,20 +236,39 @@ test('rootful-shaped Docker security options select the host numeric identity an
 test('rootless Docker keeps container root mapping and does not add host groups', async () => {
   const identity = await containerIdentity('docker', undefined, {
     getuid: () => 1234, getgid: () => 2345, getgroups: () => [2345, 3456],
-    operationFn: async () => '["name=rootless", "name=seccomp,profile=builtin"]',
+    operationFn: async () => JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=rootless', 'name=seccomp,profile=builtin'] }),
   });
   assert.deepEqual(identity, { uid: 0, gid: 0, groups: [], rootless: true });
 });
 
 test('Docker identity rejects malformed info and user namespace remapping specifically', async () => {
   await assert.rejects(containerIdentity('docker', undefined, { operationFn: async () => 'not-json' }), /malformed|unable to verify Docker security mode/i);
-  await assert.rejects(containerIdentity('docker', undefined, { operationFn: async () => '["name=userns"]' }), /user.?namespace remapping|unsupported/i);
+  await assert.rejects(containerIdentity('docker', undefined, { operationFn: async () => JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=userns'] }) }), /user.?namespace remapping|unsupported/i);
+});
+
+test('Docker identity rejects Desktop, native macOS, and legacy array-shaped daemon info', async () => {
+  for (const info of [
+    { OSType: 'linux', OperatingSystem: 'Docker Desktop', SecurityOptions: ['name=seccomp,profile=builtin'] },
+    { OSType: 'darwin', OperatingSystem: 'macOS', SecurityOptions: ['name=seccomp,profile=builtin'] },
+    ['name=seccomp,profile=builtin'],
+  ]) await assert.rejects(containerIdentity('docker', undefined, { operationFn: async () => JSON.stringify(info) }), /unsupported|malformed/i);
+});
+
+test('Docker identity accepts the maximum Docker numeric identity and rejects invalid boundaries', async () => {
+  const info = JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=seccomp,profile=builtin'] });
+  const valid = await containerIdentity('docker', undefined, { operationFn: async () => info, getuid: () => 2147483647, getgid: () => 2147483647, getgroups: () => [0, 2147483647] });
+  assert.deepEqual(valid, { uid: 2147483647, gid: 2147483647, groups: [0], rootless: false });
+  for (const value of [-1, 2147483648, 1.5, NaN, Infinity]) {
+    await assert.rejects(containerIdentity('docker', undefined, { operationFn: async () => info, getuid: () => value, getgid: () => 1, getgroups: () => [0] }), /invalid host numeric identity/);
+    await assert.rejects(containerIdentity('docker', undefined, { operationFn: async () => info, getuid: () => 1, getgid: () => value, getgroups: () => [0] }), /invalid host numeric identity/);
+    await assert.rejects(containerIdentity('docker', undefined, { operationFn: async () => info, getuid: () => 1, getgid: () => 1, getgroups: () => [value] }), /invalid host numeric identity/);
+  }
 });
 
 test('host root under standard Docker remains explicit numeric 0:0 identity', async () => {
   const identity = await containerIdentity('docker', undefined, {
     getuid: () => 0, getgid: () => 0, getgroups: () => [0, 7],
-    operationFn: async () => '[]',
+    operationFn: async () => JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: [] }),
   });
   assert.deepEqual(identity, { uid: 0, gid: 0, groups: [7], rootless: false });
 });
@@ -263,7 +282,7 @@ test('rootful consumer create argv carries selected ownership without duplicate 
       const listeners = new Map(); const stdout = new EventEmitter(); const stderr = new EventEmitter();
       const result = { stdout, stderr, stdin: { end() {} }, kill() { setImmediate(() => listeners.get('close')?.(137)); }, once(event, fn) { listeners.set(event, fn); } };
       const close = code => setImmediate(() => listeners.get('close')?.(code));
-      if (args[0] === 'info') { setImmediate(() => stdout.emit('data', '["name=seccomp,profile=builtin"]')); close(0); }
+      if (args[0] === 'info') { setImmediate(() => stdout.emit('data', JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=seccomp,profile=builtin'] }))); close(0); }
       else if (args[0] === 'create') { createArgs = args; setImmediate(() => stdout.emit('data', id)); close(0); }
       else if (args[0] === 'inspect' && !createArgs?._cleaned) { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: id, Name: `/${createArgs[createArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': createArgs[createArgs.indexOf('--label') + 1].split('=').slice(1).join('=') } } }))); close(0); }
       else if (args[0] === 'start') { setImmediate(() => stdout.emit('data', '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n')); close(0); }
@@ -324,6 +343,25 @@ test('configured image rejects an image whose embedded source digest is stale', 
   }
 });
 
+test('configured image rejects a coherent old 0.1.0 tag even when its ID and source digest match', async () => {
+  const data = await mkdtemp('/tmp/yolo-old-image-tag-');
+  const oldData = process.env.XDG_DATA_HOME;
+  process.env.XDG_DATA_HOME = data;
+  try {
+    const identity = await runtimeSourceIdentity();
+    await mkdir(join(data, 'yoloharness'), { recursive: true });
+    const imageId = `sha256:${'c'.repeat(64)}`;
+    await writeFile(join(data, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId, ...identity }));
+    await assert.rejects(
+      configuredImage({ inspect: async () => JSON.stringify({ Id: imageId, RepoTags: ['yoloharness-local:0.1.0'], Config: { Labels: { 'org.yoloharness.source-digest': identity.sourceDigest }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }) }),
+      /installation-owned image tag/,
+    );
+  } finally {
+    if (oldData === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = oldData;
+    await rm(data, { recursive: true, force: true });
+  }
+});
+
 test('launcher uses one absolute deadline and does not create after slow preflight', async () => {
   const workspace = await mkdtemp('/tmp/yolo-workspace-deadline-');
   const operations = [];
@@ -358,7 +396,7 @@ test('abort starts exact cleanup while an attach client never closes', async () 
         once(event, fn) { listeners.set(event, fn); },
       };
       const close = code => setImmediate(() => listeners.get('close')?.(code));
-      if (operation === 'info') { setImmediate(() => stdout.emit('data', '["name=rootless"]')); close(0); }
+      if (operation === 'info') { setImmediate(() => stdout.emit('data', JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=rootless'] }))); close(0); }
       else if (operation === 'create') { ownedName = args[args.indexOf('--name') + 1]; ownedLabel = args[args.indexOf('--label') + 1].split('=').slice(1).join('='); setImmediate(() => stdout.emit('data', ownedId)); close(0); }
       else if (operation === 'inspect' && cleanupCount === 0) { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: ownedId, Name: `/${ownedName}`, Config: { Labels: { 'yoloharness.run': ownedLabel } } }))); close(0); }
       else if (operation === 'start') { setImmediate(() => { stdout.emit('data', JSON.stringify({ version: 1, run_id: 'run-partial', status: 'deadline', effect_state: 'uncertain', result: 'partial answer', evidence: [], artifacts: [], errors: ['deadline exceeded'] }) + '\n'); controller.abort(new Error('stuck attach cancellation')); }); }

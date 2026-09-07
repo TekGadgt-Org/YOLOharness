@@ -115,28 +115,20 @@ export async function containerIdentity(command, spawn, opts = {}) {
   let options;
   try { options = JSON.parse(String(result).trim()); } catch { throw new Error('unable to verify Docker security mode: malformed daemon info'); }
   const hostPlatform = opts.hostPlatform ?? process.platform;
-  const clientInfo = options?.ClientInfo;
-  const desktopClient = clientInfo === undefined ||
-    (clientInfo && typeof clientInfo === 'object' && !Array.isArray(clientInfo) &&
-      (clientInfo.Context === 'desktop-linux' || /docker\s+desktop/i.test(clientInfo.Name ?? '')));
-  const desktop = hostPlatform === 'darwin' &&
-    options?.OSType?.toLowerCase() === 'linux' &&
-    options?.OperatingSystem === 'Docker Desktop' &&
-    desktopClient;
-  const supportedLinux = hostPlatform === 'linux' &&
-    options?.OSType?.toLowerCase() === 'linux' &&
-    typeof options?.OperatingSystem === 'string' &&
-    !/^Docker Desktop$/i.test(options.OperatingSystem);
+  const linuxDaemon = options && typeof options === 'object' && !Array.isArray(options) &&
+    typeof options.OSType === 'string' && options.OSType.toLowerCase() === 'linux';
+  const darwinLinuxDaemon = hostPlatform === 'darwin' && linuxDaemon;
+  const supportedLinux = hostPlatform === 'linux' && linuxDaemon;
   if (!options || typeof options !== 'object' || Array.isArray(options) ||
-      (!supportedLinux && !desktop) ||
+      (!supportedLinux && !darwinLinuxDaemon) ||
       !Array.isArray(options.SecurityOptions) || options.SecurityOptions.some(value => typeof value !== 'string')) {
     throw new Error('unable to verify Docker security mode: unsupported or malformed Linux daemon info');
   }
   const securityOptions = options.SecurityOptions;
-  if (!desktop && securityOptions.some(value => /^name=userns(?:,|$)/i.test(value))) throw new Error('unsupported Docker user-namespace remapping security mode');
+  if (supportedLinux && securityOptions.some(value => /^name=userns(?:,|$)/i.test(value))) throw new Error('unsupported Docker user-namespace remapping security mode');
+  if (darwinLinuxDaemon) return { uid: 0, gid: 0, groups: [], rootless: false };
   const rootless = securityOptions.some(value => /^name=rootless(?:,|$)/i.test(value));
   if (rootless) return { uid: 0, gid: 0, groups: [], rootless: true };
-  if (desktop) return { uid: 0, gid: 0, groups: [], rootless: false, desktop: true };
   const getuid = opts.getuid ?? process.getuid;
   const getgid = opts.getgid ?? process.getgid;
   const getgroups = opts.getgroups ?? process.getgroups;

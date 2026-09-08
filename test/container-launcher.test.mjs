@@ -7,14 +7,51 @@ import { ContainerLauncher, validateWorkspace, decodeMountInfoTargets, container
 import { configuredImage, runtimeSourceIdentity } from '../src/cli.mjs';
 import { RUNTIME_RESOURCE_POLICY } from '../src/resource-policy.mjs';
 
-test('runtime resource policy reserves bounded scratch for offline package-manager installs', () => {
+test('runtime resource policy keeps identity scratch bounded while run scratch is volume-backed', () => {
   assert.deepEqual(RUNTIME_RESOURCE_POLICY, {
-    tmpfs: '256m',
     homeTmpfs: '64m',
     memory: '512m',
     pids: '128',
     cpus: '1',
   });
+});
+
+test('launcher creates and mounts one exact owned scratch volume', async () => {
+  const workspace = await mkdtemp('/tmp/yolo-launcher-volume-');
+  const id = '0123456789abcdef'.repeat(4);
+  const operations = [];
+  let createArgs;
+  let volumeName;
+  let volumeLabel;
+  let volumeRemoved = false;
+  let containerRemoved = false;  try {
+    const spawn = (_command, args) => {
+      const operation = args[0]; operations.push(args);
+      const listeners = new Map(); const stdout = new EventEmitter(); const stderr = new EventEmitter();
+      const result = { stdout, stderr, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); } };
+      const close = code => setImmediate(() => listeners.get('close')?.(code));
+      if (operation === 'info') { setImmediate(() => stdout.emit('data', JSON.stringify({ OSType: 'linux', SecurityOptions: ['name=rootless'] }))); close(0); }
+      else if (operation === 'volume' && args[1] === 'create') { volumeName = args.at(-1); volumeLabel = args[args.indexOf('--label') + 1].split('=').slice(1).join('='); setImmediate(() => stdout.emit('data', volumeName)); close(0); }
+      else if (operation === 'volume' && args[1] === 'inspect') { if (volumeRemoved) { setImmediate(() => stderr.emit('data', `Error response from daemon: volume ${volumeName} not found`)); close(1); } else { setImmediate(() => stdout.emit('data', JSON.stringify({ Name: volumeName, Labels: { 'yoloharness.run': volumeLabel } }))); close(0); } }
+      else if (operation === 'create') { createArgs = args; setImmediate(() => stdout.emit('data', id)); close(0); }
+      else if (operation === 'inspect' && args.at(-1) === id) { if (containerRemoved) { setImmediate(() => stderr.emit('data', `Error: No such container: ${id}`)); close(1); } else { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: id, Name: `/${createArgs[createArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': createArgs[createArgs.indexOf('--label') + 1].split('=').slice(1).join('=') } } }))); close(0); } }
+      else if (operation === 'start') { setImmediate(() => stdout.emit('data', '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n')); close(0); }
+      else if (operation === 'stop' || operation === 'kill') close(0);
+      else if (operation === 'rm') { containerRemoved = true; close(0); }
+      else if (operation === 'volume' && args[1] === 'rm') { volumeRemoved = true; close(0); }
+      else if (operation === 'inspect') { stderr.emit('data', `Error: No such container: ${args.at(-1)}`); close(1); }
+      else throw new Error(`unexpected operation ${args.join(' ')}`);
+      return result;
+    };
+    const launcher = new ContainerLauncher({ image: `sha256:${'a'.repeat(64)}`, workspace, spawn });
+    assert.equal((await launcher.launch({ prompt: 'volume', model: 'synthetic-model', deadline: Date.now() + 10_000, accessToken: 'synthetic-access', expiresAt: Date.now() + 20_000 })).result, 'ok');
+    assert.equal(operations.filter(args => args[0] === 'volume' && args[1] === 'create').length, 1);
+    assert.equal(operations.filter(args => args[0] === 'volume' && args[1] === 'rm').length, 1);
+    const mount = createArgs[createArgs.indexOf('--mount') + 1];
+    assert.match(mount, /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-nocopy$/);
+    assert.equal(createArgs.filter(value => value === '--mount').length, 2);
+    assert.equal(createArgs.some(value => String(value).includes('/tmp:rw')), false);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
 const child = (onCreate) => {
@@ -28,14 +65,28 @@ const child = (onCreate) => {
   return value;
 };
 
+const syntheticVolumes = new Map();
+const volumeMock = (args) => {
+  const listeners = new Map(); const stdout = new EventEmitter(); const stderr = new EventEmitter();
+  const result = { stdout, stderr, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); } };
+  const close = code => setImmediate(() => listeners.get('close')?.(code));
+  const name = args.at(-1);
+  if (args[1] === 'create') { const label = args[args.indexOf('--label') + 1].split('=').slice(1).join('='); syntheticVolumes.set(name, label); setImmediate(() => stdout.emit('data', name)); close(0); }
+  else if (args[1] === 'inspect' && syntheticVolumes.has(name)) { setImmediate(() => stdout.emit('data', JSON.stringify({ Name: name, Labels: { 'yoloharness.run': syntheticVolumes.get(name) } }))); close(0); }
+  else if (args[1] === 'rm' && syntheticVolumes.delete(name)) close(0);
+  else { setImmediate(() => stderr.emit('data', `Error response from daemon: volume ${name} not found`)); close(1); }
+  return result;
+};
+
 test('launcher never starts a container after create is cancelled', async () => {
   const workspace = await mkdtemp('/tmp/yolo-launcher-cancel-');
   const controller = new AbortController();
   const operations = [];
   try {
     const launcher = new ContainerLauncher({ image: 'sha256:' + 'a'.repeat(64), workspace, timeoutMs: 1000, spawn: (_command, args) => {
+      if (args[0] === 'volume') return volumeMock(args);
       operations.push(args[0]);
-      if (args[0] === 'info') return { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn(JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=rootless'] }))); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn(0)); } };
+      if (args[0] === 'info') return { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn(JSON.stringify({ OSType: 'linux', SecurityOptions: ['name=rootless'] }))); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn(0)); } };
       if (args[0] === 'ps') return { stdout: { on() {} }, stderr: { on() {} }, once(event, fn) { if (event === 'close') setImmediate(() => fn(0)); } };
       if (args[0] === 'create') {
         const created = child();
@@ -61,6 +112,7 @@ async function uncertainCreateFixture({ failure = 'cancel', appearAfter = 8 } = 
   let ownedLabel;
   const ownedId = 'deadbeef'.repeat(8);
   const spawn = (_command, args) => {
+    if (args[0] === 'volume') return volumeMock(args);
     const operation = args[0]; operations.push(operation);
     const listeners = new Map();
     const stdout = new EventEmitter();
@@ -165,8 +217,9 @@ test('uncertain create waits for stable absence and removes a delayed daemon con
   try {
     const launcher = new ContainerLauncher({ image: 'sha256:' + 'c'.repeat(64), workspace, timeoutMs: 1000, spawn: (_command, args) => {
       const quick = (code = 0) => ({ stdout: { on() {} }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn(code)); } });
+      if (args[0] === 'volume') return volumeMock(args);
       operations.push(args[0]);
-      if (args[0] === 'info') return { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn(JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=rootless'] }))); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn(0)); } };
+      if (args[0] === 'info') return { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn(JSON.stringify({ OSType: 'linux', SecurityOptions: ['name=rootless'] }))); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn(0)); } };
       if (args[0] === 'create') { ownedName = args[args.indexOf('--name') + 1]; ownedLabel = args[args.indexOf('--label') + 1].split('=').slice(1).join('='); const created = child(); setImmediate(() => created.kill('SIGKILL')); return created; }
       if (args[0] === 'ps') {
         const listeners = new Map();
@@ -197,6 +250,7 @@ test('uncertain create proves stable absence after the bounded reconciliation bu
   let lastPsAt;
   try {
     const launcher = new ContainerLauncher({ image: 'sha256:' + 'e'.repeat(64), workspace, timeoutMs: 1000, spawn: (_command, args) => {
+      if (args[0] === 'volume') return volumeMock(args);
       const listeners = new Map();
       const quick = (code = 0, output = '') => ({ stdout: { on(event, fn) { if (event === 'data' && output) setImmediate(() => fn(output)); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); if (event === 'close') setImmediate(() => fn(code)); } });
       if (args[0] === 'info') return quick(0, JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=rootless'] }));
@@ -297,6 +351,7 @@ test('macOS Linux-daemon consumer create argv uses 0:0 without supplementary gro
   const id = 'abcdef0123456789'.repeat(4); let createArgs;
   try {
     const spawn = (_command, args) => {
+      if (args[0] === 'volume') return volumeMock(args);
       const listeners = new Map(); const stdout = new EventEmitter(); const stderr = new EventEmitter();
       const result = { stdout, stderr, stdin: { end() {} }, kill() { setImmediate(() => listeners.get('close')?.(137)); }, once(event, fn) { listeners.set(event, fn); } };
       const close = code => setImmediate(() => listeners.get('close')?.(code));
@@ -313,7 +368,8 @@ test('macOS Linux-daemon consumer create argv uses 0:0 without supplementary gro
     assert.equal((await launcher.launch({ prompt: 'linux-daemon', model: 'synthetic-model', deadline: Date.now() + 10_000, accessToken: 'synthetic-access', expiresAt: Date.now() + 20_000 })).result, 'ok');
     assert.equal(createArgs[createArgs.indexOf('--user') + 1], '0:0');
     assert.equal(createArgs.includes('--group-add'), false);
-    assert.match(createArgs[createArgs.indexOf('--tmpfs') + 1], new RegExp(`size=${RUNTIME_RESOURCE_POLICY.tmpfs}.*uid=0,gid=0,mode=700`));
+    assert.match(createArgs[createArgs.indexOf('--mount') + 1], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-nocopy$/);
+    assert.match(createArgs[createArgs.indexOf('--tmpfs') + 1], new RegExp(`size=${RUNTIME_RESOURCE_POLICY.homeTmpfs}.*uid=0,gid=0,mode=700`));
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
@@ -342,6 +398,7 @@ test('rootful consumer create argv carries selected ownership without duplicate 
   let createArgs;
   try {
     const spawn = (_command, args) => {
+      if (args[0] === 'volume') return volumeMock(args);
       const listeners = new Map(); const stdout = new EventEmitter(); const stderr = new EventEmitter();
       const result = { stdout, stderr, stdin: { end() {} }, kill() { setImmediate(() => listeners.get('close')?.(137)); }, once(event, fn) { listeners.set(event, fn); } };
       const close = code => setImmediate(() => listeners.get('close')?.(code));
@@ -360,8 +417,8 @@ test('rootful consumer create argv carries selected ownership without duplicate 
     assert.equal(record.result, 'ok');
     const groups = createArgs.filter((value, index) => value === '--group-add' ? createArgs[index + 1] : null).filter(Boolean);
     assert.equal(groups.includes(String(process.getgid())), false);
-    assert.match(createArgs[createArgs.indexOf('--tmpfs') + 1], new RegExp(`size=${RUNTIME_RESOURCE_POLICY.tmpfs}.*uid=${process.getuid()},gid=${process.getgid()},mode=700`));
-    assert.match(createArgs[createArgs.indexOf('--tmpfs', createArgs.indexOf('--tmpfs') + 1) + 1], new RegExp(`size=${RUNTIME_RESOURCE_POLICY.homeTmpfs}.*uid=${process.getuid()},gid=${process.getgid()},mode=700`));
+    assert.match(createArgs[createArgs.indexOf('--mount') + 1], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-nocopy$/);
+    assert.match(createArgs[createArgs.indexOf('--tmpfs') + 1], new RegExp(`size=${RUNTIME_RESOURCE_POLICY.homeTmpfs}.*uid=${process.getuid()},gid=${process.getgid()},mode=700`));
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
@@ -450,6 +507,7 @@ test('abort starts exact cleanup while an attach client never closes', async () 
   let cleanupCount = 0;
   try {
     const spawn = (_command, args) => {
+      if (args[0] === 'volume') return volumeMock(args);
       const operation = args[0]; operations.push(operation);
       const listeners = new Map();
       const stdout = new EventEmitter(); const stderr = new EventEmitter();

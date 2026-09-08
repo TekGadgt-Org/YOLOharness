@@ -196,6 +196,9 @@ async function fixture(t) {
       assert.match(id, /^[a-f0-9]{64}$/i);
       assert.equal(docker('ps', '-aq', '--filter', `id=${id}`).trim(), '', `${label} runtime must be absent before fixture teardown`);
       assert.equal(docker('ps', '-aq', '--filter', `name=^/${name}$`).trim(), '', `${label} runtime name must be absent before fixture teardown`);
+      const scratch = records[0].inspection?.Mounts?.find(mount => mount.Type === 'volume' && mount.Destination === '/tmp')?.Name;
+      assert.match(scratch ?? '', /^yoloharness-scratch-[0-9a-f-]+$/);
+      assert.throws(() => docker('volume', 'inspect', scratch), `${label} scratch volume must be absent before fixture teardown`);
     };
     const pythonProbe = await runShippedProbe('python-baseline-probe');
     assert.equal(pythonProbe.code, 0, `${pythonProbe.err}${pythonProbe.out}`);
@@ -291,8 +294,10 @@ async function fixture(t) {
     assert.ok(runtimeArgs.includes('--pids-limit') && runtimeArgs.includes('128'));
     assert.ok(runtimeArgs.includes('--memory') && runtimeArgs.includes('512m'));
     assert.ok(runtimeArgs.includes('--cpus') && runtimeArgs.includes('1'));
-    assert.equal(runtimeArgs.filter(value => value === '--mount').length, 1);
-    assert.match(runtimeArgs[runtimeArgs.indexOf('--mount') + 1], /^type=bind,src=.*\/workspace,dst=\/workspace,readonly=false,bind-propagation=rprivate$/s);
+    assert.equal(runtimeArgs.filter(value => value === '--mount').length, 2);
+    const runtimeMounts = runtimeArgs.flatMap((value, index) => value === '--mount' ? [runtimeArgs[index + 1]] : []);
+    assert.match(runtimeMounts[0], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-nocopy$/);
+    assert.match(runtimeMounts[1], /^type=bind,src=.*\/workspace,dst=\/workspace,readonly=false,bind-propagation=rprivate$/s);
     assert.equal(runtimeArgs.some(value => /docker\.sock|DOCKER_CONFIG|ACCESS_TOKEN|REFRESH_TOKEN|hostile|synthetic-hostile/i.test(value)), false);
     const runtimeInspect = JSON.parse(await readFile(runtimeInspectPath, 'utf8'))[0];
     if (process.env.YOLO_EVIDENCE_DIR) {
@@ -310,11 +315,11 @@ async function fixture(t) {
     assert.equal(runtimeInspect.Config.Labels['yoloharness.run']?.length > 0, true);
     assert.equal(runtimeInspect.HostConfig.IpcMode, 'private');
     assert.equal(runtimeInspect.HostConfig.PidMode, '');
-    assert.equal(runtimeInspect.HostConfig.Tmpfs['/tmp'].includes(`size=${RUNTIME_RESOURCE_POLICY.tmpfs}`), true);
+    assert.equal(runtimeInspect.Mounts.some(mount => mount.Type === 'volume' && mount.Destination === '/tmp' && mount.Name.startsWith('yoloharness-scratch-')), true);
     assert.equal(runtimeInspect.HostConfig.Tmpfs['/home/worker'].includes(`size=${RUNTIME_RESOURCE_POLICY.homeTmpfs}`), true);
     assert.equal(runtimeInspect.Image, derivativeId);
     assert.equal(runtimeInspect.Mounts.filter(mount => mount.Destination === '/workspace').length, 1);
-    assert.equal(runtimeInspect.Mounts.some(mount => /(?:docker\.sock|\/\.ssh|\/\.config|\/\.local\/share)/i.test(mount.Source ?? '')), false);
+    assert.equal(runtimeInspect.Mounts.some(mount => mount.Type === 'bind' && /(?:docker\.sock|\/\.ssh|\/\.config|\/\.local\/share)/i.test(mount.Source ?? '')), false);
     assert.equal(runtimeInspect.Config.Env.some(value => /DOCKER_CONFIG|ACCESS_TOKEN|REFRESH_TOKEN|TOKEN|PROXY|AWS_|GITHUB_|SSH_AUTH|NPM_CONFIG|YOLO_DOCKER|YOLO_PROVIDER/i.test(value)), false);
     assert.equal(runtimeInspect.Config.Env.includes('HOME=/home/worker'), true, 'explicit non-secret HOME allowlist value must reach the runtime');
     assert.equal(runtimeInspect.HostConfig.NetworkMode, network);
@@ -512,10 +517,12 @@ test('shipped yolo subprocess uses the immutable CA-only derivative and an inter
 
 test('configured final image has read-only root and rootless UID0 workspace write/delete canary', { skip }, async () => {
   const workspace = await mkdtemp('/tmp/yoloharness-image-canary-');
+  const volume = `yoloharness-canary-${process.pid}`;
   try {
-    const output = docker('run', '--rm', '--pull=never', '--read-only', '--tmpfs', '/tmp:rw,noexec,nosuid,size=8m', '--mount', `type=bind,src=${workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--user', '0:0', '--entrypoint', 'sh', configuredImage, '-c', 'id -u; touch /workspace/canary; rm /workspace/canary; ! touch /app/forbidden');
+    docker('volume', 'create', '--label', `yoloharness.run=${volume}`, volume);
+    const output = docker('run', '--rm', '--pull=never', '--read-only', '--mount', `type=volume,src=${volume},dst=/tmp,volume-nocopy`, '--mount', `type=bind,src=${workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--user', '0:0', '--entrypoint', 'sh', configuredImage, '-c', 'id -u; touch /workspace/canary; rm /workspace/canary; ! touch /app/forbidden');
     assert.match(output, /^0\n/); assert.equal(await access(join(workspace, 'canary')).then(() => true).catch(() => false), false);
-  } finally { await rm(workspace, { recursive: true, force: true }); }
+  } finally { try { docker('volume', 'rm', volume); } catch {} await rm(workspace, { recursive: true, force: true }); }
 });
 
 test('WRC-11 final image bounded PID and memory enforcement has below-limit controls', { skip: skip || process.env.YOLO_WRC11_ONLY !== '1' }, async () => {

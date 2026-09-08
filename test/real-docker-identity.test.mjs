@@ -20,8 +20,8 @@ function expectedCreateArgv(record, fixture, mode) {
   const groups = mode === 'rootful' ? [...new Set(process.getgroups?.() ?? [])].filter(g => g !== process.getgid()).map(String) : [];
   const args = ['create', '--pull=never', '--name', record.argv[3], '--label', record.argv[5], '--init', '-i', '--user', `${uid}:${gid}`];
   for (const group of groups) args.push('--group-add', group);
-  args.push('--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--cpus', '1', '--tmpfs',
-    `/tmp:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.tmpfs},uid=${uid},gid=${gid},mode=700`, '--tmpfs',
+  args.push('--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--cpus', '1', '--mount',
+    values(record.argv, '--mount')[0], '--tmpfs',
     `/home/worker:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.homeTmpfs},uid=${uid},gid=${gid},mode=700`, '--mount',
     `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', fixture.baseId, 'node', '/app/src/container-runtime.mjs');
   return args;
@@ -34,11 +34,8 @@ function assertCreateContract(record, fixture, mode, selectedDockerEnv) {
   assert.match(argv[3], /^yoloharness-/); assert.match(argv[5], /^yoloharness\.run=[0-9a-f-]+$/);
   assert.deepEqual(values(argv, '--user'), [mode === 'rootful' ? `${process.getuid()}:${process.getgid()}` : '0:0']);
   assert.deepEqual(values(argv, '--group-add'), mode === 'rootful' ? [...new Set(process.getgroups?.() ?? [])].filter(g => g !== process.getgid()).map(String) : []);
-  assert.deepEqual(values(argv, '--tmpfs'), [
-    `/tmp:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.tmpfs},uid=${mode === 'rootful' ? process.getuid() : 0},gid=${mode === 'rootful' ? process.getgid() : 0},mode=700`,
-    `/home/worker:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.homeTmpfs},uid=${mode === 'rootful' ? process.getuid() : 0},gid=${mode === 'rootful' ? process.getgid() : 0},mode=700`,
-  ]);
-  assert.equal(values(argv, '--mount').length, 1); assert.match(values(argv, '--mount')[0], /^type=bind,src=.+,dst=\/workspace,readonly=false,bind-propagation=rprivate$/);
+  assert.deepEqual(values(argv, '--tmpfs'), [`/home/worker:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.homeTmpfs},uid=${mode === 'rootful' ? process.getuid() : 0},gid=${mode === 'rootful' ? process.getgid() : 0},mode=700`]);
+  assert.equal(values(argv, '--mount').length, 2); assert.match(values(argv, '--mount')[0], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-nocopy$/); assert.match(values(argv, '--mount')[1], /^type=bind,src=.+,dst=\/workspace,readonly=false,bind-propagation=rprivate$/);
   assert.deepEqual(values(argv, '--workdir'), ['/workspace']);
   assert.deepEqual(values(argv, '--network'), ['bridge']);
   assert.deepEqual(values(argv, '--pids-limit'), ['128']); assert.deepEqual(values(argv, '--memory'), ['512m']); assert.deepEqual(values(argv, '--cpus'), ['1']);

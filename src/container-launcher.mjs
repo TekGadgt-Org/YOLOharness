@@ -11,6 +11,7 @@ const OP_TIMEOUT = 10_000;
 const CLEANUP_TOTAL_MS = 1500;
 const CLEANUP_STABLE_ABSENCE_MS = 500;
 const CLEANUP_POLL_MS = 50;
+const VOLUME_PREFIX = 'yoloharness-scratch-';
 // These paths are materialized by Docker inside every container and therefore
 // cannot be resolved from the host before the workspace bind is created.
 const KNOWN_CONTAINER_SYMLINK_TARGETS = new Set(['/etc/hosts', '/etc/hostname', '/etc/resolv.conf']);
@@ -35,12 +36,24 @@ export class ContainerLauncher {
     if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
     const name = `yoloharness-${randomUUID()}`;
     const label = randomUUID();
+    const volumeName = `${VOLUME_PREFIX}${label}`;
+    let volumeCreated = false;
+    let volumeCreateAttempted = false;
+    let volumeCleanup;
     const identity = await containerIdentity(this.command, this.spawn, { signal, timeoutMs: remaining(), hostPlatform: this.hostPlatform });
     if (signal?.aborted) throw signal.reason;
     if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
+    volumeCreateAttempted = true;
+    try {
+      await createScratchVolume(this.command, volumeName, label, this.spawn, { signal, timeoutMs: remaining() });
+    } catch (error) {
+      await reconcileUnknownVolume(this.command, volumeName, label, this.spawn);
+      throw error;
+    }
+    volumeCreated = true;
     const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--init', '-i', '--user', `${identity.uid}:${identity.gid}`];
     for (const group of identity.groups) args.push('--group-add', String(group));
-    args.push('--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--tmpfs', `/tmp:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.tmpfs},uid=${identity.uid},gid=${identity.gid},mode=700`, '--tmpfs', `/home/worker:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.homeTmpfs},uid=${identity.uid},gid=${identity.gid},mode=700`, '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', this.image, 'node', '/app/src/container-runtime.mjs');
+    args.push('--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--mount', `type=volume,src=${volumeName},dst=/tmp,volume-nocopy`, '--tmpfs', `/home/worker:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.homeTmpfs},uid=${identity.uid},gid=${identity.gid},mode=700`, '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', this.image, 'node', '/app/src/container-runtime.mjs');
     let id;
     let attached;
     let creating;
@@ -85,11 +98,67 @@ export class ContainerLauncher {
       return JSON.parse(lines[0]);
     } finally {
       clearTimeout(timer); signal?.removeEventListener('abort', abort);
-      if (abortCleanup) await abortCleanup;
-      else if (id && owned) await cleanup(this.command, id, name, label, this.spawn);
-      else if (createAttempted) await reconcileUnknownCreate(this.command, name, label, this.spawn);
+      let cleanupError;
+      try {
+        if (abortCleanup) await abortCleanup;
+        else if (id && owned) await cleanup(this.command, id, name, label, this.spawn);
+        else if (createAttempted) await reconcileUnknownCreate(this.command, name, label, this.spawn);
+      } catch (error) { cleanupError = error; }
+      try {
+        if (volumeCreated) volumeCleanup = cleanupScratchVolume(this.command, volumeName, label, this.spawn);
+        else if (volumeCreateAttempted) volumeCleanup = reconcileUnknownVolume(this.command, volumeName, label, this.spawn);
+        if (volumeCleanup) await volumeCleanup;
+      } catch (error) { cleanupError ??= error; }
+      if (cleanupError) throw cleanupError;
     }
   }
+}
+
+async function inspectOwnedVolume(command, name, label, spawn) {
+  let output;
+  try { output = await operation(command, ['volume', 'inspect', '--format', '{{json .}}', name], spawn).promise; }
+  catch (error) { throw Object.assign(new Error('scratch volume ownership could not be verified'), { code: 'cleanup_unknown', cause: error }); }
+  let inspected;
+  try { inspected = JSON.parse(output.trim()); } catch (error) { throw Object.assign(new Error('scratch volume ownership could not be verified'), { code: 'cleanup_unknown', cause: error }); }
+  if (inspected?.Name !== name || inspected?.Labels?.['yoloharness.run'] !== label) throw new Error(`scratch volume ownership mismatch (name=${inspected?.Name ?? 'missing'}, label=${inspected?.Labels?.['yoloharness.run'] ?? 'missing'})`);
+  return inspected;
+}
+
+async function createScratchVolume(command, name, label, spawn, { signal, timeoutMs } = {}) {
+  const output = await operation(command, ['volume', 'create', '--label', `yoloharness.run=${label}`, name], spawn, { signal, timeoutMs }).promise;
+  if (output.trim() !== name) throw new Error('docker did not return the exact scratch volume name');
+  await inspectOwnedVolume(command, name, label, spawn);
+}
+
+async function cleanupScratchVolume(command, name, label, spawn) {
+  await inspectOwnedVolume(command, name, label, spawn);
+  await operation(command, ['volume', 'rm', name], spawn, { timeoutMs: CLEANUP_TOTAL_MS }).promise;
+  try { await operation(command, ['volume', 'inspect', '--format', '{{json .}}', name], spawn, { timeoutMs: CLEANUP_TOTAL_MS }).promise; throw new Error('cleanup_unknown'); }
+  catch (error) {
+    if (error.message === 'cleanup_unknown') throw error;
+    if (!/no such volume|not found/i.test(error.dockerOutput ?? '')) throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown', cause: error });
+  }
+}
+
+async function reconcileUnknownVolume(command, name, label, spawn) {
+  const startedAt = Date.now();
+  let absentSince = null;
+  while (Date.now() - startedAt < CLEANUP_TOTAL_MS) {
+    try {
+      await inspectOwnedVolume(command, name, label, spawn);
+      absentSince = null;
+      await operation(command, ['volume', 'rm', name], spawn, { timeoutMs: CLEANUP_TOTAL_MS }).promise;
+    } catch (error) {
+      const output = error.cause?.dockerOutput ?? error.dockerOutput ?? '';
+      if (/no such volume|not found/i.test(output)) absentSince ??= Date.now();
+      else throw error;
+    }
+    if (absentSince !== null && Date.now() - absentSince >= CLEANUP_STABLE_ABSENCE_MS) return;
+    const remaining = CLEANUP_TOTAL_MS - (Date.now() - startedAt);
+    if (remaining > 0) await new Promise(resolve => setTimeout(resolve, Math.min(CLEANUP_POLL_MS, remaining)));
+  }
+  if (absentSince !== null && Date.now() - absentSince >= CLEANUP_STABLE_ABSENCE_MS) return;
+  throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown' });
 }
 
 function lastReceipt(output) {

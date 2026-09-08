@@ -30,6 +30,14 @@ const waitForDockerAbsent = async (name, timeout = 10_000) => {
   }
   throw new Error(`timed out waiting for Docker container ${name} to be absent`);
 };
+const waitForVolumeAbsent = async (name, timeout = 10_000) => {
+  const until = Date.now() + timeout;
+  while (Date.now() < until) {
+    if (docker('volume', 'ls', '-q', '--filter', `name=^${name}$`).trim() === '') return;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw new Error(`timed out waiting for Docker volume ${name} to be absent`);
+};
 const restoreEnv = (old) => { for (const [key, value] of Object.entries(old)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } };
 const fileEvidence = async (path) => {
   const bytes = await readFile(path);
@@ -381,8 +389,17 @@ async function fixture(t) {
       const inspected = JSON.parse(docker('inspect', name))[0];
       assert.equal(inspected.Name, `/${name}`);
       assert.equal(inspected.Config.Labels?.['yoloharness.run'], label);
-      bestEffortDocker('rm', '--force', name);
+      const scratch = inspected.Mounts?.find(mount => mount.Type === 'volume' && mount.Destination === '/tmp');
+      assert.ok(scratch);
+      assert.match(scratch.Name ?? '', /^yoloharness-scratch-[0-9a-f-]+$/);
+      assert.equal(scratch.Name, `yoloharness-scratch-${label}`);
+      const volume = JSON.parse(docker('volume', 'inspect', '--format', '{{json .}}', scratch.Name));
+      assert.equal(volume.Name, scratch.Name);
+      assert.equal(volume.Labels?.['yoloharness.run'], label);
+      docker('rm', '--force', name);
       await waitForDockerAbsent(name);
+      docker('volume', 'rm', scratch.Name);
+      await waitForVolumeAbsent(scratch.Name);
     };
     const sigint = spawn(process.execPath, [installedCli, '--json', 'sigint-probe'], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let sigintOut = ''; let sigintErr = ''; sigint.stdout.on('data', chunk => { sigintOut += chunk; }); sigint.stderr.on('data', chunk => { sigintErr += chunk; });
@@ -520,12 +537,22 @@ async function fixture(t) {
     restoreEnv(oldEnv);
     bestEffortDocker('rm', '--force', providerName); bestEffortDocker('network', 'rm', network); bestEffortDocker('rm', '--force', foreignId);
     for (const [id, record] of ownedRuntimes) {
-      try {
-        const inspected = JSON.parse(docker('inspect', id))[0];
-        const actualName = inspected?.Name?.replace(/^\//, '');
-        const actualLabel = inspected?.Config?.Labels?.['yoloharness.run'];
-        if (inspected?.Id === id && actualName === record.name && actualLabel === record.label.split('=').slice(1).join('=')) bestEffortDocker('rm', '--force', id);
-      } catch {}
+      if (docker('ps', '-aq', '--no-trunc', '--filter', `id=${id}`).trim() === '') continue;
+      const inspected = JSON.parse(docker('inspect', id))[0];
+      assert.equal(inspected.Id, id);
+      assert.equal(inspected.Name, `/${record.name}`);
+      const label = record.label.split('=').slice(1).join('=');
+      assert.equal(inspected.Config?.Labels?.['yoloharness.run'], label);
+      const scratch = inspected.Mounts?.find(mount => mount.Type === 'volume' && mount.Destination === '/tmp');
+      assert.ok(scratch);
+      assert.equal(scratch.Name, `yoloharness-scratch-${label}`);
+      const volume = JSON.parse(docker('volume', 'inspect', '--format', '{{json .}}', scratch.Name));
+      assert.equal(volume.Name, scratch.Name);
+      assert.equal(volume.Labels?.['yoloharness.run'], label);
+      docker('rm', '--force', id);
+      await waitForDockerAbsent(record.name);
+      docker('volume', 'rm', scratch.Name);
+      await waitForVolumeAbsent(scratch.Name);
     }
     if (derivativeTag) bestEffortDocker('image', 'rm', '--force', derivativeTag);
     await rm(root, { recursive: true, force: true });

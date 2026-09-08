@@ -17,6 +17,14 @@ const dockerSelectorKeys = ['DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG', 'D
 const originalDockerSelectors = Object.fromEntries(dockerSelectorKeys.map(key => [key, process.env[key]]));
 const jsonl = async path => (await readFile(path, 'utf8')).trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
 const values = (argv, flag) => argv.flatMap((v, i) => v === flag ? [argv[i + 1]] : []);
+const waitForVolumeAbsent = async name => {
+  const observations = [];
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    observations.push(docker('volume', 'ls', '-q', '--filter', `name=^${name}$`).trim());
+    if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 275));
+  }
+  assert.deepEqual(observations, ['', '', '']);
+};
 
 function expectedCreateArgv(record, fixture, mode) {
   const uid = mode === 'rootful' ? process.getuid() : 0; const gid = mode === 'rootful' ? process.getgid() : 0;
@@ -81,6 +89,13 @@ async function cleanupOwned(fixture, foreignId = null, runDocker = docker) {
         index -= 1;
       } catch (error) {
         const message = error.stderr?.toString().trim() || error.message;
+        if (/no such (?:network|image|container)|not found|no such volume/i.test(message)) {
+          history.attempts.push({ attempt: attempt + 1, resource, target, status: 'absent' });
+          history.successes.push({ attempt: attempt + 1, resource, target, status: 'absent' });
+          resources.splice(index, 1);
+          index -= 1;
+          continue;
+        }
         history.attempts.push({ attempt: attempt + 1, resource, target, status: 'error', error: message });
         history.errors.push({ attempt: attempt + 1, resource, target, error: message });
       }
@@ -115,10 +130,16 @@ async function cleanupOwned(fixture, foreignId = null, runDocker = docker) {
   const volumes = new Map(volumeRecords.map(record => [`${record.name}\u0000${record.label}`, record]));
   for (const { name, label } of volumes.values()) {
     let inspected;
-    try { inspected = JSON.parse(runDocker('volume', 'inspect', '--format', '{{json .}}', name)); } catch { continue; }
+    try { inspected = JSON.parse(runDocker('volume', 'inspect', '--format', '{{json .}}', name)); }
+    catch (error) {
+      const message = error.stderr?.toString() ?? error.message;
+      if (/no such volume|not found/i.test(message)) { await waitForVolumeAbsent(name); continue; }
+      throw error;
+    }
     assert.equal(inspected.Name, name);
     assert.equal(inspected.Labels?.['yoloharness.run'], label, `fixture volume ownership: ${name}`);
     runDocker('volume', 'rm', name);
+    await waitForVolumeAbsent(name);
   }
   if (foreignId) assert.match(runDocker('ps', '-aq', '--no-trunc', '--filter', `id=${foreignId}`).trim(), new RegExp(`^${foreignId}$`));
   assert.deepEqual(resources, [], `owned cleanup history: ${JSON.stringify(history)}`);
@@ -176,7 +197,14 @@ if(argv[0]==='rm'&&process.env.YOLO_PROXY_CHILD==='cleanup-unknown'){record.inte
  save();process.stdout.write(record.stdout);process.stderr.write(record.stderr);process.exit(child.status??1);
 }
 `, { mode: 0o755 });
-  return { workspace, config, data, endpoint, baseId, network, provider, proxy, d2Proxy, d2Output, d2Log, tag, identity, log, childMarker, cleanupFailure };
+  const historyProxy = join(root, 'history-docker-proxy.cjs');
+  await writeFile(historyProxy, `#!/usr/bin/env node
+const cp=require('child_process'),fs=require('fs');const argv=process.argv.slice(2),docker=${JSON.stringify(dockerPath)},image=${JSON.stringify(baseId)},derivative=${JSON.stringify(derivative)},network=${JSON.stringify(network)},log=${JSON.stringify(log)},state=${JSON.stringify(join(root, 'history-volume.txt'))};let target=fs.existsSync(state)?fs.readFileSync(state,'utf8').trim():process.env.YOLO_HISTORY_VOLUME;
+if(argv[0]==='create'){const imageIndex=argv.lastIndexOf(image);if(imageIndex>=0)argv[imageIndex]=derivative;const networkIndex=argv.indexOf('--network');if(networkIndex>=0)argv[networkIndex+1]=network;const mountIndex=argv.findIndex((value,index)=>value==='--mount'&&argv[index+1]?.startsWith('type=volume,src=yoloharness-scratch-'));if(mountIndex>=0)target=argv[mountIndex+1].match(/^type=volume,src=([^,]+)/)?.[1]??target;if(target)fs.writeFileSync(state,target);}
+if(argv[0]==='volume'&&argv[1]==='rm'&&argv[2]===target&&process.env.YOLO_HISTORY_BUSY==='1'){fs.appendFileSync(log,JSON.stringify({argv:[...argv],intercept:'busy',target})+'\\n');process.stderr.write('Error response from daemon: volume is busy\\n');process.exit(1);}
+const result=cp.spawnSync(docker,argv,{encoding:'utf8',stdio:['inherit','pipe','pipe'],env:{...process.env,YOLO_HISTORY_VOLUME:target??''}});fs.appendFileSync(log,JSON.stringify({argv:[...argv],stdout:result.stdout??'',stderr:result.stderr??'',status:result.status,target})+'\\n');process.stdout.write(result.stdout??'');process.stderr.write(result.stderr??'');process.exit(result.status??1);
+`, { mode: 0o755 });
+  return { workspace, config, data, endpoint, baseId, network, provider, proxy, historyProxy, d2Proxy, d2Output, d2Log, tag, identity, log, childMarker, cleanupFailure };
 }
 
 async function installPacked(root, env) {
@@ -223,7 +251,7 @@ test('installed v0.1.1 CLI retains complete identity lifecycle evidence', { skip
       await writeFile(fixture.log, '');
     }
     docker('rm', '--force', foreignId); foreignId = null;
-  } finally { if (foreignId) try { docker('rm', '--force', foreignId); } catch {} if (fixture) try { await cleanupOwned(fixture); } catch {} await rm(root, { recursive: true, force: true }); }
+  } finally { if (foreignId) try { docker('rm', '--force', foreignId); } catch {} if (fixture) await cleanupOwned(fixture); await rm(root, { recursive: true, force: true }); }
 });
 
 test('installed production CLI traverses provider/runtime/executor for exact 70 MiB workload as selected UID', { skip }, async () => {
@@ -257,7 +285,7 @@ test('installed production CLI traverses provider/runtime/executor for exact 70 
     assert.match(docker('ps', '-aq', '--no-trunc', '--filter', `id=${foreignId}`).trim(), new RegExp(`^${foreignId}$`));
     docker('rm', '--force', foreignId); foreignId = null;
     docker('run', '--rm', '--pull=never', '--user', '0:0', '--mount', `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--entrypoint', 'sh', image, '-c', 'rm -rf /workspace/.yolo');
-  } finally { if (foreignId) try { docker('rm', '--force', foreignId); } catch {} if (fixture) { try { docker('run', '--rm', '--pull=never', '--user', '0:0', '--mount', `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--entrypoint', 'sh', image, '-c', 'rm -rf /workspace'); } catch {} try { await cleanupOwned(fixture); } catch {} } await rm(root, { recursive: true, force: true }); }
+  } finally { if (foreignId) try { docker('rm', '--force', foreignId); } catch {} if (fixture) { try { docker('run', '--rm', '--pull=never', '--user', '0:0', '--mount', `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--entrypoint', 'sh', image, '-c', 'rm -rf /workspace'); } catch {} await cleanupOwned(fixture); } await rm(root, { recursive: true, force: true }); }
 });
 
 test('same packed npm tool call is RED on 64 MiB tmpfs and GREEN on one measured scratch volume', { skip }, async () => {
@@ -298,7 +326,43 @@ test('same packed npm tool call is RED on 64 MiB tmpfs and GREEN on one measured
     const greenStart = records.find((r, index) => index > redRecords.length - 1 && r.argv[0] === 'start' && r.argv.includes('--interactive')); assert.ok(greenStart); assert.ok(greenStart.maxTmpUsed > 64 * 1024 * 1024, `live GREEN measurement must exceed 64 MiB: ${JSON.stringify(greenStart)}`);
     const persisted = docker('run', '--rm', '--pull=never', '--user', '0:0', '--mount', `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--entrypoint', 'sh', image, '-c', 'cat /workspace/.yolo/last-receipt.json');
     assert.deepEqual(JSON.parse(persisted), greenReceipt);
-  } finally { if (foreignId) try { docker('rm', '--force', foreignId); } catch {} if (fixture) { try { resetWorkloadWorkspace(fixture); } catch {} try { await cleanupOwned(fixture); } catch {} } await rm(root, { recursive: true, force: true }); }
+  } finally { if (foreignId) try { docker('rm', '--force', foreignId); } catch {} if (fixture) { try { resetWorkloadWorkspace(fixture); } catch {} await cleanupOwned(fixture); } await rm(root, { recursive: true, force: true }); }
+});
+
+test('packed public executable preserves production reconciler history through cleanup_unknown receipt', { skip }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'yoloharness-packed-production-history-')); let fixture; let foreignId;
+  try {
+    fixture = await makeFixture(root);
+    const cli = await installPacked(root, fixture);
+    const foreignName = `yoloharness-foreign-history-${process.pid}`;
+    foreignId = docker('create', '--pull=never', '--name', foreignName, '--label', 'yoloharness.run=foreign-history', image).trim();
+    const env = { ...packedDockerEnvironment(fixture.endpoint, root), HOME: join(root, 'home'), XDG_CONFIG_HOME: fixture.config, XDG_DATA_HOME: fixture.data, DOCKER_CONFIG: join(root, 'docker-config'), DOCKER_HOST: fixture.endpoint, DOCKER_CONTEXT: undefined, DOCKER_TLS_VERIFY: undefined, DOCKER_CERT_PATH: undefined, PATH: `${root}:${process.env.PATH}`, YOLO_TEST_MODE: 'rootless', YOLO_TEST_ROOTFUL: '0', YOLO_HISTORY_BUSY: '1' };
+    await writeFile(join(root, 'docker'), `#!/bin/sh\nexec ${fixture.historyProxy} "$@"`, { mode: 0o755 }); await writeFile(fixture.log, '');
+    const run = spawnSync(cli, ['--json', '-t', '0.1', 'production history cleanup probe'], { cwd: fixture.workspace, env, encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 });
+    assert.equal(run.error, undefined, run.error?.message); assert.equal(run.status, 1, `${run.stderr}\n${run.stdout}`);
+    const lines = run.stdout.trim().split(/\r?\n/).filter(Boolean); assert.equal(lines.length, 1, `${run.stderr}\n${run.stdout}`);
+    const receipt = JSON.parse(lines[0]); assert.equal(receipt.status, 'cleanup_unknown'); assert.equal(receipt.effect_state, 'uncertain');
+    assert.ok(receipt.cleanup_history.length >= 5);
+    assert.match(receipt.cleanup_history.map(event => event.action).join('>'), /^attempt>attempt>(?:error>retry>attempt>)*(?:error>deadline|error>retry>deadline)$/);
+    assert.equal(receipt.cleanup_history[2].operation, 'remove'); assert.equal(receipt.cleanup_history[2].classification, 'busy');
+    assert.equal(receipt.cleanup_history.at(-1).action, 'deadline'); assert.equal(receipt.cleanup_history.at(-1).classification, 'timeout');
+    assert.deepEqual(JSON.parse(await readFile(join(fixture.workspace, '.yolo', 'last-receipt.json'), 'utf8')), receipt);
+    const records = await jsonl(fixture.log); const runtimeCreate = records.find(record => record.argv[0] === 'create' && record.argv.includes('/app/src/container-runtime.mjs')); assert.ok(runtimeCreate);
+    const scratch = runtimeCreate.argv[runtimeCreate.argv.indexOf('--mount') + 1].match(/^type=volume,src=([^,]+)/)?.[1]; assert.match(scratch ?? '', /^yoloharness-scratch-[0-9a-f-]+$/);
+    assert.equal(records.filter(record => record.intercept === 'busy' && record.target === scratch).length > 0, true);
+    assert.equal(records.some(record => record.argv.some(value => /last-receipt|chmod|runtime-output\.json/.test(value))), false);
+    const persisted = docker('run', '--rm', '--pull=never', '--user', '0:0', '--mount', `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--entrypoint', 'sh', image, '-c', 'cat /workspace/.yolo/last-receipt.json');
+    assert.deepEqual(JSON.parse(persisted), receipt);
+    assert.equal(docker('ps', '-aq', '--no-trunc', '--filter', `id=${foreignId}`).trim(), foreignId);
+    docker('rm', '--force', foreignId); foreignId = null;
+    const volume = JSON.parse(docker('volume', 'inspect', '--format', '{{json .}}', scratch));
+    assert.equal(volume.Name, scratch); assert.equal(volume.Labels?.['yoloharness.run'], scratch.slice('yoloharness-scratch-'.length));
+    docker('volume', 'rm', scratch); await waitForVolumeAbsent(scratch);
+  } finally {
+    if (foreignId) try { docker('rm', '--force', foreignId); } catch {}
+    if (fixture) await cleanupOwned(fixture)
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('installed v0.1.0 CLI retains the historical rootless-only RED', { skip }, async () => {
@@ -361,7 +425,7 @@ for (const childMode of ['spawn-error', 'timeout']) test(`proxy ${childMode} is 
       ],
     });
     await assertStableAbsence(createdId, create.argv[3], label, foreignId, foreignName, fixture);
-  } finally { if (foreignId) try { docker('rm', '--force', foreignId); } catch {} if (fixture) try { await cleanupOwned(fixture); } catch {} await rm(root, { recursive: true, force: true }); }
+  } finally { if (foreignId) try { docker('rm', '--force', foreignId); } catch {} if (fixture) await cleanupOwned(fixture); await rm(root, { recursive: true, force: true }); }
 });
 
 for (const scenario of [
@@ -394,7 +458,7 @@ for (const scenario of [
     if (!scenario.control) { const cleanup = records.find(r => r.intercept === 'cleanup-hang'); assert.ok(cleanup); assert.deepEqual(cleanup.argv.slice(0, 2), ['rm', '--force']); assert.equal(cleanup.argv.length, 3); }
   } finally {
     if (createdId) try { docker('rm', '--force', createdId); } catch {}
-    if (fixture) try { await cleanupOwned(fixture); } catch {}
+    if (fixture) await cleanupOwned(fixture)
     await rm(root, { recursive: true, force: true });
   }
 });

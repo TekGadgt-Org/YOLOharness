@@ -144,10 +144,10 @@ export class ContainerLauncher {
 
 async function inspectOwnedVolume(command, name, label, spawn, { deadline } = {}) {
   let output;
-  try { output = await operation(command, ['volume', 'inspect', '--format', '{{json .}}', name], spawn, { deadline }).promise; }
+  try { output = await operation(command, ['volume', 'inspect', '--format', '{{json .}}', name], spawn, { deadline, cleanupDeadline: deadline }).promise; }
   catch (error) {
     const outputText = dockerErrorOutput(error);
-    const code = error.code === 'deadline' ? 'cleanup_timeout' : /no such volume|not found/i.test(outputText) ? 'cleanup_not_found' : /already in use|being used|busy/i.test(outputText) ? 'cleanup_busy' : error.dockerExitCode !== undefined ? 'cleanup_exit' : 'cleanup_transport';
+    const code = error.code === 'deadline' ? 'cleanup_timeout' : /no such volume|not found/i.test(outputText) ? 'cleanup_not_found' : /already in use|being used|busy/i.test(outputText) ? 'cleanup_busy' : error.dockerExitCode !== undefined ? 'cleanup_exit' : /EPIPE|ECONN|socket/i.test(error.code ?? '') ? 'cleanup_transport' : error.clientCloseObserved === true ? 'cleanup_spawn' : 'cleanup_transport';
     throw Object.assign(new Error('scratch volume inspect failed'), { code, cause: error, dockerOutput: outputText });
   }
   let inspected;
@@ -197,46 +197,68 @@ async function reapHelper(command, id, name, label, role, spawn, { deadline } = 
   await waitForContainerAbsence(command, id, spawn, { deadline });
 }
 
-async function reconcileVolume(command, name, label, spawn, { deadline } = {}) {
+export async function reconcileVolume(command, name, label, spawn, { deadline } = {}) {
   if (!Number.isFinite(deadline)) throw new TypeError('volume reconciliation requires one cleanup deadline');
   const history = [];
   let absentSince = null;
   while (Date.now() < deadline) {
-    const attempt = { at: Date.now(), name, action: 'inspect' };
+    let operationName = 'inspect';
+    const attempt = { at: Date.now(), name, action: 'attempt', operation: operationName };
+    history.push(Object.freeze({ ...attempt }));
     try {
       await inspectOwnedVolume(command, name, label, spawn, { deadline });
       absentSince = null;
-      attempt.success = true;
-      attempt.action = 'remove';
-      await operation(command, ['volume', 'rm', name], spawn, { deadline }).promise;
-      attempt.removed = true;
+      operationName = 'remove';
+      history.push(Object.freeze({ at: Date.now(), name, action: 'attempt', operation: operationName }));
+      await operation(command, ['volume', 'rm', name], spawn, { deadline, cleanupDeadline: deadline }).promise;
+      history.push(Object.freeze({ at: Date.now(), name, action: 'remove_success', operation: 'remove' }));
     } catch (error) {
       const output = dockerErrorOutput(error);
-      attempt.error = error.message;
-      attempt.classification = classifyCleanupError(error, output);
-      history.push(attempt);
-      if (attempt.classification === 'terminal') throw withCleanupHistory(error, history);
-      if (attempt.classification === 'absent') absentSince ??= Date.now();
-      else absentSince = null;
-      if (absentSince !== null && Date.now() - absentSince >= CLEANUP_STABLE_ABSENCE_MS) return history;
+      const classification = classifyCleanupError(error, output);
+      history.push(Object.freeze({ at: Date.now(), name, action: 'error', operation: operationName, classification, error: error.message }));
+      if (classification === 'ownership' || classification === 'permission' || classification === 'parse' || classification === 'exit' || classification === 'transport' || classification === 'spawn' || classification === 'unknown') {
+        history.push(Object.freeze({ at: Date.now(), name, action: 'terminal', classification }));
+        throw withCleanupHistory(error, history);
+      }
+      if (classification === 'not-found') {
+        absentSince ??= Date.now();
+        history.push(Object.freeze({ at: Date.now(), name, action: 'absence', classification }));
+      } else {
+        absentSince = null;
+        history.push(Object.freeze({ at: Date.now(), name, action: 'retry', classification }));
+      }
+      if (absentSince !== null && Date.now() - absentSince >= CLEANUP_STABLE_ABSENCE_MS) {
+        history.push(Object.freeze({ at: Date.now(), name, action: 'stable_absence', classification: 'not-found' }));
+        return history;
+      }
       await pauseUntil(deadline);
       continue;
     }
-    history.push(attempt);
     if (Date.now() >= deadline) break;
     await pauseUntil(deadline);
   }
-  if (absentSince !== null && Date.now() - absentSince >= CLEANUP_STABLE_ABSENCE_MS) return history;
+  if (absentSince !== null && Date.now() - absentSince >= CLEANUP_STABLE_ABSENCE_MS) {
+    history.push(Object.freeze({ at: Date.now(), name, action: 'stable_absence', classification: 'not-found' }));
+    return history;
+  }
+  history.push(Object.freeze({ at: Date.now(), name, action: 'deadline', classification: 'timeout' }));
   throw withCleanupHistory(Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown' }), history);
 }
 
 function classifyCleanupError(error, output) {
-  if (error.code === 'cleanup_not_found') return 'absent';
-  if (error.code === 'cleanup_busy' || error.code === 'cleanup_timeout') return 'retryable';
-  if (error.code?.startsWith('cleanup_')) return 'terminal';
-  if (/no such volume|not found/i.test(output)) return 'absent';
-  if (/already in use|being used|temporarily|timeout|deadline|busy|transport|connection/i.test(output)) return 'retryable';
-  return error.code === 'cleanup_unknown' ? 'retryable' : 'terminal';
+  if (error.code === 'cleanup_not_found' || /no such volume|not found/i.test(output)) return 'not-found';
+  if (error.code === 'cleanup_busy' || /already in use|being used|busy/i.test(output)) return 'busy';
+  if (error.code === 'cleanup_timeout' || error.code === 'deadline' || /timeout|deadline/i.test(output) || error?.cause?.code === 'deadline') return 'timeout';
+  if (/temporary|transient/i.test(output)) return 'transient';
+  if (error.code === 'cleanup_parse' || /malformed JSON/i.test(error.message)) return 'parse';
+  if (error.code === 'cleanup_ownership' || /ownership mismatch/i.test(error.message)) return 'ownership';
+  if (/permission denied|operation not permitted/i.test(output) || /EACCES|EPERM/.test(error.code ?? '')) return 'permission';
+  if (error.code === 'cleanup_spawn') return 'spawn';
+  if (error.code === 'cleanup_exit') return 'exit';
+  if (error.code === 'cleanup_transport') return 'transport';
+  if (error.dockerExitCode !== undefined) return 'exit';
+  if (/transport|connection|socket|EPIPE|ECONN/i.test(output) || /EPIPE|ECONN|socket/i.test(error.code ?? '')) return 'transport';
+  return 'unknown';
 }
 
 function withCleanupHistory(error, history) {

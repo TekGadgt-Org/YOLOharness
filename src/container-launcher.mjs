@@ -53,16 +53,13 @@ export class ContainerLauncher {
     let reason;
     let timer;
     let cleanupDeadline;
-    let abortStop;
+    let clientCloseObserved = true;
     const abortListener = () => abort(signal.reason);
     const abort = (abortReason = signal?.reason ?? Object.assign(new Error('container interrupted'), { code: 'interrupted' })) => {
       if (reason) return;
       reason = abortReason;
       cleanupDeadline ??= Date.now() + CLEANUP_TOTAL_MS;
-      creating?.kill('SIGKILL');
-      if (id && owned) {
-        abortStop = operation(this.command, ['stop', '--time', '0', id], this.spawn, { deadline: cleanupDeadline }).promise.catch(() => undefined);
-      }
+      if (creating) { clientCloseObserved = false; creating.kill('SIGKILL'); }
     };
     timer = setTimeout(() => abort(Object.assign(new Error('container deadline exceeded'), { code: 'deadline' })), remaining());
     signal?.addEventListener('abort', abortListener, { once: true });
@@ -74,14 +71,14 @@ export class ContainerLauncher {
       label = randomUUID();
       volumeName = `${VOLUME_PREFIX}${label}`;
       volumeCreateAttempted = true;
-      await createScratchVolume(this.command, volumeName, label, this.spawn, { signal, deadline: executionDeadline });
+      await createScratchVolume(this.command, volumeName, label, this.spawn, { signal, deadline: executionDeadline, cleanupDeadline: () => cleanupDeadline });
       volumeCreated = true;
-      if (identity.uid !== 0) await initializeScratchVolume(this.command, this.image, volumeName, label, identity, this.spawn, { signal, deadline: executionDeadline });
+      if (identity.uid !== 0) await initializeScratchVolume(this.command, this.image, volumeName, label, identity, this.spawn, { signal, deadline: executionDeadline, cleanupDeadline: () => cleanupDeadline });
       const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--init', '-i', '--user', `${identity.uid}:${identity.gid}`];
       for (const group of identity.groups) args.push('--group-add', String(group));
       args.push('--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--mount', `type=volume,src=${volumeName},dst=/tmp,volume-nocopy`, '--tmpfs', `/home/worker:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.homeTmpfs},uid=${identity.uid},gid=${identity.gid},mode=700`, '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', this.image, 'node', '/app/src/container-runtime.mjs');
       createAttempted = true;
-      const create = operation(this.command, args, this.spawn, { deadline: executionDeadline, signal });
+      const create = operation(this.command, args, this.spawn, { deadline: executionDeadline, signal, cleanupDeadline: () => cleanupDeadline });
       creating = create.child;
       id = (await create.promise).trim();
       if (!/^[a-f0-9]{64}$/i.test(id)) throw new Error('docker did not return a full container ID');
@@ -91,8 +88,11 @@ export class ContainerLauncher {
       id = await verifyOwnedContainer(this.command, id, name, label, this.spawn, undefined, { deadline: executionDeadline });
       owned = true;
       const bootstrapFrame = encodeBootstrap({ ...bootstrap, skills: await snapshotSkills(source) });
+      clientCloseObserved = true;
       attached = this.spawn(this.command, ['start', '--attach', '--interactive', id], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: DOCKER_ENV() });
-      const result = await attachedOperation(attached, bootstrapFrame, signal);
+      clientCloseObserved = false;
+      const result = await attachedOperation(attached, bootstrapFrame, signal, () => cleanupDeadline);
+      clientCloseObserved = result.closeObserved;
       if (reason) {
         const partial = lastReceipt(result.out) ?? await workspaceReceipt(this.workspace);
         outcome = { ...(partial ?? { version: 1, run_id: null, result: null, evidence: [], artifacts: [] }), status: reason.code === 'deadline' ? 'deadline' : 'interrupted', effect_state: 'uncertain', errors: [...(partial?.errors ?? []), reason.message] };
@@ -106,18 +106,23 @@ export class ContainerLauncher {
 
     } catch (error) {
       failure = error;
+      if (error?.clientCloseObserved === false || error?.code === 'cleanup_unknown') clientCloseObserved = false;
+      else if (error?.clientCloseObserved === true) clientCloseObserved = true;
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener('abort', abortListener);
     let cleanupError;
       cleanupDeadline ??= Date.now() + CLEANUP_TOTAL_MS;
       try {
-        if (abortStop) await abortStop;
-        if (id && owned) await cleanup(this.command, id, name, label, this.spawn, undefined, { deadline: cleanupDeadline });
-        else if (createAttempted) await reconcileUnknownCreate(this.command, name, label, this.spawn, undefined, { deadline: cleanupDeadline });
+        if (clientCloseObserved) {
+          if (id && owned) await cleanup(this.command, id, name, label, this.spawn, undefined, { deadline: cleanupDeadline });
+          else if (createAttempted) await reconcileUnknownCreate(this.command, name, label, this.spawn, undefined, { deadline: cleanupDeadline });
+        } else {
+          throw Object.assign(new Error('docker client close was not observed'), { code: 'cleanup_unknown' });
+        }
       } catch (error) { cleanupError = error; }
       try {
-        if (volumeName && (volumeCreated || volumeCreateAttempted)) volumeCleanup = reconcileVolume(this.command, volumeName, label, this.spawn, { deadline: cleanupDeadline });
+        if (clientCloseObserved && volumeName && (volumeCreated || volumeCreateAttempted)) volumeCleanup = reconcileVolume(this.command, volumeName, label, this.spawn, { deadline: cleanupDeadline });
         if (volumeCleanup) { volumeHistory = await volumeCleanup; if (outcome) outcome = { ...outcome, cleanup_history: volumeHistory }; }
       } catch (error) { cleanupError ??= error; }
       if (cleanupError) {
@@ -151,28 +156,28 @@ async function inspectOwnedVolume(command, name, label, spawn, { deadline } = {}
   return inspected;
 }
 
-async function createScratchVolume(command, name, label, spawn, { signal, deadline } = {}) {
-  const output = await operation(command, ['volume', 'create', '--label', `yoloharness.run=${label}`, name], spawn, { signal, deadline }).promise;
+async function createScratchVolume(command, name, label, spawn, { signal, deadline, cleanupDeadline } = {}) {
+  const output = await operation(command, ['volume', 'create', '--label', `yoloharness.run=${label}`, name], spawn, { signal, deadline, cleanupDeadline }).promise;
   if (output.trim() !== name) throw new Error('scratch volume ownership mismatch: Docker did not return the exact generated name');
   await inspectOwnedVolume(command, name, label, spawn, { deadline });
 }
 
-async function initializeScratchVolume(command, image, volume, label, identity, spawn, { signal, deadline } = {}) {
-  await runScratchHelper(command, image, volume, label, identity, 'scratch-init', 0, true, spawn, { signal, deadline });
-  await runScratchHelper(command, image, volume, label, identity, 'scratch-verify', identity.uid, false, spawn, { signal, deadline });
+async function initializeScratchVolume(command, image, volume, label, identity, spawn, { signal, deadline, cleanupDeadline } = {}) {
+  await runScratchHelper(command, image, volume, label, identity, 'scratch-init', 0, true, spawn, { signal, deadline, cleanupDeadline });
+  await runScratchHelper(command, image, volume, label, identity, 'scratch-verify', identity.uid, false, spawn, { signal, deadline, cleanupDeadline });
 }
 
-async function runScratchHelper(command, image, volume, label, identity, role, uid, addChown, spawn, { signal, deadline } = {}) {
+async function runScratchHelper(command, image, volume, label, identity, role, uid, addChown, spawn, { signal, deadline, cleanupDeadline } = {}) {
   const name = `${HELPER_PREFIX}${role}-${label}`;
   const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--label', `yoloharness.role=${role}`, '--init', '--network', 'none', '--read-only', '--cap-drop=ALL', ...(addChown ? ['--cap-add=CHOWN'] : []), '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--user', `${uid}:${uid === 0 ? 0 : identity.gid}`, '--mount', `type=volume,src=${volume},dst=/tmp,volume-nocopy`, '--entrypoint', 'node', image, `/app/src/${role}.mjs`, String(identity.uid), String(identity.gid)];
   let id;
   let verified = false;
   try {
-    id = (await operation(command, args, spawn, { signal, deadline }).promise).trim();
+    id = (await operation(command, args, spawn, { signal, deadline, cleanupDeadline }).promise).trim();
     if (!/^[a-f0-9]{64}$/i.test(id)) throw new Error('scratch helper returned an invalid container ID');
     await verifyOwnedContainer(command, id, name, label, spawn, role, { deadline });
     verified = true;
-    const result = await operation(command, ['start', '--attach', id], spawn, { signal, deadline }).promise;
+    const result = await operation(command, ['start', '--attach', id], spawn, { signal, deadline, cleanupDeadline }).promise;
     let evidence;
     try { evidence = JSON.parse(result.trim()); } catch { throw new Error(`${role} helper returned malformed verification`); }
     const valid = role === 'scratch-init'
@@ -293,28 +298,41 @@ export async function containerIdentity(command, spawn, opts = {}) {
   return { uid, gid, groups: [...new Set(groups)].filter(group => group !== gid), rootless: false };
 }
 
-function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT, deadline, signal } = {}) {
+function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT, deadline, signal, cleanupDeadline } = {}) {
   let child;
   const promise = new Promise((resolve, reject) => {
-    let out = ''; let err = ''; let done = false; let terminalError; let abort = () => {};
-    const finish = (fn, value) => { if (done) return; done = true; clearTimeout(timer); signal?.removeEventListener('abort', abort); fn(value); };
-    const terminate = error => { terminalError = error; child?.kill('SIGKILL'); };
+    let out = ''; let err = ''; let done = false; let terminalError; let abort = () => {}; let reapTimer;
+    const finish = (fn, value) => { if (done) return; done = true; clearTimeout(timer); clearTimeout(reapTimer); signal?.removeEventListener('abort', abort); fn(value); };
+    const terminate = error => {
+      if (terminalError) return;
+      terminalError = error;
+      child?.kill('SIGKILL');
+      const check = () => {
+        if (done) return;
+        const limit = typeof cleanupDeadline === 'function' ? cleanupDeadline() : cleanupDeadline;
+        if (Number.isFinite(limit) && Date.now() >= limit) {
+          finish(reject, Object.assign(new Error('docker client close was not observed'), { code: 'cleanup_unknown', cause: terminalError }));
+          return;
+        }
+        reapTimer = setTimeout(check, Math.max(1, Math.min(25, (limit ?? Date.now() + 25) - Date.now())));
+      };
+      check();
+    };
     const budget = deadline === undefined ? timeoutMs : Math.max(1, deadline - Date.now());
     const timer = setTimeout(() => {
       terminate(Object.assign(new Error('docker operation deadline exceeded'), { code: 'deadline' }));
-      // A real close normally follows kill immediately. If the client itself
-      // is wedged, keep cleanup bounded and surface the uncertainty rather
-      // than fabricating a close event.
-      setTimeout(() => finish(reject, Object.assign(new Error('docker client close was not observed'), { code: 'cleanup_unknown', cause: terminalError })), 100);
     }, Math.min(budget, OP_TIMEOUT));
     try { child = spawn(command, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: DOCKER_ENV() }); }
-    catch (error) { finish(reject, error); return; }
+    catch (error) { error.clientCloseObserved = true; finish(reject, error); return; }
     child.stdout?.on('data', chunk => { out += String(chunk); if (Buffer.byteLength(out) > MAX_OUTPUT) terminate(new Error('docker output limit exceeded')); });
     child.stderr?.on('data', chunk => { err += String(chunk); if (Buffer.byteLength(err) > MAX_OUTPUT) terminate(new Error('docker output limit exceeded')); });
     abort = () => terminate(signal?.reason ?? new Error('docker operation cancelled'));
     signal?.addEventListener('abort', abort, { once: true });
-    child.once('error', error => finish(reject, terminalError ?? error)); child.once('close', code => {
-      if (terminalError) return finish(reject, Object.assign(terminalError, { dockerOutput: `${out}${err}`.trim() }));
+    child.once('error', error => { error.clientCloseObserved = true; finish(reject, terminalError ?? error); }); child.once('close', code => {
+      if (terminalError) {
+        terminalError.clientCloseObserved = true;
+        return finish(reject, Object.assign(terminalError, { dockerOutput: `${out}${err}`.trim() }));
+      }
       // Docker may have created the container before the client was killed. Preserve
       // a returned ID so the caller can still perform exact-ID cleanup.
       if (code !== 0 && /^[a-f0-9]{12,64}$/i.test(out.trim())) return finish(resolve, out);
@@ -324,21 +342,29 @@ function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT, deadline, sig
   return { promise, get child() { return child; } };
 }
 
-function attachedOperation(child, input, signal) {
+function attachedOperation(child, input, signal, cleanupDeadline) {
   return new Promise((resolve, reject) => {
     let out = ''; let err = ''; let done = false; let overflow = false;
-    let hardKill;
+    let reapTimer;
     const abort = () => {
-      // Stop the attach client immediately so the launcher can begin exact
-      // daemon-side stop/reap. The cleanup path still sends SIGTERM to the
-      // owned container and retains any partial receipt emitted before close.
       child.kill('SIGTERM');
-      hardKill = setTimeout(() => { child.kill('SIGKILL'); finish(resolve, { code: null, out, err, overflow }); }, 5500);
+      const check = () => {
+        if (done) return;
+        const limit = typeof cleanupDeadline === 'function' ? cleanupDeadline() : cleanupDeadline;
+        if (Number.isFinite(limit) && Date.now() >= limit) {
+          done = true;
+          signal?.removeEventListener('abort', abort);
+          reject(Object.assign(new Error('docker client close was not observed'), { code: 'cleanup_unknown' }));
+          return;
+        }
+        reapTimer = setTimeout(check, Math.max(1, Math.min(25, (limit ?? Date.now() + 25) - Date.now())));
+      };
+      check();
     };
-    const finish = (fn, value) => { if (done) return; done = true; clearTimeout(hardKill); signal?.removeEventListener('abort', abort); fn(value); };
+    const finish = (fn, value) => { if (done) return; done = true; clearTimeout(reapTimer); signal?.removeEventListener('abort', abort); fn(value); };
     const collect = (which, chunk) => { const text = String(chunk); if (which === 'out') out += text; else err += text; if (Buffer.byteLength(which === 'out' ? out : err) > MAX_OUTPUT) { overflow = true; child.kill('SIGKILL'); } };
     child.stdout?.on('data', chunk => collect('out', chunk)); child.stderr?.on('data', chunk => collect('err', chunk));
-    child.once('error', error => finish(reject, error)); child.once('close', code => finish(resolve, { code, out, err, overflow }));
+    child.once('error', error => { error.clientCloseObserved = true; finish(reject, error); }); child.once('close', code => finish(resolve, { code, out, err, overflow, closeObserved: true }));
     if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true });
     child.stdin?.end(input);
   });
@@ -398,8 +424,8 @@ async function cleanup(command, id, name, label, spawn, role = undefined, { dead
   // Give the runtime a chance to trap SIGTERM and emit its partial receipt
   // before the hard kill fallback. This is important when a provider stream
   // has started but the container deadline/SIGINT arrives mid-response.
-  try { await operation(command, ['stop', '--time', '5', id], spawn, { timeoutMs: 5500, deadline }).promise; } catch {}
-  try { await operation(command, ['kill', '--signal', 'KILL', id], spawn, { deadline }).promise; } catch {}
+  try { await operation(command, ['stop', '--time', '5', id], spawn, { timeoutMs: 5500, deadline }).promise; } catch (error) { if (error.code === 'cleanup_unknown') throw error; }
+  try { await operation(command, ['kill', '--signal', 'KILL', id], spawn, { deadline }).promise; } catch (error) { if (error.code === 'cleanup_unknown') throw error; }
   try { await operation(command, ['rm', '--force', id], spawn, { deadline }).promise; } catch (error) { throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown', cause: error }); }
   await waitForContainerAbsence(command, id, spawn, { deadline });
 }

@@ -6,6 +6,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { runtimeSourceIdentity } from '../src/cli.mjs';
+import { RUNTIME_RESOURCE_POLICY } from '../src/resource-policy.mjs';
 
 const enabled = process.env.YOLO_REAL_DOCKER === '1';
 const configuredImage = process.env.YOLO_DOCKER_IMAGE ?? 'yoloharness-local:0.1.1';
@@ -309,8 +310,8 @@ async function fixture(t) {
     assert.equal(runtimeInspect.Config.Labels['yoloharness.run']?.length > 0, true);
     assert.equal(runtimeInspect.HostConfig.IpcMode, 'private');
     assert.equal(runtimeInspect.HostConfig.PidMode, '');
-    assert.equal(runtimeInspect.HostConfig.Tmpfs['/tmp'].includes('size=64m'), true);
-    assert.equal(runtimeInspect.HostConfig.Tmpfs['/home/worker'].includes('size=16m'), true);
+    assert.equal(runtimeInspect.HostConfig.Tmpfs['/tmp'].includes(`size=${RUNTIME_RESOURCE_POLICY.tmpfs}`), true);
+    assert.equal(runtimeInspect.HostConfig.Tmpfs['/home/worker'].includes(`size=${RUNTIME_RESOURCE_POLICY.homeTmpfs}`), true);
     assert.equal(runtimeInspect.Image, derivativeId);
     assert.equal(runtimeInspect.Mounts.filter(mount => mount.Destination === '/workspace').length, 1);
     assert.equal(runtimeInspect.Mounts.some(mount => /(?:docker\.sock|\/\.ssh|\/\.config|\/\.local\/share)/i.test(mount.Source ?? '')), false);

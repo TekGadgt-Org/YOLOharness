@@ -5,6 +5,17 @@ import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { ContainerLauncher, validateWorkspace, decodeMountInfoTargets, containerIdentity } from '../src/container-launcher.mjs';
 import { configuredImage, runtimeSourceIdentity } from '../src/cli.mjs';
+import { RUNTIME_RESOURCE_POLICY } from '../src/resource-policy.mjs';
+
+test('runtime resource policy reserves bounded scratch for offline package-manager installs', () => {
+  assert.deepEqual(RUNTIME_RESOURCE_POLICY, {
+    tmpfs: '256m',
+    homeTmpfs: '64m',
+    memory: '512m',
+    pids: '128',
+    cpus: '1',
+  });
+});
 
 const child = (onCreate) => {
   const listeners = new Map();
@@ -302,7 +313,7 @@ test('macOS Linux-daemon consumer create argv uses 0:0 without supplementary gro
     assert.equal((await launcher.launch({ prompt: 'linux-daemon', model: 'synthetic-model', deadline: Date.now() + 10_000, accessToken: 'synthetic-access', expiresAt: Date.now() + 20_000 })).result, 'ok');
     assert.equal(createArgs[createArgs.indexOf('--user') + 1], '0:0');
     assert.equal(createArgs.includes('--group-add'), false);
-    assert.match(createArgs[createArgs.indexOf('--tmpfs') + 1], /uid=0,gid=0,mode=700/);
+    assert.match(createArgs[createArgs.indexOf('--tmpfs') + 1], new RegExp(`size=${RUNTIME_RESOURCE_POLICY.tmpfs}.*uid=0,gid=0,mode=700`));
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
@@ -349,8 +360,8 @@ test('rootful consumer create argv carries selected ownership without duplicate 
     assert.equal(record.result, 'ok');
     const groups = createArgs.filter((value, index) => value === '--group-add' ? createArgs[index + 1] : null).filter(Boolean);
     assert.equal(groups.includes(String(process.getgid())), false);
-    assert.match(createArgs[createArgs.indexOf('--tmpfs') + 1], new RegExp(`uid=${process.getuid()},gid=${process.getgid()},mode=700`));
-    assert.match(createArgs[createArgs.indexOf('--tmpfs', createArgs.indexOf('--tmpfs') + 1) + 1], new RegExp(`uid=${process.getuid()},gid=${process.getgid()},mode=700`));
+    assert.match(createArgs[createArgs.indexOf('--tmpfs') + 1], new RegExp(`size=${RUNTIME_RESOURCE_POLICY.tmpfs}.*uid=${process.getuid()},gid=${process.getgid()},mode=700`));
+    assert.match(createArgs[createArgs.indexOf('--tmpfs', createArgs.indexOf('--tmpfs') + 1) + 1], new RegExp(`size=${RUNTIME_RESOURCE_POLICY.homeTmpfs}.*uid=${process.getuid()},gid=${process.getgid()},mode=700`));
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 

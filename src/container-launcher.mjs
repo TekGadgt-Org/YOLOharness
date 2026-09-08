@@ -4,6 +4,7 @@ import { realpath, readdir, lstat, readFile, readlink } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { encodeBootstrap } from './bootstrap.mjs';
 import { snapshotSkills } from './skills.mjs';
+import { RUNTIME_RESOURCE_POLICY } from './resource-policy.mjs';
 
 const MAX_OUTPUT = 1024 * 1024;
 const OP_TIMEOUT = 10_000;
@@ -39,7 +40,7 @@ export class ContainerLauncher {
     if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
     const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--init', '-i', '--user', `${identity.uid}:${identity.gid}`];
     for (const group of identity.groups) args.push('--group-add', String(group));
-    args.push('--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--cpus', '1', '--tmpfs', `/tmp:rw,noexec,nosuid,size=64m,uid=${identity.uid},gid=${identity.gid},mode=700`, '--tmpfs', `/home/worker:rw,noexec,nosuid,size=16m,uid=${identity.uid},gid=${identity.gid},mode=700`, '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', this.image, 'node', '/app/src/container-runtime.mjs');
+    args.push('--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--tmpfs', `/tmp:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.tmpfs},uid=${identity.uid},gid=${identity.gid},mode=700`, '--tmpfs', `/home/worker:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.homeTmpfs},uid=${identity.uid},gid=${identity.gid},mode=700`, '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', this.image, 'node', '/app/src/container-runtime.mjs');
     let id;
     let attached;
     let creating;

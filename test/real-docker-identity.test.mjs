@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { runtimeSourceIdentity } from '../src/cli.mjs';
+import { RUNTIME_RESOURCE_POLICY } from '../src/resource-policy.mjs';
 
 const enabled = process.env.YOLO_REAL_DOCKER === '1';
 const skip = !enabled;
@@ -20,8 +21,8 @@ function expectedCreateArgv(record, fixture, mode) {
   const args = ['create', '--pull=never', '--name', record.argv[3], '--label', record.argv[5], '--init', '-i', '--user', `${uid}:${gid}`];
   for (const group of groups) args.push('--group-add', group);
   args.push('--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--cpus', '1', '--tmpfs',
-    `/tmp:rw,noexec,nosuid,size=64m,uid=${uid},gid=${gid},mode=700`, '--tmpfs',
-    `/home/worker:rw,noexec,nosuid,size=16m,uid=${uid},gid=${gid},mode=700`, '--mount',
+    `/tmp:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.tmpfs},uid=${uid},gid=${gid},mode=700`, '--tmpfs',
+    `/home/worker:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.homeTmpfs},uid=${uid},gid=${gid},mode=700`, '--mount',
     `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', fixture.baseId, 'node', '/app/src/container-runtime.mjs');
   return args;
 }
@@ -34,8 +35,8 @@ function assertCreateContract(record, fixture, mode, selectedDockerEnv) {
   assert.deepEqual(values(argv, '--user'), [mode === 'rootful' ? `${process.getuid()}:${process.getgid()}` : '0:0']);
   assert.deepEqual(values(argv, '--group-add'), mode === 'rootful' ? [...new Set(process.getgroups?.() ?? [])].filter(g => g !== process.getgid()).map(String) : []);
   assert.deepEqual(values(argv, '--tmpfs'), [
-    `/tmp:rw,noexec,nosuid,size=64m,uid=${mode === 'rootful' ? process.getuid() : 0},gid=${mode === 'rootful' ? process.getgid() : 0},mode=700`,
-    `/home/worker:rw,noexec,nosuid,size=16m,uid=${mode === 'rootful' ? process.getuid() : 0},gid=${mode === 'rootful' ? process.getgid() : 0},mode=700`,
+    `/tmp:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.tmpfs},uid=${mode === 'rootful' ? process.getuid() : 0},gid=${mode === 'rootful' ? process.getgid() : 0},mode=700`,
+    `/home/worker:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.homeTmpfs},uid=${mode === 'rootful' ? process.getuid() : 0},gid=${mode === 'rootful' ? process.getgid() : 0},mode=700`,
   ]);
   assert.equal(values(argv, '--mount').length, 1); assert.match(values(argv, '--mount')[0], /^type=bind,src=.+,dst=\/workspace,readonly=false,bind-propagation=rprivate$/);
   assert.deepEqual(values(argv, '--workdir'), ['/workspace']);

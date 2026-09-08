@@ -80,6 +80,7 @@ async function fixture(t) {
   let derivativeTag;
   let foreignId;
   let delayedForeignVolume;
+  let delayedScratchInventoryBefore;
   // Use a test-owned, credential-free Docker client configuration. Resolve the
   // already-selected daemon endpoint before redirecting HOME/XDG so the
   // shipped subprocess exercises the same verified rootless daemon without
@@ -496,10 +497,17 @@ async function fixture(t) {
         const delayedLabel = `delayed-${process.pid}`;
         const delayedVolume = `yoloharness-scratch-${delayedLabel}`;
         delayedForeignVolume = `yoloharness-foreign-volume-${process.pid}`;
+        delayedScratchInventoryBefore = docker('volume', 'ls', '--format', '{{.Name}} {{.Labels}}', '--filter', 'name=^yoloharness-scratch-delayed-').trim().split(/\r?\n/).filter(Boolean);
         docker('volume', 'create', '--label', `yoloharness.run=${delayedLabel}`, delayedVolume);
         docker('volume', 'create', '--label', 'yoloharness.run=foreign', delayedForeignVolume);
         const delayedId = docker('create', '--pull=never', '--name', `yoloharness-delayed-${process.pid}`, '--label', `yoloharness.run=${delayedLabel}`, '--mount', `type=volume,src=${delayedVolume},dst=/tmp,volume-nocopy`, configuredImage, 'sleep', '60').trim();
         assert.match(delayedId, /^[a-f0-9]{64}$/i);
+        const delayedInspection = JSON.parse(docker('inspect', delayedId))[0];
+        assert.equal(delayedInspection.Id, delayedId);
+        assert.equal(delayedInspection.Name, `/yoloharness-delayed-${process.pid}`);
+        assert.equal(delayedInspection.Config?.Labels?.['yoloharness.run'], delayedLabel);
+        assert.equal(delayedInspection.Mounts?.find(mount => mount.Type === 'volume' && mount.Destination === '/tmp')?.Name, delayedVolume);
+        ownedRuntimes.set(delayedId, { id: delayedId, name: `yoloharness-delayed-${process.pid}`, label: `yoloharness.run=${delayedLabel}`, inspection: delayedInspection });
         docker('rm', '--force', delayedId);
         assert.equal(docker('ps', '-aq', '--filter', `id=${delayedId}`).trim(), '');
         assert.equal(docker('volume', 'inspect', '--format', '{{.Name}}', delayedForeignVolume).trim(), delayedForeignVolume);
@@ -585,6 +593,10 @@ async function fixture(t) {
       assert.equal(docker('volume', 'inspect', '--format', '{{.Name}}', delayedForeignVolume).trim(), delayedForeignVolume);
       docker('volume', 'rm', delayedForeignVolume);
       await waitForVolumeAbsent(delayedForeignVolume);
+    }
+    if (delayedScratchInventoryBefore) {
+      const delayedScratchInventoryAfter = docker('volume', 'ls', '--format', '{{.Name}} {{.Labels}}', '--filter', 'name=^yoloharness-scratch-delayed-').trim().split(/\r?\n/).filter(Boolean);
+      assert.deepEqual(delayedScratchInventoryAfter, delayedScratchInventoryBefore, 'delayed focused stimulus must restore exact scratch-volume inventory');
     }
     if (derivativeTag) bestEffortDocker('image', 'rm', '--force', derivativeTag);
     await rm(root, { recursive: true, force: true });

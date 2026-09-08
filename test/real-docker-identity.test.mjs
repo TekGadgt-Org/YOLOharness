@@ -199,9 +199,9 @@ if(argv[0]==='rm'&&process.env.YOLO_PROXY_CHILD==='cleanup-unknown'){record.inte
 `, { mode: 0o755 });
   const historyProxy = join(root, 'history-docker-proxy.cjs');
   await writeFile(historyProxy, `#!/usr/bin/env node
-const cp=require('child_process'),fs=require('fs');const argv=process.argv.slice(2),docker=${JSON.stringify(dockerPath)},image=${JSON.stringify(baseId)},derivative=${JSON.stringify(derivative)},network=${JSON.stringify(network)},log=${JSON.stringify(log)},state=${JSON.stringify(join(root, 'history-volume.txt'))};let target=fs.existsSync(state)?fs.readFileSync(state,'utf8').trim():process.env.YOLO_HISTORY_VOLUME;
+const cp=require('child_process'),fs=require('fs');const argv=process.argv.slice(2),docker=${JSON.stringify(dockerPath)},image=${JSON.stringify(baseId)},derivative=${JSON.stringify(derivative)},network=${JSON.stringify(network)},log=${JSON.stringify(log)},state=${JSON.stringify(join(root, 'history-volume.txt'))},counts=${JSON.stringify(join(root, 'history-volume-count.txt'))};let target=fs.existsSync(state)?fs.readFileSync(state,'utf8').trim():process.env.YOLO_HISTORY_VOLUME;
 if(argv[0]==='create'){const imageIndex=argv.lastIndexOf(image);if(imageIndex>=0)argv[imageIndex]=derivative;const networkIndex=argv.indexOf('--network');if(networkIndex>=0)argv[networkIndex+1]=network;const mountIndex=argv.findIndex((value,index)=>value==='--mount'&&argv[index+1]?.startsWith('type=volume,src=yoloharness-scratch-'));if(mountIndex>=0)target=argv[mountIndex+1].match(/^type=volume,src=([^,]+)/)?.[1]??target;if(target)fs.writeFileSync(state,target);}
-if(argv[0]==='volume'&&argv[1]==='rm'&&argv[2]===target&&process.env.YOLO_HISTORY_BUSY==='1'){fs.appendFileSync(log,JSON.stringify({argv:[...argv],intercept:'busy',target})+'\\n');process.stderr.write('Error response from daemon: volume is busy\\n');process.exit(1);}
+if(argv[0]==='volume'&&argv[1]==='rm'&&argv[2]===target){const count=Number(fs.existsSync(counts)?fs.readFileSync(counts,'utf8'):0)+1;fs.writeFileSync(counts,String(count));if(count===1){fs.appendFileSync(log,JSON.stringify({argv:[...argv],intercept:'busy',target})+'\\n');process.stderr.write('Error response from daemon: volume is busy\\n');process.exit(1);}if(count===2){fs.appendFileSync(log,JSON.stringify({argv:[...argv],intercept:'permission',target})+'\\n');process.stderr.write('Error response from daemon: permission denied\\n');process.exit(1);}}
 const result=cp.spawnSync(docker,argv,{encoding:'utf8',stdio:['inherit','pipe','pipe'],env:{...process.env,YOLO_HISTORY_VOLUME:target??''}});fs.appendFileSync(log,JSON.stringify({argv:[...argv],stdout:result.stdout??'',stderr:result.stderr??'',status:result.status,target})+'\\n');process.stdout.write(result.stdout??'');process.stderr.write(result.stderr??'');process.exit(result.status??1);
 `, { mode: 0o755 });
   return { workspace, config, data, endpoint, baseId, network, provider, proxy, historyProxy, d2Proxy, d2Output, d2Log, tag, identity, log, childMarker, cleanupFailure };
@@ -342,26 +342,22 @@ test('packed public executable preserves production reconciler history through c
     assert.equal(run.error, undefined, run.error?.message); assert.equal(run.status, 1, `${run.stderr}\n${run.stdout}`);
     const lines = run.stdout.trim().split(/\r?\n/).filter(Boolean); assert.equal(lines.length, 1, `${run.stderr}\n${run.stdout}`);
     const receipt = JSON.parse(lines[0]); assert.equal(receipt.status, 'cleanup_unknown'); assert.equal(receipt.effect_state, 'uncertain');
-    const normalizeHistory = history => history.map(({ at, ...event }) => event);
-    const expectedHistory = normalizeHistory(receipt.cleanup_history);
-    assert.deepEqual(expectedHistory.slice(0, 3), [
-      { name: expectedHistory[0].name, action: 'attempt', operation: 'inspect' },
-      { name: expectedHistory[0].name, action: 'attempt', operation: 'remove' },
-      { name: expectedHistory[0].name, action: 'error', operation: 'remove', classification: 'busy', error: 'docker operation failed (1): Error response from daemon: volume is busy' },
-    ]);
-    assert.deepEqual(expectedHistory.at(-1), { name: expectedHistory[0].name, action: 'deadline', classification: 'timeout' });
-    for (const [index, event] of expectedHistory.entries()) {
-      assert.equal(event.name, expectedHistory[0].name);
-      if (index >= 2 && index < expectedHistory.length - 1) assert.deepEqual(event, index % 3 === 2
-        ? { name: event.name, action: 'error', operation: 'remove', classification: 'busy', error: 'docker operation failed (1): Error response from daemon: volume is busy' }
-        : index % 3 === 0
-          ? { name: event.name, action: 'retry', classification: 'busy' }
-          : { name: event.name, action: 'attempt', operation: 'remove' });
-    }
-    assert.deepEqual(JSON.parse(await readFile(join(fixture.workspace, '.yolo', 'last-receipt.json'), 'utf8')), receipt);
     const records = await jsonl(fixture.log); const runtimeCreate = records.find(record => record.argv[0] === 'create' && record.argv.includes('/app/src/container-runtime.mjs')); assert.ok(runtimeCreate);
     const scratch = runtimeCreate.argv[runtimeCreate.argv.indexOf('--mount') + 1].match(/^type=volume,src=([^,]+)/)?.[1]; assert.match(scratch ?? '', /^yoloharness-scratch-[0-9a-f-]+$/);
-    assert.equal(records.filter(record => record.intercept === 'busy' && record.target === scratch).length > 0, true);
+    const normalizeHistory = history => history.map(({ at, ...event }) => event);
+    const expectedHistory = [
+      { name: scratch, action: 'attempt', operation: 'inspect' },
+      { name: scratch, action: 'attempt', operation: 'remove' },
+      { name: scratch, action: 'error', operation: 'remove', classification: 'busy', error: 'docker operation failed (1): Error response from daemon: volume is busy' },
+      { name: scratch, action: 'retry', classification: 'busy' },
+      { name: scratch, action: 'attempt', operation: 'remove' },
+      { name: scratch, action: 'error', operation: 'remove', classification: 'permission', error: 'docker operation failed (1): Error response from daemon: permission denied' },
+      { name: scratch, action: 'terminal', classification: 'permission' },
+    ];
+    assert.deepEqual(normalizeHistory(receipt.cleanup_history), expectedHistory);
+    assert.deepEqual(normalizeHistory(JSON.parse(await readFile(join(fixture.workspace, '.yolo', 'last-receipt.json'), 'utf8')).cleanup_history), expectedHistory);
+    assert.equal(records.filter(record => record.intercept === 'busy' && record.target === scratch).length, 1);
+    assert.equal(records.filter(record => record.intercept === 'permission' && record.target === scratch).length, 1);
     assert.equal(records.some(record => record.argv.some(value => /last-receipt|chmod|runtime-output\.json/.test(value))), false);
     const persisted = docker('run', '--rm', '--pull=never', '--user', '0:0', '--mount', `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--entrypoint', 'sh', image, '-c', 'cat /workspace/.yolo/last-receipt.json');
     assert.deepEqual(JSON.parse(persisted), receipt);

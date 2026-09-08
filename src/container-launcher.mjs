@@ -197,57 +197,58 @@ async function reapHelper(command, id, name, label, role, spawn, { deadline } = 
   await waitForContainerAbsence(command, id, spawn, { deadline });
 }
 
-export async function reconcileVolume(command, name, label, spawn, { deadline } = {}) {
+export async function reconcileVolume(command, name, label, spawn, { deadline, now = Date.now, sleep } = {}) {
   if (!Number.isFinite(deadline)) throw new TypeError('volume reconciliation requires one cleanup deadline');
   const history = [];
+  const pause = sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
   let absentSince = null;
   let retryRemoval = false;
-  while (Date.now() < deadline) {
+  while (now() < deadline) {
     let operationName = retryRemoval ? 'remove' : 'inspect';
-    const attempt = { at: Date.now(), name, action: 'attempt', operation: operationName };
+    const attempt = { at: now(), name, action: 'attempt', operation: operationName };
     history.push(Object.freeze({ ...attempt }));
     try {
       if (!retryRemoval) {
         await inspectOwnedVolume(command, name, label, spawn, { deadline });
         absentSince = null;
         operationName = 'remove';
-        history.push(Object.freeze({ at: Date.now(), name, action: 'attempt', operation: operationName }));
+        history.push(Object.freeze({ at: now(), name, action: 'attempt', operation: operationName }));
       }
       await operation(command, ['volume', 'rm', name], spawn, { deadline, cleanupDeadline: deadline }).promise;
-      history.push(Object.freeze({ at: Date.now(), name, action: 'remove_success', operation: 'remove' }));
+      history.push(Object.freeze({ at: now(), name, action: 'remove_success', operation: 'remove' }));
       retryRemoval = false;
     } catch (error) {
       const output = dockerErrorOutput(error);
       const classification = classifyCleanupError(error, output);
-      history.push(Object.freeze({ at: Date.now(), name, action: 'error', operation: operationName, classification, error: error.message }));
+      history.push(Object.freeze({ at: now(), name, action: 'error', operation: operationName, classification, error: error.message }));
       if (classification === 'ownership' || classification === 'permission' || classification === 'parse' || classification === 'exit' || classification === 'transport' || classification === 'spawn' || classification === 'unknown') {
-        history.push(Object.freeze({ at: Date.now(), name, action: 'terminal', classification }));
+        history.push(Object.freeze({ at: now(), name, action: 'terminal', classification }));
         throw withCleanupHistory(error, history);
       }
       if (classification === 'not-found') {
         retryRemoval = false;
-        absentSince ??= Date.now();
-        history.push(Object.freeze({ at: Date.now(), name, action: 'absence', classification }));
+        absentSince ??= now();
+        history.push(Object.freeze({ at: now(), name, action: 'absence', classification }));
       } else {
         absentSince = null;
         retryRemoval = operationName === 'remove';
-        history.push(Object.freeze({ at: Date.now(), name, action: 'retry', classification }));
+        history.push(Object.freeze({ at: now(), name, action: 'retry', classification }));
       }
-      if (absentSince !== null && Date.now() - absentSince >= CLEANUP_STABLE_ABSENCE_MS) {
-        history.push(Object.freeze({ at: Date.now(), name, action: 'stable_absence', classification: 'not-found' }));
+      if (absentSince !== null && now() - absentSince >= CLEANUP_STABLE_ABSENCE_MS) {
+        history.push(Object.freeze({ at: now(), name, action: 'stable_absence', classification: 'not-found' }));
         return history;
       }
-      await pauseUntil(deadline);
+      await pause(Math.min(CLEANUP_POLL_MS, deadline - now()));
       continue;
     }
-    if (Date.now() >= deadline) break;
-    await pauseUntil(deadline);
+    if (now() >= deadline) break;
+    await pause(Math.min(CLEANUP_POLL_MS, deadline - now()));
   }
-  if (absentSince !== null && Date.now() - absentSince >= CLEANUP_STABLE_ABSENCE_MS) {
-    history.push(Object.freeze({ at: Date.now(), name, action: 'stable_absence', classification: 'not-found' }));
+  if (absentSince !== null && now() - absentSince >= CLEANUP_STABLE_ABSENCE_MS) {
+    history.push(Object.freeze({ at: now(), name, action: 'stable_absence', classification: 'not-found' }));
     return history;
   }
-  history.push(Object.freeze({ at: Date.now(), name, action: 'deadline', classification: 'timeout' }));
+  history.push(Object.freeze({ at: now(), name, action: 'deadline', classification: 'timeout' }));
   throw withCleanupHistory(Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown' }), history);
 }
 

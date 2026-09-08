@@ -32,12 +32,20 @@ function dockerMock({ inspect, remove = () => ({ output: '', code: 0 }) }) {
 const owned = () => ({ output: JSON.stringify({ Name: id, Labels: { 'yoloharness.run': label } }) });
 const absent = () => ({ output: '', error: `Error response from daemon: volume ${id} not found`, code: 1 });
 const normalizeHistory = history => history.map(({ at, ...event }) => event);
+const deterministicClock = () => {
+  let value = Date.now();
+  return { now: () => value, sleep: ms => { value += ms; } };
+};
+const exactHistory = (history, expected) => {
+  assert.deepEqual(normalizeHistory(history), expected);
+  assert.equal(history.every(event => Object.isFrozen(event)), true);
+};
 
  test('volume reconciliation retries transient inspect and then reaps before stable absence', async () => {
+  const clock = deterministicClock();
   const mock = dockerMock({ inspect: n => n === 1 ? { output: '', error: 'temporary transport failure', code: 1 } : n === 2 ? owned() : absent() });
-  const history = await reconcileVolume('docker', id, label, mock.spawn, { deadline: Date.now() + 1800 });
-  const normalized = normalizeHistory(history);
-  assert.deepEqual(normalized.slice(0, 7), [
+  const history = await reconcileVolume('docker', id, label, mock.spawn, { deadline: clock.now() + 1800, now: clock.now, sleep: clock.sleep });
+  const expected = [
     { name: id, action: 'attempt', operation: 'inspect' },
     { name: id, action: 'error', operation: 'inspect', classification: 'transient', error: 'scratch volume inspect failed' },
     { name: id, action: 'retry', classification: 'transient' },
@@ -45,11 +53,17 @@ const normalizeHistory = history => history.map(({ at, ...event }) => event);
     { name: id, action: 'attempt', operation: 'remove' },
     { name: id, action: 'remove_success', operation: 'remove' },
     { name: id, action: 'attempt', operation: 'inspect' },
-  ]);
-  assert.deepEqual(normalized.at(-1), { name: id, action: 'stable_absence', classification: 'not-found' });
-  assert.equal(normalized.slice(7, -1).every(event => event.action === 'attempt' ? event.operation === 'inspect' : event.action === 'error' ? event.operation === 'inspect' && event.classification === 'not-found' && event.error === 'scratch volume inspect failed' : event.action === 'absence' && event.classification === 'not-found'), true);
+    { name: id, action: 'error', operation: 'inspect', classification: 'not-found', error: 'scratch volume inspect failed' },
+    { name: id, action: 'absence', classification: 'not-found' },
+    ...Array.from({ length: 10 }, () => [
+      { name: id, action: 'attempt', operation: 'inspect' },
+      { name: id, action: 'error', operation: 'inspect', classification: 'not-found', error: 'scratch volume inspect failed' },
+      { name: id, action: 'absence', classification: 'not-found' },
+    ]).flat(),
+    { name: id, action: 'stable_absence', classification: 'not-found' },
+  ];
+  exactHistory(history, expected);
   assert.equal(mock.counts().remove, 1);
-  assert.equal(history.every(event => Object.isFrozen(event)), true);
 });
 
 test('volume reconciliation preserves foreign same-prefix volume and terminates on ownership mismatch', async () => {
@@ -58,6 +72,11 @@ test('volume reconciliation preserves foreign same-prefix volume and terminates 
     assert.equal(error.code, 'cleanup_ownership');
     assert.equal(error.cleanupHistory.at(-1).action, 'terminal');
     assert.equal(error.cleanupHistory.at(-1).classification, 'ownership');
+    exactHistory(error.cleanupHistory, [
+      { name: id, action: 'attempt', operation: 'inspect' },
+      { name: id, action: 'error', operation: 'inspect', classification: 'ownership', error: 'scratch volume ownership mismatch (name=yoloharness-scratch-run-foreign, label=other)' },
+      { name: id, action: 'terminal', classification: 'ownership' },
+    ]);
     return true;
   });
   assert.equal(mock.counts().remove, 0);
@@ -73,6 +92,12 @@ test('volume reconciliation classifies parse permission exit and transport as te
     const mock = dockerMock({ inspect: () => spec });
     await assert.rejects(reconcileVolume('docker', id, label, mock.spawn, { deadline: Date.now() + 1000 }), error => {
       assert.equal(error.cleanupHistory.at(-1).classification, name);
+      const message = name === 'parse' ? 'scratch volume inspect returned malformed JSON' : 'scratch volume inspect failed';
+      exactHistory(error.cleanupHistory, [
+        { name: id, action: 'attempt', operation: 'inspect' },
+        { name: id, action: 'error', operation: 'inspect', classification: name, error: message },
+        { name: id, action: 'terminal', classification: name },
+      ]);
       return true;
     });
   }

@@ -114,7 +114,7 @@ async function makeFixture(root) {
   const providerScript = "const https=require('https'),fs=require('fs');let n=0;https.createServer({key:fs.readFileSync('/tls/server.key'),cert:fs.readFileSync('/tls/server.crt')},(q,r)=>{let b='';q.on('data',c=>b+=c);q.on('end',()=>{n++;r.writeHead(200,{'content-type':'text/event-stream'});if(n===1)r.end('data: '+JSON.stringify({type:'response.output_item.done',item:{type:'function_call',id:b.includes('installed npm 70 MiB')?'npm-item':'identity-item',call_id:b.includes('installed npm 70 MiB')?'npm-install-call':'identity-call',name:'exec',arguments:JSON.stringify(b.includes('installed npm 70 MiB')?{command:'npm',args:['install','--offline','--ignore-scripts','--no-audit','--no-fund','/workspace/package-fixture']}:{command:'sh',args:['-c','printf identity-canary > /workspace/identity-canary']})}})+'\\n\\ndata: '+JSON.stringify({type:'response.completed',response:{status:'completed'}})+'\\n\\n');else r.end('data: '+JSON.stringify({type:'response.output_text.delta',delta:b.includes('installed npm 70 MiB')?'installed-npm-70m-ok':'identity-runtime-ok'})+'\\n\\ndata: '+JSON.stringify({type:'response.completed',response:{status:'completed'}})+'\\n\\n')})}).listen(443,'0.0.0.0')";
   const provider = `${network}-provider`; docker('run', '--detach', '--pull=never', '--network', network, '--network-alias', 'chatgpt.com', '--name', provider, '--mount', `type=bind,src=${ca},dst=/tls,readonly=true`, '--entrypoint', 'node', tag, '-e', providerScript);
   const childMarker = join(root, 'proxy-child.pid'); const cleanupFailure = join(root, 'cleanup-transient.once');
-  const childFixture = join(root, 'proxy-child.cjs'); await writeFile(childFixture, `const fs=require('fs');fs.writeFileSync(${JSON.stringify(childMarker)},String(process.pid));setInterval(()=>{},1000);`);
+  const childFixture = join(root, 'proxy-child.cjs'); await writeFile(childFixture, `const fs=require('fs');fs.writeFileSync(${JSON.stringify(childMarker)},String(process.pid));if(process.env.YOLO_PROXY_CHILD==='cleanup-unknown'){const p=${JSON.stringify(join(workspace, '.yolo', 'last-receipt.json'))};try{process.stdout.write(fs.readFileSync(p,'utf8'));}catch{}if(process.env.YOLO_PROXY_PRIMARY==='generic'){process.stderr.write('primary fixture failure\\n');process.exitCode=42;}else process.exitCode=0;process.exit();}setInterval(()=>{},1000);`);
   const proxy = join(root, 'docker-proxy.cjs');
   await writeFile(proxy, `#!/usr/bin/env node
 const cp=require('child_process'),fs=require('fs');const a=process.argv.slice(2);let base=${JSON.stringify(dockerPath)};const net=${JSON.stringify(network)},workspace=${JSON.stringify(workspace)},id=${JSON.stringify(baseId)},der=${JSON.stringify(derivative)},log=${JSON.stringify(log)},childFixture=${JSON.stringify(childFixture)},childMarker=${JSON.stringify(childMarker)},cleanupFailure=${JSON.stringify(cleanupFailure)},provider=${JSON.stringify(provider)};const original=[...a],selection=['DOCKER_HOST','DOCKER_CONTEXT','DOCKER_CONFIG','DOCKER_TLS_VERIFY','DOCKER_CERT_PATH','PATH'],r={argv:original,env:Object.fromEntries(selection.map(k=>[k,process.env[k]??null])),events:[]};
@@ -123,6 +123,8 @@ if(process.env.YOLO_CLEANUP_TRANSIENT==='1'&&a[0]==='network'&&a[1]==='rm'&&a[2]
 if(a[0]==='create'){for(let i=a.length-1;i>=0;i--)if(a[i]==='--group-add')a.splice(i,2);if(process.env.YOLO_TEST_MODE==='rootful'&&!a.includes('yoloharness.role=scratch-verify')&&(process.env.YOLO_PRESERVE_RUNTIME_UID!=='1'||!a.includes('/app/src/container-runtime.mjs'))){const u=a.indexOf('--user');if(u>=0)a[u+1]='0:0';for(let i=0;i<a.length;i++)if(a[i]==='--tmpfs')a[i+1]=a[i+1].replace(/uid=[0-9]+,gid=[0-9]+/,'uid=0,gid=0')}const n=a.indexOf('--network');if(n>=0)a[n+1]=net;if(a.includes(id))a[a.indexOf(id)]=der;r.image=a.at(-3);r.translatedArgv=[...a]}
 if(process.env.YOLO_PROXY_CHILD==='spawn-error'&&a[0]==='start'){base=childFixture+'-does-not-exist';r.events.push({type:'spawn'});}
 else if(process.env.YOLO_PROXY_CHILD==='timeout'&&a[0]==='start'){base=process.execPath;a.splice(0,a.length,childFixture);r.events.push({type:'spawn'});}
+else if(process.env.YOLO_PROXY_CHILD==='cleanup-unknown'&&a[0]==='start'){base=process.execPath;a.splice(0,a.length,childFixture);r.events.push({type:'spawn'});}
+if(process.env.YOLO_PROXY_CHILD==='cleanup-unknown'&&a[0]==='rm'){process.on('SIGTERM',()=>{});r.events.push({type:'cleanup-hang'});setTimeout(()=>process.exit(0),5000);}
 let child;try{child=cp.spawn(base,a,{encoding:'utf8',env:process.env,stdio:a[0]==='start'?['pipe','pipe','pipe']:['ignore','pipe','pipe']})}catch(error){r.events.push({type:'spawn-throw',message:error.message});r.status=91;fs.appendFileSync(log,JSON.stringify(r)+'\\n');process.stderr.write(error.message+'\\n');process.exit(91)}let out='',err='',done=false;const finish=code=>{if(done)return;done=true;try{const line=out.trim().split(/\\r?\\n/).at(-1);JSON.parse(line);fs.mkdirSync(workspace+'/.yolo',{recursive:true});fs.writeFileSync(workspace+'/.yolo/last-receipt.json',line+'\\n')}catch{}try{cp.execFileSync('chmod',['-R','a+rwX',workspace])}catch{}clearTimeout(timer);r.stdout=out.trim();r.stderr=err.trim();r.status=code;if(process.env.YOLO_PROXY_CHILD==='timeout')fs.rmSync(childMarker,{force:true});fs.appendFileSync(log,JSON.stringify(r)+'\\n');process.exit(code??1)};const timer=setTimeout(()=>{r.timeout=true;r.events.push({type:'timeout'});child.kill('SIGKILL');r.events.push({type:'kill',signal:'SIGKILL'})},process.env.YOLO_PROXY_CHILD==='timeout'?250:30000);child.once('error',error=>{r.spawnError=error.message;r.events.push({type:'spawn-error',message:error.message})});child.stdout?.on('data',c=>{out+=c;process.stdout.write(c)});child.stderr?.on('data',c=>{err+=c;process.stderr.write(c)});if(a[0]==='start'){child.stdin.on('error',()=>{});process.stdin.pipe(child.stdin)}child.once('close',code=>{r.events.push({type:'close',code});finish(code)});`, { mode: 0o755 });
   return { workspace, config, data, endpoint, baseId, network, provider, proxy, tag, identity, log, childMarker, cleanupFailure };
 }
@@ -252,4 +254,34 @@ for (const childMode of ['spawn-error', 'timeout']) test(`proxy ${childMode} is 
     });
     await assertStableAbsence(createdId, create.argv[3], label, foreignId, foreignName, fixture);
   } finally { if (foreignId) try { docker('rm', '--force', foreignId); } catch {} if (fixture) try { await cleanupOwned(fixture); } catch {} await rm(root, { recursive: true, force: true }); }
+});
+
+for (const scenario of [
+  { name: 'completed', prior: { version: 1, run_id: 'run-completed', status: 'completed', effect_state: 'none', result: 'completed result', evidence: [{ call_id: 'completed-call', ok: true }], artifacts: ['completed.txt'], errors: ['primary completed'], cleanup_history: [{ action: 'stop', success: true }] } },
+  { name: 'partial', prior: { version: 1, run_id: 'run-partial', status: 'interrupted', effect_state: 'uncertain', result: 'partial result', evidence: [{ call_id: 'partial-call', ok: false }], artifacts: ['partial.txt'], errors: ['primary partial'], cleanup_history: [{ action: 'stop', success: false }] } },
+  { name: 'generic-primary', primary: true },
+  { name: 'no-prior' },
+]) test(`packed public executable preserves ${scenario.name} receipt through nested cleanup_unknown`, { skip }, async () => {
+  const root = await mkdtemp(join(tmpdir(), `yoloharness-packed-cleanup-${scenario.name}-`)); let fixture; let createdId;
+  try {
+    fixture = await makeFixture(root);
+    if (scenario.prior) { await mkdir(join(fixture.workspace, '.yolo'), { recursive: true }); await writeFile(join(fixture.workspace, '.yolo', 'last-receipt.json'), `${JSON.stringify(scenario.prior)}\n`); }
+    const cli = await installPacked(root, fixture);
+    const modeEnv = { ...process.env, HOME: join(root, 'home'), XDG_CONFIG_HOME: fixture.config, XDG_DATA_HOME: fixture.data, DOCKER_CONFIG: join(root, 'docker-config'), DOCKER_CONTEXT: undefined, DOCKER_TLS_VERIFY: undefined, DOCKER_CERT_PATH: undefined, PATH: `${root}:${process.env.PATH}`, YOLO_TEST_MODE: 'rootless', YOLO_TEST_ROOTFUL: '0', YOLO_PROXY_CHILD: 'cleanup-unknown', ...(scenario.primary ? { YOLO_PROXY_PRIMARY: 'generic' } : {}) };
+    await writeFile(join(root, 'docker'), `#!/bin/sh\nexec ${fixture.proxy} \"$@\"`, { mode: 0o755 }); await writeFile(fixture.log, '');
+    const run = spawnSync(cli, ['--json', '-t', '0.1', `packed cleanup ${scenario.name}`], { cwd: fixture.workspace, env: modeEnv, encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 });
+    assert.equal(run.error, undefined, run.error?.message); assert.notEqual(run.status, 0);
+    const lines = run.stdout.trim().split(/\r?\n/).filter(Boolean); assert.equal(lines.length, 1, `stdout=${run.stdout} stderr=${run.stderr}`); const receipt = JSON.parse(lines[0]);
+    assert.equal(receipt.version, 1); assert.equal(receipt.status, 'cleanup_unknown'); assert.equal(receipt.effect_state, 'uncertain');
+    assert.equal(await readFile(join(fixture.workspace, '.yolo', 'last-receipt.json'), 'utf8'), `${JSON.stringify(receipt)}\n`);
+    if (scenario.prior) { assert.equal(receipt.run_id, scenario.prior.run_id); assert.equal(receipt.result, scenario.prior.result); assert.deepEqual(receipt.evidence, scenario.prior.evidence); assert.deepEqual(receipt.artifacts, scenario.prior.artifacts); assert.deepEqual(receipt.cleanup_history, scenario.prior.cleanup_history); assert.deepEqual(receipt.errors.slice(0, scenario.prior.errors.length), scenario.prior.errors); }
+    else { assert.equal(receipt.run_id, null); assert.equal(receipt.result, null); assert.deepEqual(receipt.evidence, []); assert.deepEqual(receipt.artifacts, []); assert.deepEqual(receipt.cleanup_history, []); }
+    assert.ok(receipt.errors.length >= (scenario.primary ? 2 : scenario.prior ? scenario.prior.errors.length + 1 : 2)); assert.match(receipt.errors.at(-1), /cleanup_unknown/); if (scenario.primary) assert.match(receipt.errors[0], /primary fixture failure/);
+    const records = await jsonl(fixture.log); const create = records.find(r => r.argv[0] === 'create' && r.argv.includes('/app/src/container-runtime.mjs')); assert.ok(create); createdId = create.stdout;
+    assert.ok(records.some(r => r.argv[0] === 'rm' && r.events.some(event => event.type === 'cleanup-hang')));
+  } finally {
+    if (createdId) try { docker('rm', '--force', createdId); } catch {}
+    if (fixture) try { await cleanupOwned(fixture); } catch {}
+    await rm(root, { recursive: true, force: true });
+  }
 });

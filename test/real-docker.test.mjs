@@ -79,6 +79,7 @@ async function fixture(t) {
   const ownedRuntimes = new Map();
   let derivativeTag;
   let foreignId;
+  let delayedForeignVolume;
   // Use a test-owned, credential-free Docker client configuration. Resolve the
   // already-selected daemon endpoint before redirecting HOME/XDG so the
   // shipped subprocess exercises the same verified rootless daemon without
@@ -492,6 +493,16 @@ async function fixture(t) {
         await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-control.fixture.json'), `${JSON.stringify({ cwd: workspace, layout: { workspace, ordinaryFile, outsideSentinel: hardlinkSource }, sentinelBefore: controlSentinelBefore, sentinelAfter: controlSentinelAfter }, null, 2)}\n`);
       }
       await rm(ordinaryFile);
+        const delayedLabel = `delayed-${process.pid}`;
+        const delayedVolume = `yoloharness-scratch-${delayedLabel}`;
+        delayedForeignVolume = `yoloharness-foreign-volume-${process.pid}`;
+        docker('volume', 'create', '--label', `yoloharness.run=${delayedLabel}`, delayedVolume);
+        docker('volume', 'create', '--label', 'yoloharness.run=foreign', delayedForeignVolume);
+        const delayedId = docker('create', '--pull=never', '--name', `yoloharness-delayed-${process.pid}`, '--label', `yoloharness.run=${delayedLabel}`, '--mount', `type=volume,src=${delayedVolume},dst=/tmp,volume-nocopy`, configuredImage, 'sleep', '60').trim();
+        assert.match(delayedId, /^[a-f0-9]{64}$/i);
+        docker('rm', '--force', delayedId);
+        assert.equal(docker('ps', '-aq', '--filter', `id=${delayedId}`).trim(), '');
+        assert.equal(docker('volume', 'inspect', '--format', '{{.Name}}', delayedForeignVolume).trim(), delayedForeignVolume);
         if (process.env.YOLO_WRC08_ONLY === '1') return;
     });
 
@@ -537,22 +548,43 @@ async function fixture(t) {
     restoreEnv(oldEnv);
     bestEffortDocker('rm', '--force', providerName); bestEffortDocker('network', 'rm', network); bestEffortDocker('rm', '--force', foreignId);
     for (const [id, record] of ownedRuntimes) {
-      if (docker('ps', '-aq', '--no-trunc', '--filter', `id=${id}`).trim() === '') continue;
-      const inspected = JSON.parse(docker('inspect', id))[0];
-      assert.equal(inspected.Id, id);
-      assert.equal(inspected.Name, `/${record.name}`);
       const label = record.label.split('=').slice(1).join('=');
-      assert.equal(inspected.Config?.Labels?.['yoloharness.run'], label);
-      const scratch = inspected.Mounts?.find(mount => mount.Type === 'volume' && mount.Destination === '/tmp');
-      assert.ok(scratch);
-      assert.equal(scratch.Name, `yoloharness-scratch-${label}`);
-      const volume = JSON.parse(docker('volume', 'inspect', '--format', '{{json .}}', scratch.Name));
-      assert.equal(volume.Name, scratch.Name);
+      // Derive both retained identities before querying current container state.
+      // The container may have disappeared while its scratch volume remains.
+      const retained = record.inspection;
+      assert.equal(retained?.Id, id);
+      assert.equal(retained?.Name, `/${record.name}`);
+      assert.equal(retained?.Config?.Labels?.['yoloharness.run'], label);
+      const retainedMount = retained?.Mounts?.find(mount => mount.Type === 'volume' && mount.Destination === '/tmp');
+      assert.ok(retainedMount);
+      const scratchName = retainedMount.Name;
+      assert.equal(scratchName, `yoloharness-scratch-${label}`);
+      const currentId = docker('ps', '-aq', '--no-trunc', '--filter', `id=${id}`).trim();
+      if (currentId !== '') {
+        assert.equal(currentId, id);
+        const inspected = JSON.parse(docker('inspect', id))[0];
+        assert.equal(inspected.Id, id);
+        assert.equal(inspected.Name, `/${record.name}`);
+        assert.equal(inspected.Config?.Labels?.['yoloharness.run'], label);
+        docker('rm', '--force', id);
+        await waitForDockerAbsent(record.name);
+      }
+      let volume;
+      try { volume = JSON.parse(docker('volume', 'inspect', '--format', '{{json .}}', scratchName)); }
+      catch (error) {
+        const message = error.stderr?.toString() ?? error.message;
+        if (/no such volume|not found/i.test(message)) { await waitForVolumeAbsent(scratchName); continue; }
+        throw error;
+      }
+      assert.equal(volume.Name, scratchName);
       assert.equal(volume.Labels?.['yoloharness.run'], label);
-      docker('rm', '--force', id);
-      await waitForDockerAbsent(record.name);
-      docker('volume', 'rm', scratch.Name);
-      await waitForVolumeAbsent(scratch.Name);
+      docker('volume', 'rm', scratchName);
+      await waitForVolumeAbsent(scratchName);
+    }
+    if (delayedForeignVolume) {
+      assert.equal(docker('volume', 'inspect', '--format', '{{.Name}}', delayedForeignVolume).trim(), delayedForeignVolume);
+      docker('volume', 'rm', delayedForeignVolume);
+      await waitForVolumeAbsent(delayedForeignVolume);
     }
     if (derivativeTag) bestEffortDocker('image', 'rm', '--force', derivativeTag);
     await rm(root, { recursive: true, force: true });

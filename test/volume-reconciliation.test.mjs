@@ -31,16 +31,25 @@ function dockerMock({ inspect, remove = () => ({ output: '', code: 0 }) }) {
 
 const owned = () => ({ output: JSON.stringify({ Name: id, Labels: { 'yoloharness.run': label } }) });
 const absent = () => ({ output: '', error: `Error response from daemon: volume ${id} not found`, code: 1 });
+const normalizeHistory = history => history.map(({ at, ...event }) => event);
 
  test('volume reconciliation retries transient inspect and then reaps before stable absence', async () => {
   const mock = dockerMock({ inspect: n => n === 1 ? { output: '', error: 'temporary transport failure', code: 1 } : n === 2 ? owned() : absent() });
   const history = await reconcileVolume('docker', id, label, mock.spawn, { deadline: Date.now() + 1800 });
-  const actions = history.map(event => event.action);
-  assert.deepEqual(actions.slice(0, 7), ['attempt', 'error', 'retry', 'attempt', 'attempt', 'remove_success', 'attempt']);
-  assert.equal(history.find(event => event.action === 'error').classification, 'transient');
-  assert.equal(actions.at(-1), 'stable_absence');
+  const normalized = normalizeHistory(history);
+  assert.deepEqual(normalized.slice(0, 7), [
+    { name: id, action: 'attempt', operation: 'inspect' },
+    { name: id, action: 'error', operation: 'inspect', classification: 'transient', error: 'scratch volume inspect failed' },
+    { name: id, action: 'retry', classification: 'transient' },
+    { name: id, action: 'attempt', operation: 'inspect' },
+    { name: id, action: 'attempt', operation: 'remove' },
+    { name: id, action: 'remove_success', operation: 'remove' },
+    { name: id, action: 'attempt', operation: 'inspect' },
+  ]);
+  assert.deepEqual(normalized.at(-1), { name: id, action: 'stable_absence', classification: 'not-found' });
+  assert.equal(normalized.slice(7, -1).every(event => event.action === 'attempt' ? event.operation === 'inspect' : event.action === 'error' ? event.operation === 'inspect' && event.classification === 'not-found' && event.error === 'scratch volume inspect failed' : event.action === 'absence' && event.classification === 'not-found'), true);
   assert.equal(mock.counts().remove, 1);
-  assert.ok(history.every(event => Object.isFrozen(event)));
+  assert.equal(history.every(event => Object.isFrozen(event)), true);
 });
 
 test('volume reconciliation preserves foreign same-prefix volume and terminates on ownership mismatch', async () => {

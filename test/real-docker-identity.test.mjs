@@ -342,10 +342,22 @@ test('packed public executable preserves production reconciler history through c
     assert.equal(run.error, undefined, run.error?.message); assert.equal(run.status, 1, `${run.stderr}\n${run.stdout}`);
     const lines = run.stdout.trim().split(/\r?\n/).filter(Boolean); assert.equal(lines.length, 1, `${run.stderr}\n${run.stdout}`);
     const receipt = JSON.parse(lines[0]); assert.equal(receipt.status, 'cleanup_unknown'); assert.equal(receipt.effect_state, 'uncertain');
-    assert.ok(receipt.cleanup_history.length >= 5);
-    assert.match(receipt.cleanup_history.map(event => event.action).join('>'), /^attempt>attempt>(?:error>retry>attempt>)*(?:error>deadline|error>retry>deadline)$/);
-    assert.equal(receipt.cleanup_history[2].operation, 'remove'); assert.equal(receipt.cleanup_history[2].classification, 'busy');
-    assert.equal(receipt.cleanup_history.at(-1).action, 'deadline'); assert.equal(receipt.cleanup_history.at(-1).classification, 'timeout');
+    const normalizeHistory = history => history.map(({ at, ...event }) => event);
+    const expectedHistory = normalizeHistory(receipt.cleanup_history);
+    assert.deepEqual(expectedHistory.slice(0, 3), [
+      { name: expectedHistory[0].name, action: 'attempt', operation: 'inspect' },
+      { name: expectedHistory[0].name, action: 'attempt', operation: 'remove' },
+      { name: expectedHistory[0].name, action: 'error', operation: 'remove', classification: 'busy', error: 'docker operation failed (1): Error response from daemon: volume is busy' },
+    ]);
+    assert.deepEqual(expectedHistory.at(-1), { name: expectedHistory[0].name, action: 'deadline', classification: 'timeout' });
+    for (const [index, event] of expectedHistory.entries()) {
+      assert.equal(event.name, expectedHistory[0].name);
+      if (index >= 2 && index < expectedHistory.length - 1) assert.deepEqual(event, index % 3 === 2
+        ? { name: event.name, action: 'error', operation: 'remove', classification: 'busy', error: 'docker operation failed (1): Error response from daemon: volume is busy' }
+        : index % 3 === 0
+          ? { name: event.name, action: 'retry', classification: 'busy' }
+          : { name: event.name, action: 'attempt', operation: 'remove' });
+    }
     assert.deepEqual(JSON.parse(await readFile(join(fixture.workspace, '.yolo', 'last-receipt.json'), 'utf8')), receipt);
     const records = await jsonl(fixture.log); const runtimeCreate = records.find(record => record.argv[0] === 'create' && record.argv.includes('/app/src/container-runtime.mjs')); assert.ok(runtimeCreate);
     const scratch = runtimeCreate.argv[runtimeCreate.argv.indexOf('--mount') + 1].match(/^type=volume,src=([^,]+)/)?.[1]; assert.match(scratch ?? '', /^yoloharness-scratch-[0-9a-f-]+$/);

@@ -22,6 +22,14 @@ const waitFor = async (path, timeout = 10_000) => {
   }
   throw new Error(`timed out waiting for ${path}`);
 };
+const waitForDockerAbsent = async (name, timeout = 10_000) => {
+  const until = Date.now() + timeout;
+  while (Date.now() < until) {
+    if (docker('ps', '-aq', '--filter', `name=^/${name}$`).trim() === '') return;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw new Error(`timed out waiting for Docker container ${name} to be absent`);
+};
 const restoreEnv = (old) => { for (const [key, value] of Object.entries(old)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } };
 const fileEvidence = async (path) => {
   const bytes = await readFile(path);
@@ -360,10 +368,21 @@ async function fixture(t) {
 
     await new Promise(resolve => setTimeout(resolve, 1_200));
     assert.equal(await access(join(workspace, 'deadline-late')).then(() => true).catch(() => false), false);
-    const assertOwnedRuntimeAbsent = (runtimeArgs) => {
+    const assertOwnedRuntimeAbsent = async (runtimeArgs) => {
       const name = runtimeArgs[runtimeArgs.indexOf('--name') + 1];
       assert.match(name, /^yoloharness-[0-9a-f-]+$/);
-      assert.equal(docker('ps', '-aq', '--filter', `name=^/${name}$`).trim(), '');
+      await waitForDockerAbsent(name);
+    };
+    const reapOwnedRuntime = async (runtimeArgs) => {
+      const name = runtimeArgs[runtimeArgs.indexOf('--name') + 1];
+      const label = runtimeArgs[runtimeArgs.indexOf('--label') + 1]?.split('=').slice(1).join('=');
+      assert.match(name, /^yoloharness-[0-9a-f-]+$/);
+      assert.match(label ?? '', /^[0-9a-f-]{36}$/);
+      const inspected = JSON.parse(docker('inspect', name))[0];
+      assert.equal(inspected.Name, `/${name}`);
+      assert.equal(inspected.Config.Labels?.['yoloharness.run'], label);
+      bestEffortDocker('rm', '--force', name);
+      await waitForDockerAbsent(name);
     };
     const sigint = spawn(process.execPath, [installedCli, '--json', 'sigint-probe'], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let sigintOut = ''; let sigintErr = ''; sigint.stdout.on('data', chunk => { sigintOut += chunk; }); sigint.stderr.on('data', chunk => { sigintErr += chunk; });
@@ -380,7 +399,7 @@ async function fixture(t) {
     assert.equal(sigintRecord.effect_state, 'uncertain');
 
     assert.equal(await access(join(workspace, 'sigint-late')).then(() => true).catch(() => false), false);
-    const sigintArgs = JSON.parse((await readFile(join(root, 'docker-argv.jsonl'), 'utf8')).trim().split(/\r?\n/).at(-1)); assertOwnedRuntimeAbsent(sigintArgs);
+    const sigintArgs = JSON.parse((await readFile(join(root, 'docker-argv.jsonl'), 'utf8')).trim().split(/\r?\n/).at(-1)); await reapOwnedRuntime(sigintArgs); await assertOwnedRuntimeAbsent(sigintArgs);
 
     const noSignal = await runProbe('sigint-probe', '0.2');
     assert.equal(noSignal.code, 0, `${noSignal.err}${noSignal.out}`);
@@ -461,10 +480,10 @@ async function fixture(t) {
 
     for (const [prompt, marker] of [['stdout-overflow-probe', 'stdout-control'], ['stderr-overflow-probe', 'stderr-control']]) {
       const overflow = await runProbe(prompt, '0.2'); assert.equal(overflow.code, 124, `${overflow.err}${overflow.out}`); assert.match(overflow.out, /output limit/i);
-      const overflowArgs = JSON.parse((await readFile(join(root, 'docker-argv.jsonl'), 'utf8')).trim().split(/\r?\n/).at(-1)); assertOwnedRuntimeAbsent(overflowArgs);
+      const overflowArgs = JSON.parse((await readFile(join(root, 'docker-argv.jsonl'), 'utf8')).trim().split(/\r?\n/).at(-1)); await assertOwnedRuntimeAbsent(overflowArgs);
       const control = await runProbe(`${marker}-probe`, '0.2'); assert.equal(control.code, 0, `${control.err}${control.out}`); assert.match(control.out, /control-complete/);
       assert.equal(await access(join(workspace, marker)).then(() => true).catch(() => false), true);
-      const controlArgs = JSON.parse((await readFile(join(root, 'docker-argv.jsonl'), 'utf8')).trim().split(/\r?\n/).at(-1)); assertOwnedRuntimeAbsent(controlArgs);
+      const controlArgs = JSON.parse((await readFile(join(root, 'docker-argv.jsonl'), 'utf8')).trim().split(/\r?\n/).at(-1)); await assertOwnedRuntimeAbsent(controlArgs);
     }
 
     // The shipped subprocess must reject an XDG-selected derivative before it

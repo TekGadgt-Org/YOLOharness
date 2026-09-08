@@ -80,18 +80,30 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     return record.status === 'completed' && record.effect_state !== 'uncertain' ? 0 : record.status === 'interrupted' ? 130 : record.status === 'deadline' ? 124 : 1;
   } catch (error) {
     const message = error instanceof MissingProviderError ? error.message : error.message;
-    if (error?.code === 'cleanup_unknown' || /cleanup_unknown/i.test(message ?? '')) {
+    if (hasCleanupUnknown(error)) {
       const prior = error.receipt && typeof error.receipt === 'object' ? error.receipt : {};
-      const cleanupMessage = error.cleanupError?.message ?? message ?? 'cleanup_unknown';
-      const errors = [...(Array.isArray(prior.errors) ? prior.errors : []), message || 'cleanup_unknown', ...(cleanupMessage !== message ? [cleanupMessage] : [])];
-      const receipt = { version: 1, run_id: prior.run_id ?? null, status: 'cleanup_unknown', effect_state: 'uncertain', result: prior.result ?? error.partialResult ?? null, evidence: Array.isArray(prior.evidence) ? prior.evidence : [], artifacts: Array.isArray(prior.artifacts) ? prior.artifacts : [], errors, cleanup_history: error.cleanupError?.cleanupHistory ?? prior.cleanup_history ?? [] };
-      if (args.includes('--json')) io.stdout.write(`${JSON.stringify(receipt)}\n`);
-      else io.stdout.write(`${JSON.stringify(receipt)}\n`);
+      const cleanup = cleanupErrorIn(error);
+      const errors = [...(Array.isArray(prior.errors) ? prior.errors : []), ...(message ? [message] : []), ...(cleanup && cleanup !== error && cleanup.message ? [cleanup.message] : [])];
+      const receipt = { version: 1, run_id: prior.run_id ?? null, status: 'cleanup_unknown', effect_state: 'uncertain', result: prior.result ?? error.partialResult ?? null, evidence: Array.isArray(prior.evidence) ? prior.evidence : [], artifacts: Array.isArray(prior.artifacts) ? prior.artifacts : [], errors, cleanup_history: cleanup?.cleanupHistory ?? prior.cleanup_history ?? [] };
+      io.stdout.write(`${JSON.stringify(receipt)}\n`);
       return 1;
     }
     io.stderr.write(`${message}\n`); return 1;
   }
 }
+
+function cleanupErrorIn(error, seen = new Set()) {
+  if (!error || typeof error !== 'object' || seen.has(error)) return null;
+  seen.add(error);
+  if (error.code === 'cleanup_unknown') return error;
+  for (const nested of [error.cleanupError, error.cause, ...(error.errors ?? []), ...(error.aggregateErrors ?? [])]) {
+    const found = cleanupErrorIn(nested, seen);
+    if (found) return found;
+  }
+  return null;
+}
+
+function hasCleanupUnknown(error) { return Boolean(cleanupErrorIn(error)); }
 
 export async function configuredImage({ inspect, dockerCommand } = {}) {
   try {

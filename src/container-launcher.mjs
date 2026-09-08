@@ -8,7 +8,7 @@ import { RUNTIME_RESOURCE_POLICY } from './resource-policy.mjs';
 
 const MAX_OUTPUT = 1024 * 1024;
 const OP_TIMEOUT = 10_000;
-const CLEANUP_TOTAL_MS = 1500;
+const CLEANUP_TOTAL_MS = 3000;
 const CLEANUP_STABLE_ABSENCE_MS = 500;
 const CLEANUP_POLL_MS = 50;
 const VOLUME_PREFIX = 'yoloharness-scratch-';
@@ -29,12 +29,12 @@ export class ContainerLauncher {
 
   async launch(bootstrap, { signal } = {}) {
     const startedAt = Date.now();
-    const deadline = startedAt + this.timeoutMs;
-    const remaining = () => Math.max(1, deadline - Date.now());
+    const executionDeadline = startedAt + this.timeoutMs;
+    const remaining = () => Math.max(1, executionDeadline - Date.now());
     if (signal?.aborted) throw signal.reason;
-    const source = await validateWorkspace(this.workspace, { signal, deadline });
+    const source = await validateWorkspace(this.workspace, { signal, deadline: executionDeadline });
     if (signal?.aborted) throw signal.reason;
-    if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
+    if (Date.now() >= executionDeadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
     let outcome;
     let failure;
     let identity;
@@ -51,47 +51,45 @@ export class ContainerLauncher {
     let createAttempted = false;
     let owned = false;
     let reason;
-    let abortCleanup;
-    let abortCleanupError;
     let timer;
+    let cleanupDeadline;
     const abortListener = () => abort(signal.reason);
     const abort = (abortReason = signal?.reason ?? Object.assign(new Error('container interrupted'), { code: 'interrupted' })) => {
       if (reason) return;
       reason = abortReason;
+      cleanupDeadline ??= Date.now() + CLEANUP_TOTAL_MS;
       creating?.kill('SIGKILL');
-      if (id && owned && !abortCleanup) abortCleanup = cleanup(this.command, id, name, label, this.spawn, undefined, { deadline: Date.now() + 6000 }).then(() => null, error => error);
     };
+    timer = setTimeout(() => abort(Object.assign(new Error('container deadline exceeded'), { code: 'deadline' })), remaining());
+    signal?.addEventListener('abort', abortListener, { once: true });
     try {
-      identity = await containerIdentity(this.command, this.spawn, { signal, deadline, hostPlatform: this.hostPlatform });
+      identity = await containerIdentity(this.command, this.spawn, { signal, deadline: executionDeadline, hostPlatform: this.hostPlatform });
       if (signal?.aborted) throw signal.reason;
-      if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
+      if (Date.now() >= executionDeadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
       name = `yoloharness-${randomUUID()}`;
       label = randomUUID();
       volumeName = `${VOLUME_PREFIX}${label}`;
       volumeCreateAttempted = true;
-      await createScratchVolume(this.command, volumeName, label, this.spawn, { signal, deadline });
+      await createScratchVolume(this.command, volumeName, label, this.spawn, { signal, deadline: executionDeadline });
       volumeCreated = true;
-      if (identity.uid !== 0) await initializeScratchVolume(this.command, this.image, volumeName, label, identity, this.spawn, { signal, deadline });
+      if (identity.uid !== 0) await initializeScratchVolume(this.command, this.image, volumeName, label, identity, this.spawn, { signal, deadline: executionDeadline });
       const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--init', '-i', '--user', `${identity.uid}:${identity.gid}`];
       for (const group of identity.groups) args.push('--group-add', String(group));
       args.push('--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--mount', `type=volume,src=${volumeName},dst=/tmp,volume-nocopy`, '--tmpfs', `/home/worker:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.homeTmpfs},uid=${identity.uid},gid=${identity.gid},mode=700`, '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', this.image, 'node', '/app/src/container-runtime.mjs');
-      timer = setTimeout(() => abort(Object.assign(new Error('container deadline exceeded'), { code: 'deadline' })), remaining());
-      signal?.addEventListener('abort', abortListener, { once: true });
       createAttempted = true;
-      const create = operation(this.command, args, this.spawn, { deadline, signal });
+      const create = operation(this.command, args, this.spawn, { deadline: executionDeadline, signal });
       creating = create.child;
       id = (await create.promise).trim();
       if (!/^[a-f0-9]{64}$/i.test(id)) throw new Error('docker did not return a full container ID');
       if (reason || signal?.aborted) throw reason ?? signal.reason;
       creating = null;
-      if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
-      id = await verifyOwnedContainer(this.command, id, name, label, this.spawn, undefined, { deadline });
+      if (Date.now() >= executionDeadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
+      id = await verifyOwnedContainer(this.command, id, name, label, this.spawn, undefined, { deadline: executionDeadline });
       owned = true;
       const bootstrapFrame = encodeBootstrap({ ...bootstrap, skills: await snapshotSkills(source) });
       attached = this.spawn(this.command, ['start', '--attach', '--interactive', id], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: DOCKER_ENV() });
       const result = await attachedOperation(attached, bootstrapFrame, signal);
       if (reason) {
-        if (abortCleanup) abortCleanupError = await abortCleanup;
         const partial = lastReceipt(result.out) ?? await workspaceReceipt(this.workspace);
         outcome = { ...(partial ?? { version: 1, run_id: null, result: null, evidence: [], artifacts: [] }), status: reason.code === 'deadline' ? 'deadline' : 'interrupted', effect_state: 'uncertain', errors: [...(partial?.errors ?? []), reason.message] };
       } else if (result.overflow) outcome = { version: 1, run_id: null, status: 'deadline', effect_state: 'uncertain', result: null, evidence: [], artifacts: [], errors: ['container output limit exceeded'] };
@@ -108,14 +106,13 @@ export class ContainerLauncher {
       clearTimeout(timer);
       signal?.removeEventListener('abort', abortListener);
     let cleanupError;
-      if (abortCleanupError) cleanupError = abortCleanupError;
+      cleanupDeadline ??= Date.now() + CLEANUP_TOTAL_MS;
       try {
-        if (abortCleanup) abortCleanupError = await abortCleanup;
-        else if (id && owned) await cleanup(this.command, id, name, label, this.spawn, undefined, { deadline });
-        else if (createAttempted) await reconcileUnknownCreate(this.command, name, label, this.spawn, undefined, { deadline: Math.max(deadline, Date.now()) + CLEANUP_TOTAL_MS });
+        if (id && owned) await cleanup(this.command, id, name, label, this.spawn, undefined, { deadline: cleanupDeadline });
+        else if (createAttempted) await reconcileUnknownCreate(this.command, name, label, this.spawn, undefined, { deadline: cleanupDeadline });
       } catch (error) { cleanupError = error; }
       try {
-        if (volumeName && (volumeCreated || volumeCreateAttempted)) volumeCleanup = reconcileVolume(this.command, volumeName, label, this.spawn, { deadline: Math.max(deadline, Date.now()) + CLEANUP_TOTAL_MS });
+        if (volumeName && (volumeCreated || volumeCreateAttempted)) volumeCleanup = reconcileVolume(this.command, volumeName, label, this.spawn, { deadline: cleanupDeadline });
         if (volumeCleanup) { volumeHistory = await volumeCleanup; if (outcome) outcome = { ...outcome, cleanup_history: volumeHistory }; }
       } catch (error) { cleanupError ??= error; }
       if (cleanupError) {
@@ -126,6 +123,7 @@ export class ContainerLauncher {
       }
     }
     if (outcome) {
+      outcome = { ...outcome, execution_deadline: executionDeadline, cleanup_deadline: cleanupDeadline, cleanup_grace_ms: CLEANUP_TOTAL_MS };
       try { await mkdir(join(this.workspace, '.yolo'), { recursive: true, mode: 0o700 }); await writeFile(join(this.workspace, '.yolo', 'last-receipt.json'), `${JSON.stringify(outcome)}\n`, { mode: 0o600 }); }
       catch (error) { outcome = { ...outcome, status: 'cleanup_unknown', effect_state: 'uncertain', errors: [...(outcome.errors ?? []), `receipt persistence failed: ${error.message}`] }; }
     }
@@ -137,10 +135,14 @@ export class ContainerLauncher {
 async function inspectOwnedVolume(command, name, label, spawn, { deadline } = {}) {
   let output;
   try { output = await operation(command, ['volume', 'inspect', '--format', '{{json .}}', name], spawn, { deadline }).promise; }
-  catch (error) { throw Object.assign(new Error('scratch volume ownership could not be verified'), { code: 'cleanup_unknown', cause: error }); }
+  catch (error) {
+    const outputText = dockerErrorOutput(error);
+    const code = error.code === 'deadline' ? 'cleanup_timeout' : /no such volume|not found/i.test(outputText) ? 'cleanup_not_found' : /already in use|being used|busy/i.test(outputText) ? 'cleanup_busy' : error.dockerExitCode !== undefined ? 'cleanup_exit' : 'cleanup_transport';
+    throw Object.assign(new Error('scratch volume inspect failed'), { code, cause: error, dockerOutput: outputText });
+  }
   let inspected;
-  try { inspected = JSON.parse(output.trim()); } catch (error) { throw Object.assign(new Error('scratch volume ownership could not be verified'), { code: 'cleanup_unknown', cause: error }); }
-  if (inspected?.Name !== name || inspected?.Labels?.['yoloharness.run'] !== label) throw new Error(`scratch volume ownership mismatch (name=${inspected?.Name ?? 'missing'}, label=${inspected?.Labels?.['yoloharness.run'] ?? 'missing'})`);
+  try { inspected = JSON.parse(output.trim()); } catch (error) { throw Object.assign(new Error('scratch volume inspect returned malformed JSON'), { code: 'cleanup_parse', cause: error }); }
+  if (inspected?.Name !== name || inspected?.Labels?.['yoloharness.run'] !== label) throw Object.assign(new Error(`scratch volume ownership mismatch (name=${inspected?.Name ?? 'missing'}, label=${inspected?.Labels?.['yoloharness.run'] ?? 'missing'})`), { code: 'cleanup_ownership' });
   return inspected;
 }
 
@@ -185,7 +187,8 @@ async function reapHelper(command, id, name, label, role, spawn, { deadline } = 
   await waitForContainerAbsence(command, id, spawn, { deadline });
 }
 
-async function reconcileVolume(command, name, label, spawn, { deadline = Date.now() + CLEANUP_TOTAL_MS } = {}) {
+async function reconcileVolume(command, name, label, spawn, { deadline } = {}) {
+  if (!Number.isFinite(deadline)) throw new TypeError('volume reconciliation requires one cleanup deadline');
   const history = [];
   let absentSince = null;
   while (Date.now() < deadline) {
@@ -218,6 +221,9 @@ async function reconcileVolume(command, name, label, spawn, { deadline = Date.no
 }
 
 function classifyCleanupError(error, output) {
+  if (error.code === 'cleanup_not_found') return 'absent';
+  if (error.code === 'cleanup_busy' || error.code === 'cleanup_timeout') return 'retryable';
+  if (error.code?.startsWith('cleanup_')) return 'terminal';
   if (/no such volume|not found/i.test(output)) return 'absent';
   if (/already in use|being used|temporarily|timeout|deadline|busy|transport|connection/i.test(output)) return 'retryable';
   return error.code === 'cleanup_unknown' ? 'retryable' : 'terminal';
@@ -289,7 +295,13 @@ function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT, deadline, sig
     const finish = (fn, value) => { if (done) return; done = true; clearTimeout(timer); signal?.removeEventListener('abort', abort); fn(value); };
     const terminate = error => { terminalError = error; child?.kill('SIGKILL'); };
     const budget = deadline === undefined ? timeoutMs : Math.max(1, deadline - Date.now());
-    const timer = setTimeout(() => { terminate(Object.assign(new Error('docker operation deadline exceeded'), { code: 'deadline' })); setImmediate(() => finish(reject, terminalError)); }, Math.min(budget, OP_TIMEOUT));
+    const timer = setTimeout(() => {
+      terminate(Object.assign(new Error('docker operation deadline exceeded'), { code: 'deadline' }));
+      // A real close normally follows kill immediately. If the client itself
+      // is wedged, keep cleanup bounded and surface the uncertainty rather
+      // than fabricating a close event.
+      setTimeout(() => finish(reject, Object.assign(new Error('docker client close was not observed'), { code: 'cleanup_unknown', cause: terminalError })), 100);
+    }, Math.min(budget, OP_TIMEOUT));
     try { child = spawn(command, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: DOCKER_ENV() }); }
     catch (error) { finish(reject, error); return; }
     child.stdout?.on('data', chunk => { out += String(chunk); if (Buffer.byteLength(out) > MAX_OUTPUT) terminate(new Error('docker output limit exceeded')); });
@@ -326,7 +338,8 @@ function attachedOperation(child, input, signal) {
   });
 }
 
-async function reconcileUnknownCreate(command, name, label, spawn, role = undefined, { deadline = Date.now() + CLEANUP_TOTAL_MS } = {}) {
+async function reconcileUnknownCreate(command, name, label, spawn, role = undefined, { deadline } = {}) {
+  if (!Number.isFinite(deadline)) throw new TypeError('container reconciliation requires one cleanup deadline');
   const startedAt = Date.now();
   let absentSince = null;
   while (Date.now() < deadline) {
@@ -385,7 +398,8 @@ async function cleanup(command, id, name, label, spawn, role = undefined, { dead
   await waitForContainerAbsence(command, id, spawn, { deadline });
 }
 
-async function waitForContainerAbsence(command, id, spawn, { deadline = Date.now() + CLEANUP_TOTAL_MS } = {}) {
+async function waitForContainerAbsence(command, id, spawn, { deadline } = {}) {
+  if (!Number.isFinite(deadline)) throw new TypeError('container absence confirmation requires one cleanup deadline');
   const startedAt = Date.now(); let absentSince = null; let lastError;
   while (Date.now() < deadline) {
     try {

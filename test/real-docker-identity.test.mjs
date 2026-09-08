@@ -12,6 +12,8 @@ const skip = !enabled;
 const dockerPath = execFileSync('command', ['-v', 'docker'], { shell: '/bin/sh', encoding: 'utf8' }).trim();
 const docker = (...args) => execFileSync(dockerPath, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 const image = process.env.YOLO_DOCKER_IMAGE ?? 'yoloharness-local:0.1.1';
+const dockerSelectorKeys = ['DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH'];
+const originalDockerSelectors = Object.fromEntries(dockerSelectorKeys.map(key => [key, process.env[key]]));
 const jsonl = async path => (await readFile(path, 'utf8')).trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
 const values = (argv, flag) => argv.flatMap((v, i) => v === flag ? [argv[i + 1]] : []);
 
@@ -121,11 +123,11 @@ const cp=require('child_process'),fs=require('fs');const a=process.argv.slice(2)
 if(a[0]==='info'){fs.appendFileSync(log,JSON.stringify(r)+'\\n');const security=process.env.YOLO_TEST_MODE==='rootless'?['name=rootless','name=seccomp,profile=builtin']:['name=seccomp,profile=builtin'];process.stdout.write(JSON.stringify({OSType:'linux',OperatingSystem:process.env.YOLO_TEST_MODE==='darwin'?'Vendor A':'Vendor B',SecurityOptions:security}));process.exit(0)}
 if(process.env.YOLO_CLEANUP_TRANSIENT==='1'&&a[0]==='network'&&a[1]==='rm'&&a[2]===net&&!fs.existsSync(cleanupFailure)){fs.writeFileSync(cleanupFailure,'injected');process.stderr.write('injected transient cleanup failure\\n');process.exit(75)}
 if(a[0]==='create'){for(let i=a.length-1;i>=0;i--)if(a[i]==='--group-add')a.splice(i,2);if(process.env.YOLO_TEST_MODE==='rootful'&&!a.includes('yoloharness.role=scratch-verify')&&(process.env.YOLO_PRESERVE_RUNTIME_UID!=='1'||!a.includes('/app/src/container-runtime.mjs'))){const u=a.indexOf('--user');if(u>=0)a[u+1]='0:0';for(let i=0;i<a.length;i++)if(a[i]==='--tmpfs')a[i+1]=a[i+1].replace(/uid=[0-9]+,gid=[0-9]+/,'uid=0,gid=0')}const n=a.indexOf('--network');if(n>=0)a[n+1]=net;if(a.includes(id))a[a.indexOf(id)]=der;r.image=a.at(-3);r.translatedArgv=[...a]}
-if(process.env.YOLO_PROXY_CHILD==='spawn-error'&&a[0]==='start'){base=childFixture+'-does-not-exist';r.events.push({type:'spawn'});}
-else if(process.env.YOLO_PROXY_CHILD==='timeout'&&a[0]==='start'){base=process.execPath;a.splice(0,a.length,childFixture);r.events.push({type:'spawn'});}
-else if(process.env.YOLO_PROXY_CHILD==='cleanup-unknown'&&a[0]==='start'){base=process.execPath;a.splice(0,a.length,childFixture);r.events.push({type:'spawn'});}
+if(process.env.YOLO_PROXY_CHILD==='spawn-error'&&original[0]==='start'){base=childFixture+'-does-not-exist';r.events.push({type:'spawn'});}
+else if(process.env.YOLO_PROXY_CHILD==='timeout'&&original[0]==='start'){base=process.execPath;a.splice(0,a.length,childFixture);r.events.push({type:'spawn'});}
+else if(process.env.YOLO_PROXY_CHILD==='cleanup-unknown'&&original[0]==='start'){base=process.execPath;a.splice(0,a.length,childFixture);r.events.push({type:'spawn'});}
 if(process.env.YOLO_PROXY_CHILD==='cleanup-unknown'&&a[0]==='rm'){process.on('SIGTERM',()=>{});r.events.push({type:'cleanup-hang'});setTimeout(()=>process.exit(0),5000);}
-let child;try{child=cp.spawn(base,a,{encoding:'utf8',env:process.env,stdio:a[0]==='start'?['pipe','pipe','pipe']:['ignore','pipe','pipe']})}catch(error){r.events.push({type:'spawn-throw',message:error.message});r.status=91;fs.appendFileSync(log,JSON.stringify(r)+'\\n');process.stderr.write(error.message+'\\n');process.exit(91)}let out='',err='',done=false;const finish=code=>{if(done)return;done=true;try{const line=out.trim().split(/\\r?\\n/).at(-1);JSON.parse(line);fs.mkdirSync(workspace+'/.yolo',{recursive:true});fs.writeFileSync(workspace+'/.yolo/last-receipt.json',line+'\\n')}catch{}try{cp.execFileSync('chmod',['-R','a+rwX',workspace])}catch{}clearTimeout(timer);r.stdout=out.trim();r.stderr=err.trim();r.status=code;if(process.env.YOLO_PROXY_CHILD==='timeout')fs.rmSync(childMarker,{force:true});fs.appendFileSync(log,JSON.stringify(r)+'\\n');process.exit(code??1)};const timer=setTimeout(()=>{r.timeout=true;r.events.push({type:'timeout'});child.kill('SIGKILL');r.events.push({type:'kill',signal:'SIGKILL'})},process.env.YOLO_PROXY_CHILD==='timeout'?250:30000);child.once('error',error=>{r.spawnError=error.message;r.events.push({type:'spawn-error',message:error.message})});child.stdout?.on('data',c=>{out+=c;process.stdout.write(c)});child.stderr?.on('data',c=>{err+=c;process.stderr.write(c)});if(a[0]==='start'){child.stdin.on('error',()=>{});process.stdin.pipe(child.stdin)}child.once('close',code=>{r.events.push({type:'close',code});finish(code)});`, { mode: 0o755 });
+let child;try{child=cp.spawn(base,a,{encoding:'utf8',env:process.env,stdio:original[0]==='start'?['pipe','pipe','pipe']:['ignore','pipe','pipe']})}catch(error){r.events.push({type:'spawn-throw',message:error.message});r.status=91;fs.appendFileSync(log,JSON.stringify(r)+'\\n');process.stderr.write(error.message+'\\n');process.exit(91)}let out='',err='',done=false;const finish=code=>{if(done)return;done=true;try{const line=out.trim().split(/\\r?\\n/).at(-1);const parsed=JSON.parse(line);if(parsed?.version===1){fs.mkdirSync(workspace+'/.yolo',{recursive:true});fs.writeFileSync(workspace+'/.yolo/last-receipt.json',line+'\\n')}}catch{}try{cp.execFileSync('chmod',['-R','a+rwX',workspace])}catch{}clearTimeout(timer);r.stdout=out.trim();r.stderr=err.trim();r.status=code;if(process.env.YOLO_PROXY_CHILD==='timeout')fs.rmSync(childMarker,{force:true});fs.appendFileSync(log,JSON.stringify(r)+'\\n');process.exit(code??1)};const timer=setTimeout(()=>{r.timeout=true;r.events.push({type:'timeout'});child.kill('SIGKILL');r.events.push({type:'kill',signal:'SIGKILL'})},process.env.YOLO_PROXY_CHILD==='timeout'?250:30000);child.once('error',error=>{r.spawnError=error.message;r.events.push({type:'spawn-error',message:error.message})});child.stdout?.on('data',c=>{out+=c;process.stdout.write(c)});child.stderr?.on('data',c=>{err+=c;process.stderr.write(c)});if(original[0]==='start'){child.stdin.on('error',()=>{});process.stdin.pipe(child.stdin)}child.once('close',code=>{r.events.push({type:'close',code});finish(code)});`, { mode: 0o755 });
   return { workspace, config, data, endpoint, baseId, network, provider, proxy, tag, identity, log, childMarker, cleanupFailure };
 }
 
@@ -133,6 +135,18 @@ async function installPacked(root, env) {
   const packed = join(root, 'packed'); await mkdir(packed); const name = execFileSync('npm', ['pack', '--pack-destination', packed], { cwd: process.cwd(), encoding: 'utf8' }).trim().split(/\r?\n/).at(-1); execFileSync('tar', ['-xzf', join(packed, name), '-C', packed]);
   const installed = spawnSync(process.execPath, [join(packed, 'package', 'install.mjs')], { cwd: join(packed, 'package'), env: { ...process.env, HOME: join(root, 'home'), XDG_CONFIG_HOME: env.config, XDG_DATA_HOME: env.data }, encoding: 'utf8' }); assert.equal(installed.status, 0, installed.stderr); await writeFile(join(env.data, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId: env.baseId, ...env.identity }));
   return join(root, 'home', '.local', 'bin', 'yolo');
+}
+
+function packedDockerEnvironment(endpoint, root) {
+  const selected = { ...process.env, PATH: `${root}:${process.env.PATH}` };
+  const explicit = ['DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH']
+    .some(key => originalDockerSelectors[key] !== undefined);
+  for (const key of dockerSelectorKeys) {
+    if (originalDockerSelectors[key] === undefined) delete selected[key];
+    else selected[key] = originalDockerSelectors[key];
+  }
+  if (!explicit) selected.DOCKER_HOST = endpoint;
+  return selected;
 }
 
 test('installed v0.1.1 CLI retains complete identity lifecycle evidence', { skip }, async () => {
@@ -267,17 +281,18 @@ for (const scenario of [
     fixture = await makeFixture(root);
     if (scenario.prior) { await mkdir(join(fixture.workspace, '.yolo'), { recursive: true }); await writeFile(join(fixture.workspace, '.yolo', 'last-receipt.json'), `${JSON.stringify(scenario.prior)}\n`); }
     const cli = await installPacked(root, fixture);
-    const modeEnv = { ...process.env, HOME: join(root, 'home'), XDG_CONFIG_HOME: fixture.config, XDG_DATA_HOME: fixture.data, DOCKER_CONFIG: join(root, 'docker-config'), DOCKER_CONTEXT: undefined, DOCKER_TLS_VERIFY: undefined, DOCKER_CERT_PATH: undefined, PATH: `${root}:${process.env.PATH}`, YOLO_TEST_MODE: 'rootless', YOLO_TEST_ROOTFUL: '0', YOLO_PROXY_CHILD: 'cleanup-unknown', ...(scenario.primary ? { YOLO_PROXY_PRIMARY: 'generic' } : {}) };
+    const modeEnv = { ...packedDockerEnvironment(fixture.endpoint, root), HOME: join(root, 'home'), XDG_CONFIG_HOME: fixture.config, XDG_DATA_HOME: fixture.data, YOLO_TEST_MODE: 'rootless', YOLO_TEST_ROOTFUL: '0', YOLO_PROXY_CHILD: 'cleanup-unknown', ...(scenario.primary ? { YOLO_PROXY_PRIMARY: 'generic' } : {}) };
     await writeFile(join(root, 'docker'), `#!/bin/sh\nexec ${fixture.proxy} \"$@\"`, { mode: 0o755 }); await writeFile(fixture.log, '');
     const run = spawnSync(cli, ['--json', '-t', '0.1', `packed cleanup ${scenario.name}`], { cwd: fixture.workspace, env: modeEnv, encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 });
     assert.equal(run.error, undefined, run.error?.message); assert.notEqual(run.status, 0);
-    const lines = run.stdout.trim().split(/\r?\n/).filter(Boolean); assert.equal(lines.length, 1, `stdout=${run.stdout} stderr=${run.stderr}`); const receipt = JSON.parse(lines[0]);
-    assert.equal(receipt.version, 1); assert.equal(receipt.status, 'cleanup_unknown'); assert.equal(receipt.effect_state, 'uncertain');
+    const lines = run.stdout.trim().split(/\r?\n/).filter(Boolean); assert.equal(lines.length, 1, `status=${run.status} signal=${run.signal} stdout=${JSON.stringify(run.stdout)} stderr=${run.stderr}`); const receipt = JSON.parse(lines[0]);
+    assert.equal(receipt.version, 1, `status=${run.status} signal=${run.signal} stdout=${JSON.stringify(run.stdout)} stderr=${run.stderr}`); assert.equal(receipt.status, 'cleanup_unknown'); assert.equal(receipt.effect_state, 'uncertain');
     assert.equal(await readFile(join(fixture.workspace, '.yolo', 'last-receipt.json'), 'utf8'), `${JSON.stringify(receipt)}\n`);
     if (scenario.prior) { assert.equal(receipt.run_id, scenario.prior.run_id); assert.equal(receipt.result, scenario.prior.result); assert.deepEqual(receipt.evidence, scenario.prior.evidence); assert.deepEqual(receipt.artifacts, scenario.prior.artifacts); assert.deepEqual(receipt.cleanup_history, scenario.prior.cleanup_history); assert.deepEqual(receipt.errors.slice(0, scenario.prior.errors.length), scenario.prior.errors); }
     else { assert.equal(receipt.run_id, null); assert.equal(receipt.result, null); assert.deepEqual(receipt.evidence, []); assert.deepEqual(receipt.artifacts, []); assert.deepEqual(receipt.cleanup_history, []); }
     assert.ok(receipt.errors.length >= (scenario.primary ? 2 : scenario.prior ? scenario.prior.errors.length + 1 : 2)); assert.match(receipt.errors.at(-1), /cleanup_unknown/); if (scenario.primary) assert.match(receipt.errors[0], /primary fixture failure/);
     const records = await jsonl(fixture.log); const create = records.find(r => r.argv[0] === 'create' && r.argv.includes('/app/src/container-runtime.mjs')); assert.ok(create); createdId = create.stdout;
+    const selected = records.find(r => r.argv[0] === 'image'); assert.deepEqual(selected.env, { ...Object.fromEntries(dockerSelectorKeys.map(key => [key, originalDockerSelectors[key] ?? null])), DOCKER_HOST: originalDockerSelectors.DOCKER_HOST ?? fixture.endpoint, PATH: `${root}:${process.env.PATH}` });
     assert.ok(records.some(r => r.argv[0] === 'rm' && r.events.some(event => event.type === 'cleanup-hang')));
   } finally {
     if (createdId) try { docker('rm', '--force', createdId); } catch {}

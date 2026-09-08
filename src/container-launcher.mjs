@@ -201,17 +201,21 @@ export async function reconcileVolume(command, name, label, spawn, { deadline } 
   if (!Number.isFinite(deadline)) throw new TypeError('volume reconciliation requires one cleanup deadline');
   const history = [];
   let absentSince = null;
+  let retryRemoval = false;
   while (Date.now() < deadline) {
-    let operationName = 'inspect';
+    let operationName = retryRemoval ? 'remove' : 'inspect';
     const attempt = { at: Date.now(), name, action: 'attempt', operation: operationName };
     history.push(Object.freeze({ ...attempt }));
     try {
-      await inspectOwnedVolume(command, name, label, spawn, { deadline });
-      absentSince = null;
-      operationName = 'remove';
-      history.push(Object.freeze({ at: Date.now(), name, action: 'attempt', operation: operationName }));
+      if (!retryRemoval) {
+        await inspectOwnedVolume(command, name, label, spawn, { deadline });
+        absentSince = null;
+        operationName = 'remove';
+        history.push(Object.freeze({ at: Date.now(), name, action: 'attempt', operation: operationName }));
+      }
       await operation(command, ['volume', 'rm', name], spawn, { deadline, cleanupDeadline: deadline }).promise;
       history.push(Object.freeze({ at: Date.now(), name, action: 'remove_success', operation: 'remove' }));
+      retryRemoval = false;
     } catch (error) {
       const output = dockerErrorOutput(error);
       const classification = classifyCleanupError(error, output);
@@ -221,10 +225,12 @@ export async function reconcileVolume(command, name, label, spawn, { deadline } 
         throw withCleanupHistory(error, history);
       }
       if (classification === 'not-found') {
+        retryRemoval = false;
         absentSince ??= Date.now();
         history.push(Object.freeze({ at: Date.now(), name, action: 'absence', classification }));
       } else {
         absentSince = null;
+        retryRemoval = operationName === 'remove';
         history.push(Object.freeze({ at: Date.now(), name, action: 'retry', classification }));
       }
       if (absentSince !== null && Date.now() - absentSince >= CLEANUP_STABLE_ABSENCE_MS) {

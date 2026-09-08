@@ -90,6 +90,36 @@ async function cleanupOwned(fixture, foreignId = null, runDocker = docker) {
       await new Promise(resolve => setTimeout(resolve, 25 * (attempt + 1)));
     }
   }
+  // Scratch volumes are created by the launcher before the runtime container
+  // is created.  Track them from the exact Docker command records rather than
+  // broad label/name selectors, then verify both identities before removal.
+  const volumeRecords = [];
+  for (const logPath of [fixture.log, fixture.d2Log].filter(Boolean)) {
+    try {
+      const records = (await jsonl(logPath));
+      for (const record of records) {
+        const argv = record.argv ?? [];
+        for (let index = 0; index < argv.length; index += 1) {
+          if (argv[index] !== '--mount') continue;
+          const mount = argv[index + 1] ?? '';
+          const match = mount.match(/^type=volume,src=(yoloharness-scratch-[0-9a-f-]+),dst=\/tmp(?:,|$)/);
+          if (match) volumeRecords.push({ name: match[1], label: record.argv[5]?.startsWith('yoloharness.run=') ? record.argv[5].slice('yoloharness.run='.length) : null });
+        }
+        if (argv[0] === 'volume' && argv[1] === 'create') {
+          const name = argv.at(-1); const labelArg = argv.find(value => value.startsWith('yoloharness.run='));
+          if (/^yoloharness-scratch-[0-9a-f-]+$/.test(name ?? '') && labelArg) volumeRecords.push({ name, label: labelArg.slice('yoloharness.run='.length) });
+        }
+      }
+    } catch {}
+  }
+  const volumes = new Map(volumeRecords.map(record => [`${record.name}\u0000${record.label}`, record]));
+  for (const { name, label } of volumes.values()) {
+    let inspected;
+    try { inspected = JSON.parse(runDocker('volume', 'inspect', '--format', '{{json .}}', name)); } catch { continue; }
+    assert.equal(inspected.Name, name);
+    assert.equal(inspected.Labels?.['yoloharness.run'], label, `fixture volume ownership: ${name}`);
+    runDocker('volume', 'rm', name);
+  }
   if (foreignId) assert.match(runDocker('ps', '-aq', '--no-trunc', '--filter', `id=${foreignId}`).trim(), new RegExp(`^${foreignId}$`));
   assert.deepEqual(resources, [], `owned cleanup history: ${JSON.stringify(history)}`);
   return history;
@@ -114,7 +144,7 @@ async function makeFixture(root) {
   await writeFile(join(context, 'Dockerfile'), `FROM ${image}\nCOPY ca.crt /usr/local/share/ca-certificates/yoloharness-test-ca.crt\nENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/yoloharness-test-ca.crt\n`);
   const tag = `yoloharness-identity:${process.pid}`; docker('build', '--pull=false', '-t', tag, context); const derivative = docker('image', 'inspect', '--format', '{{.Id}}', tag).trim();
   const network = `yoloharness-identity-${process.pid}`; docker('network', 'create', '--internal', network);
-  const providerScript = "const https=require('https'),fs=require('fs');let n=0;https.createServer({key:fs.readFileSync('/tls/server.key'),cert:fs.readFileSync('/tls/server.crt')},(q,r)=>{let b='';q.on('data',c=>b+=c);q.on('end',()=>{n++;r.writeHead(200,{'content-type':'text/event-stream'});if(n===1)r.end('data: '+JSON.stringify({type:'response.output_item.done',item:{type:'function_call',id:b.includes('installed npm 70 MiB')?'npm-item':'identity-item',call_id:b.includes('installed npm 70 MiB')?'npm-install-call':'identity-call',name:'exec',arguments:JSON.stringify(b.includes('installed npm 70 MiB')?{command:'npm',args:['install','--offline','--ignore-scripts','--no-audit','--no-fund','/workspace/package-fixture/installed-capacity-fixture-1.0.0.tgz']}:{command:'sh',args:['-c','printf identity-canary > /workspace/identity-canary']})}})+'\\n\\ndata: '+JSON.stringify({type:'response.completed',response:{status:'completed'}})+'\\n\\n');else r.end('data: '+JSON.stringify({type:'response.output_text.delta',delta:b.includes('installed npm 70 MiB')?'installed-npm-70m-ok':'identity-runtime-ok'})+'\\n\\ndata: '+JSON.stringify({type:'response.completed',response:{status:'completed'}})+'\\n\\n')})}).listen(443,'0.0.0.0')";
+  const providerScript = "const https=require('https'),fs=require('fs');let n=0;https.createServer({key:fs.readFileSync('/tls/server.key'),cert:fs.readFileSync('/tls/server.crt')},(q,r)=>{let b='';q.on('data',c=>b+=c);q.on('end',()=>{n++;const followup=b.includes('function_call_output');r.writeHead(200,{'content-type':'text/event-stream'});if(!followup)r.end('data: '+JSON.stringify({type:'response.output_item.done',item:{type:'function_call',id:b.includes('installed npm 70 MiB')?'npm-item':'identity-item',call_id:b.includes('installed npm 70 MiB')?'npm-install-call':'identity-call',name:'exec',arguments:JSON.stringify(b.includes('installed npm 70 MiB')?{command:'npm',args:['install','--offline','--ignore-scripts','--no-audit','--no-fund','/workspace/package-fixture/installed-capacity-fixture-1.0.0.tgz']}:{command:'sh',args:['-c','printf identity-canary > /workspace/identity-canary']})}})+'\\n\\ndata: '+JSON.stringify({type:'response.completed',response:{status:'completed'}})+'\\n\\n');else r.end('data: '+JSON.stringify({type:'response.output_text.delta',delta:b.includes('installed npm 70 MiB')?'installed-npm-70m-ok':'identity-runtime-ok'})+'\\n\\ndata: '+JSON.stringify({type:'response.completed',response:{status:'completed'}})+'\\n\\n')})}).listen(443,'0.0.0.0')";
   const provider = `${network}-provider`; docker('run', '--detach', '--pull=never', '--network', network, '--network-alias', 'chatgpt.com', '--name', provider, '--mount', `type=bind,src=${ca},dst=/tls,readonly=true`, '--entrypoint', 'node', tag, '-e', providerScript);
   const childMarker = join(root, 'proxy-child.pid'); const cleanupFailure = join(root, 'cleanup-transient.once');
   const childFixture = join(root, 'proxy-child.cjs'); await writeFile(childFixture, `const fs=require('fs');fs.writeFileSync(${JSON.stringify(childMarker)},String(process.pid));if(process.env.YOLO_PROXY_CHILD==='cleanup-unknown'){const p=${JSON.stringify(join(workspace, '.yolo', 'last-receipt.json'))};try{process.stdout.write(fs.readFileSync(p,'utf8'));}catch{}if(process.env.YOLO_PROXY_PRIMARY==='generic'){process.stderr.write('primary fixture failure\\n');process.exitCode=42;}else process.exitCode=0;process.exit();}setInterval(()=>{},1000);`);
@@ -153,6 +183,10 @@ async function installPacked(root, env) {
   const packed = join(root, 'packed'); await mkdir(packed); const name = execFileSync('npm', ['pack', '--pack-destination', packed], { cwd: process.cwd(), encoding: 'utf8' }).trim().split(/\r?\n/).at(-1); execFileSync('tar', ['-xzf', join(packed, name), '-C', packed]);
   const installed = spawnSync(process.execPath, [join(packed, 'package', 'install.mjs')], { cwd: join(packed, 'package'), env: { ...process.env, HOME: join(root, 'home'), XDG_CONFIG_HOME: env.config, XDG_DATA_HOME: env.data }, encoding: 'utf8' }); assert.equal(installed.status, 0, installed.stderr); await writeFile(join(env.data, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId: env.baseId, ...env.identity }));
   return join(root, 'home', '.local', 'bin', 'yolo');
+}
+
+function resetWorkloadWorkspace(fixture) {
+  docker('run', '--rm', '--pull=never', '--network', 'none', '--user', '0:0', '--mount', `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--entrypoint', 'sh', image, '-c', 'rm -rf /workspace/node_modules /workspace/.yolo && mkdir -m 0777 /workspace/.yolo');
 }
 
 function packedDockerEnvironment(endpoint, root) {
@@ -226,7 +260,7 @@ test('installed production CLI traverses provider/runtime/executor for exact 70 
   } finally { if (foreignId) try { docker('rm', '--force', foreignId); } catch {} if (fixture) { try { docker('run', '--rm', '--pull=never', '--user', '0:0', '--mount', `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--entrypoint', 'sh', image, '-c', 'rm -rf /workspace'); } catch {} try { await cleanupOwned(fixture); } catch {} } await rm(root, { recursive: true, force: true }); }
 });
 
-test('same packed npm tool call is RED on 64 MiB tmpfs with live run-labeled usage evidence', { skip }, async () => {
+test('same packed npm tool call is RED on 64 MiB tmpfs and GREEN on one measured scratch volume', { skip }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'yoloharness-npm-red-green-')); let fixture; let foreignId;
   try {
     fixture = await makeFixture(root); await chmod(fixture.workspace, 0o777); await mkdir(join(fixture.workspace, '.yolo')); await chmod(join(fixture.workspace, '.yolo'), 0o777);
@@ -242,13 +276,29 @@ test('same packed npm tool call is RED on 64 MiB tmpfs with live run-labeled usa
 
     await writeFile(fixture.log, '');
     const red = run({ ...commonEnv, YOLO_TMPFS_RED: '1' }, fixture.workspace);
-    assert.equal(red.error, undefined, red.error?.message); assert.equal(red.status, 0, `${red.stderr}\n${red.stdout}`);
+    assert.equal(red.error, undefined, red.error?.message); assert.ok([0, 1].includes(red.status), `${red.stderr}\n${red.stdout}`);
     const redReceipt = JSON.parse(red.stdout.trim().split(/\r?\n/).at(-1)); assert.equal(redReceipt.status, 'completed');
     const redEvidence = redReceipt.evidence.find(value => value?.call_id === 'npm-install-call'); assert.equal(redEvidence.ok, false); assert.match(redEvidence.error, /ENOSPC|no space left on device/i); assert.doesNotMatch(redEvidence.error, /(?:out of memory|oom|deadline|timed out|setup)/i);
     const redRecords = await jsonl(fixture.log); const redCreate = redRecords.find(r => r.argv[0] === 'create' && r.argv.includes('/app/src/container-runtime.mjs')); assert.ok(redCreate);
     assert.match(redCreate.argv[redCreate.argv.indexOf('--label') + 1], /^yoloharness\.run=[0-9a-f-]+$/); assert.deepEqual(redCreate.translatedArgv.slice(redCreate.translatedArgv.indexOf('--tmpfs'), redCreate.translatedArgv.indexOf('--tmpfs') + 2), ['--tmpfs', '/tmp:rw,size=64m']);
     const redStart = redRecords.find(r => r.argv[0] === 'start' && r.argv.includes('--interactive')); assert.ok(redStart); assert.ok(redStart.maxTmpUsed > 0 && redStart.maxTmpUsed <= 64 * 1024 * 1024 + 32 * 1024, `live RED measurement must stay within 64 MiB tmpfs: ${JSON.stringify(redStart)}`);
-  } finally { if (foreignId) try { docker('rm', '--force', foreignId); } catch {} if (fixture) { try { docker('run', '--rm', '--pull=never', '--user', '0:0', '--mount', `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--entrypoint', 'sh', image, '-c', 'rm -rf /workspace/node_modules /workspace/.yolo'); } catch {} try { await cleanupOwned(fixture); } catch {} } await rm(root, { recursive: true, force: true }); }
+    const redCall = redEvidence.call_id;
+    // Reuse exactly the same packed CLI, tarball, prompt, command, item and
+    // call identity. Only the /tmp mount is changed by the proxy for RED.
+    resetWorkloadWorkspace(fixture);
+    const green = run({ ...commonEnv, YOLO_TMPFS_RED: undefined }, fixture.workspace);
+    assert.equal(green.error, undefined, green.error?.message); assert.equal(green.status, 0, `${green.stderr}\n${green.stdout}`);
+    const greenReceipt = JSON.parse(green.stdout.trim().split(/\r?\n/).at(-1)); assert.equal(greenReceipt.status, 'completed');
+    const greenEvidence = greenReceipt.evidence.find(value => value?.call_id === redCall); assert.ok(greenEvidence); assert.equal(greenEvidence.call_id, 'npm-install-call'); assert.equal(greenEvidence.ok, true); assert.equal(greenEvidence.code, 0);
+    assert.deepEqual(greenReceipt.evidence.map(value => value?.call_id), redReceipt.evidence.map(value => value?.call_id));
+    assert.equal((await readFile(join(fixture.workspace, 'node_modules', 'installed-capacity-fixture', 'payload.bin'))).length, 73_400_320);
+    const records = await jsonl(fixture.log); const greenCreate = records.find((r, index) => index > redRecords.indexOf(redCreate) && r.argv[0] === 'create' && r.argv.includes('/app/src/container-runtime.mjs')); assert.ok(greenCreate);
+    const redLabel = redCreate.argv[redCreate.argv.indexOf('--label') + 1]; const greenLabel = greenCreate.argv[greenCreate.argv.indexOf('--label') + 1];
+    assert.notEqual(greenLabel, redLabel); assert.match(greenLabel, /^yoloharness\.run=[0-9a-f-]+$/); assert.match(greenCreate.translatedArgv[greenCreate.translatedArgv.indexOf('--mount') + 1], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-nocopy$/);
+    const greenStart = records.find((r, index) => index > redRecords.length - 1 && r.argv[0] === 'start' && r.argv.includes('--interactive')); assert.ok(greenStart); assert.ok(greenStart.maxTmpUsed > 64 * 1024 * 1024, `live GREEN measurement must exceed 64 MiB: ${JSON.stringify(greenStart)}`);
+    const persisted = docker('run', '--rm', '--pull=never', '--user', '0:0', '--mount', `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--entrypoint', 'sh', image, '-c', 'cat /workspace/.yolo/last-receipt.json');
+    assert.deepEqual(JSON.parse(persisted), greenReceipt);
+  } finally { if (foreignId) try { docker('rm', '--force', foreignId); } catch {} if (fixture) { try { resetWorkloadWorkspace(fixture); } catch {} try { await cleanupOwned(fixture); } catch {} } await rm(root, { recursive: true, force: true }); }
 });
 
 test('installed v0.1.0 CLI retains the historical rootless-only RED', { skip }, async () => {

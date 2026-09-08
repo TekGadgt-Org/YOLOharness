@@ -78,3 +78,44 @@ test('volume reconciliation records deadline exhaustion as typed deadline histor
     return true;
   });
 });
+
+test('volume reconciliation retries a busy remove and records immutable retry history', async () => {
+  const mock = dockerMock({ inspect: n => n === 1 ? owned() : absent(), remove: n => n === 1 ? { output: '', error: 'volume is busy', code: 1 } : { output: '', code: 0 } });
+  const history = await reconcileVolume('docker', id, label, mock.spawn, { deadline: Date.now() + 1800 });
+  assert.ok(history.some(event => event.action === 'retry' && event.classification === 'busy'));
+  assert.ok(history.some(event => event.action === 'remove_success'));
+  assert.equal(history.at(-1).action, 'stable_absence');
+  assert.equal(mock.counts().remove, 2);
+  assert.ok(history.every(Object.isFrozen));
+});
+
+test('volume reconciliation waits through delayed same-identity appearance and removal', async () => {
+  const mock = dockerMock({ inspect: n => n < 3 ? absent() : n === 3 ? owned() : absent() });
+  const history = await reconcileVolume('docker', id, label, mock.spawn, { deadline: Date.now() + 1800 });
+  assert.ok(history.some(event => event.action === 'absence'));
+  assert.ok(history.some(event => event.action === 'remove_success'));
+  assert.equal(history.at(-1).action, 'stable_absence');
+});
+
+test('volume reconciliation distinguishes exact-name wrong-label from same-prefix wrong-name', async () => {
+  for (const inspected of [
+    { Name: id, Labels: { 'yoloharness.run': 'other' } },
+    { Name: `${id}-foreign`, Labels: { 'yoloharness.run': label } },
+  ]) {
+    const mock = dockerMock({ inspect: () => ({ output: JSON.stringify(inspected) }) });
+    await assert.rejects(reconcileVolume('docker', id, label, mock.spawn, { deadline: Date.now() + 1000 }), error => {
+      assert.equal(error.code, 'cleanup_ownership');
+      assert.equal(error.cleanupHistory.at(-1).classification, 'ownership');
+      return true;
+    });
+    assert.equal(mock.counts().remove, 0);
+  }
+});
+
+test('volume reconciliation preserves direct normal control and repeated absence events', async () => {
+  const mock = dockerMock({ inspect: () => absent() });
+  const history = await reconcileVolume('docker', id, label, mock.spawn, { deadline: Date.now() + 1800 });
+  assert.ok(history.filter(event => event.action === 'absence').length >= 2);
+  assert.equal(history.at(-1).action, 'stable_absence');
+  assert.equal(mock.counts().remove, 0);
+});

@@ -396,6 +396,8 @@ test('rootful consumer create argv carries selected ownership without duplicate 
   const workspace = await mkdtemp('/tmp/yolo-rootful-argv-');
   const id = '0123456789abcdef'.repeat(4);
   let createArgs;
+  let helperArgs;
+  let helperCleaned = false;
   try {
     const spawn = (_command, args) => {
       if (args[0] === 'volume') return volumeMock(args);
@@ -403,11 +405,13 @@ test('rootful consumer create argv carries selected ownership without duplicate 
       const result = { stdout, stderr, stdin: { end() {} }, kill() { setImmediate(() => listeners.get('close')?.(137)); }, once(event, fn) { listeners.set(event, fn); } };
       const close = code => setImmediate(() => listeners.get('close')?.(code));
       if (args[0] === 'info') { setImmediate(() => stdout.emit('data', JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=seccomp,profile=builtin'] }))); close(0); }
+      else if (args[0] === 'create' && args.includes('--cap-add=CHOWN')) { helperArgs = args; setImmediate(() => stdout.emit('data', id)); close(0); }
       else if (args[0] === 'create') { createArgs = args; setImmediate(() => stdout.emit('data', id)); close(0); }
-      else if (args[0] === 'inspect' && !createArgs?._cleaned) { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: id, Name: `/${createArgs[createArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': createArgs[createArgs.indexOf('--label') + 1].split('=').slice(1).join('=') } } }))); close(0); }
-      else if (args[0] === 'start') { setImmediate(() => stdout.emit('data', '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n')); close(0); }
+      else if (args[0] === 'inspect' && !createArgs && !helperCleaned && args.at(-1) === id) { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: id, Name: `/${helperArgs[helperArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': helperArgs[helperArgs.indexOf('--label') + 1].split('=').slice(1).join('=') } } }))); close(0); }
+      else if (args[0] === 'inspect' && createArgs && !createArgs._cleaned) { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: id, Name: `/${createArgs[createArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': createArgs[createArgs.indexOf('--label') + 1].split('=').slice(1).join('=') } } }))); close(0); }
+      else if (args[0] === 'start') { setImmediate(() => stdout.emit('data', createArgs ? '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n' : '{"version":1,"uid":1234,"gid":2345,"writable":true}\n')); close(0); }
       else if (args[0] === 'stop' || args[0] === 'kill') close(0);
-      else if (args[0] === 'rm') { createArgs._cleaned = true; close(0); }
+      else if (args[0] === 'rm') { if (createArgs) createArgs._cleaned = true; else helperCleaned = true; close(0); }
       else if (args[0] === 'inspect') { setImmediate(() => stderr.emit('data', `Error: No such container: ${id}`)); close(1); }
       else throw new Error(`unexpected Docker operation: ${args[0]}`);
       return result;
@@ -417,6 +421,13 @@ test('rootful consumer create argv carries selected ownership without duplicate 
     assert.equal(record.result, 'ok');
     const groups = createArgs.filter((value, index) => value === '--group-add' ? createArgs[index + 1] : null).filter(Boolean);
     assert.equal(groups.includes(String(process.getgid())), false);
+    if (process.getuid() !== 0) {
+      assert.equal(helperArgs[helperArgs.indexOf('--network') + 1], 'none');
+      assert.equal(helperArgs.includes('--cap-drop=ALL'), true);
+      assert.equal(helperArgs.includes('--cap-add=CHOWN'), true);
+      assert.equal(helperArgs.includes('--mount') && helperArgs.filter(value => value === '--mount').length, 1);
+      assert.equal(helperArgs.includes('/workspace'), false);
+    }
     assert.match(createArgs[createArgs.indexOf('--mount') + 1], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-nocopy$/);
     assert.match(createArgs[createArgs.indexOf('--tmpfs') + 1], new RegExp(`size=${RUNTIME_RESOURCE_POLICY.homeTmpfs}.*uid=${process.getuid()},gid=${process.getgid()},mode=700`));
   } finally { await rm(workspace, { recursive: true, force: true }); }

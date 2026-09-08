@@ -53,12 +53,16 @@ export class ContainerLauncher {
     let reason;
     let timer;
     let cleanupDeadline;
+    let abortStop;
     const abortListener = () => abort(signal.reason);
     const abort = (abortReason = signal?.reason ?? Object.assign(new Error('container interrupted'), { code: 'interrupted' })) => {
       if (reason) return;
       reason = abortReason;
       cleanupDeadline ??= Date.now() + CLEANUP_TOTAL_MS;
       creating?.kill('SIGKILL');
+      if (id && owned) {
+        abortStop = operation(this.command, ['stop', '--time', '0', id], this.spawn, { deadline: cleanupDeadline }).promise.catch(() => undefined);
+      }
     };
     timer = setTimeout(() => abort(Object.assign(new Error('container deadline exceeded'), { code: 'deadline' })), remaining());
     signal?.addEventListener('abort', abortListener, { once: true });
@@ -108,6 +112,7 @@ export class ContainerLauncher {
     let cleanupError;
       cleanupDeadline ??= Date.now() + CLEANUP_TOTAL_MS;
       try {
+        if (abortStop) await abortStop;
         if (id && owned) await cleanup(this.command, id, name, label, this.spawn, undefined, { deadline: cleanupDeadline });
         else if (createAttempted) await reconcileUnknownCreate(this.command, name, label, this.spawn, undefined, { deadline: cleanupDeadline });
       } catch (error) { cleanupError = error; }
@@ -324,9 +329,10 @@ function attachedOperation(child, input, signal) {
     let out = ''; let err = ''; let done = false; let overflow = false;
     let hardKill;
     const abort = () => {
-      // ContainerLauncher starts an owned `docker stop` concurrently. Keep the
-      // attach pipe alive long enough to receive the runtime's SIGTERM receipt;
-      // force-close only if the daemon or a descendant remains stuck.
+      // Stop the attach client immediately so the launcher can begin exact
+      // daemon-side stop/reap. The cleanup path still sends SIGTERM to the
+      // owned container and retains any partial receipt emitted before close.
+      child.kill('SIGTERM');
       hardKill = setTimeout(() => { child.kill('SIGKILL'); finish(resolve, { code: null, out, err, overflow }); }, 5500);
     };
     const finish = (fn, value) => { if (done) return; done = true; clearTimeout(hardKill); signal?.removeEventListener('abort', abort); fn(value); };

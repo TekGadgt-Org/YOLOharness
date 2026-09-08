@@ -2,7 +2,7 @@
 import { AuthClient, AuthStore } from './auth.mjs';
 import { ConfigStore, configPath, configRoot, validateModel, imageMetadataPath } from './config.mjs';
 import { ContainerLauncher } from './container-launcher.mjs';
-import { readFile, mkdir, cp, rm, open, rename, readdir, access } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, cp, rm, open, rename, readdir, access } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { mkdtemp } from 'node:fs/promises';
@@ -81,15 +81,55 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
   } catch (error) {
     const message = error instanceof MissingProviderError ? error.message : error.message;
     if (hasCleanupUnknown(error)) {
-      const prior = error.receipt && typeof error.receipt === 'object' ? error.receipt : {};
-      const cleanup = cleanupErrorIn(error);
-      const errors = [...(Array.isArray(prior.errors) ? prior.errors : []), ...(message ? [message] : []), ...(cleanup && cleanup !== error && cleanup.message ? [cleanup.message] : [])];
-      const receipt = { version: 1, run_id: prior.run_id ?? null, status: 'cleanup_unknown', effect_state: 'uncertain', result: prior.result ?? error.partialResult ?? null, evidence: Array.isArray(prior.evidence) ? prior.evidence : [], artifacts: Array.isArray(prior.artifacts) ? prior.artifacts : [], errors, cleanup_history: cleanup?.cleanupHistory ?? prior.cleanup_history ?? [] };
+      const receipt = await buildCleanupUnknownReceipt(error, process.cwd());
       io.stdout.write(`${JSON.stringify(receipt)}\n`);
       return 1;
     }
     io.stderr.write(`${message}\n`); return 1;
   }
+}
+
+export async function buildCleanupUnknownReceipt(error, workspace = process.cwd()) {
+  const prior = bestReceiptIn(error) ?? await readWorkspaceReceipt(workspace) ?? {};
+  const cleanup = cleanupErrorIn(error);
+  const errors = [...(Array.isArray(prior.errors) ? prior.errors : [])];
+  for (const value of [error?.message, cleanup && cleanup !== error ? cleanup.message : null]) {
+    if (value && !errors.includes(value)) errors.push(value);
+  }
+  const receipt = {
+    version: 1,
+    run_id: prior.run_id ?? null,
+    status: 'cleanup_unknown',
+    effect_state: 'uncertain',
+    result: prior.result ?? error?.partialResult ?? null,
+    evidence: Array.isArray(prior.evidence) ? prior.evidence : (Array.isArray(error?.partialEvidence) ? error.partialEvidence : []),
+    artifacts: Array.isArray(prior.artifacts) ? prior.artifacts : (Array.isArray(error?.partialArtifacts) ? error.partialArtifacts : []),
+    errors,
+    cleanup_history: cleanup?.cleanupHistory ?? prior.cleanup_history ?? [],
+  };
+  try {
+    await mkdir(join(workspace, '.yolo'), { recursive: true, mode: 0o700 });
+    await writeFile(join(workspace, '.yolo', 'last-receipt.json'), `${JSON.stringify(receipt)}\n`, { mode: 0o600 });
+  } catch {}
+  return receipt;
+}
+
+function bestReceiptIn(value, seen = new Set()) {
+  if (!value || typeof value !== 'object' || seen.has(value)) return null;
+  seen.add(value);
+  if (value.version === 1 && (value.run_id !== undefined || value.result !== undefined) && Array.isArray(value.evidence) && Array.isArray(value.artifacts)) return value;
+  for (const nested of [value.receipt, value.partialReceipt, value.cause, value.cleanupError, ...(value.errors ?? []), ...(value.aggregateErrors ?? [])]) {
+    const found = bestReceiptIn(nested, seen);
+    if (found) return found;
+  }
+  return null;
+}
+
+async function readWorkspaceReceipt(workspace) {
+  try {
+    const value = JSON.parse(await readFile(join(workspace, '.yolo', 'last-receipt.json'), 'utf8'));
+    return value?.version === 1 ? value : null;
+  } catch { return null; }
 }
 
 function cleanupErrorIn(error, seen = new Set()) {

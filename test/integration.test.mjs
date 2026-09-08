@@ -15,7 +15,7 @@ import { configuredProvider } from '../src/cli.mjs';
 import { runOnce, EXEC_TOOL } from '../src/runtime.mjs';
 import { ConfiguredProvider } from '../src/provider.mjs';
 import { ConfigStore, validateModel, ConfigError, configPath, configRoot } from '../src/config.mjs';
-import { main, parseArgs, resolveModel, runtimeCredentials, CODEX_CLIENT_ID } from '../src/cli.mjs';
+import { main, parseArgs, resolveModel, runtimeCredentials, CODEX_CLIENT_ID, buildCleanupUnknownReceipt } from '../src/cli.mjs';
 
 const json = (res, value, status=200) => { res.writeHead(status, {'content-type':'application/json'}); res.end(JSON.stringify(value)); };
 function server(handler) { return new Promise(async resolve => { const s=http.createServer(handler); await new Promise(r=>s.listen(0,'127.0.0.1',r)); resolve({s, base:`http://127.0.0.1:${s.address().port}`}); }); }
@@ -48,6 +48,34 @@ test('legacy credentials without clientId refresh with the built-in ID and exist
 
 test('shipped argument parser rejects the host-runtime fixture option', () => {
   assert.throws(() => parseArgs(['--fixture', 'offline']), /unknown option|fixture/);
+});
+
+test('cleanup_unknown receipt preserves the best prior state and ordered errors', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-cleanup-unknown-'));
+  try {
+    const primary = Object.assign(new Error('primary failure'), {
+      receipt: { version: 1, run_id: 'run-preserved', status: 'completed', result: 'partial result', evidence: [{ call_id: 'call-1' }], artifacts: ['artifact.txt'], errors: ['primary detail'] },
+      cleanupError: Object.assign(new Error('cleanup failed'), { code: 'cleanup_unknown', cleanupHistory: [{ action: 'inspect', error: 'cleanup_timeout' }] }),
+    });
+    const receipt = await buildCleanupUnknownReceipt(primary, dir);
+    assert.deepEqual(receipt, {
+      version: 1, run_id: 'run-preserved', status: 'cleanup_unknown', effect_state: 'uncertain', result: 'partial result',
+      evidence: [{ call_id: 'call-1' }], artifacts: ['artifact.txt'], errors: ['primary detail', 'primary failure', 'cleanup failed'],
+      cleanup_history: [{ action: 'inspect', error: 'cleanup_timeout' }],
+    });
+    assert.deepEqual(JSON.parse(await readFile(join(dir, '.yolo', 'last-receipt.json'), 'utf8')), receipt);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('cleanup_unknown receipt without prior state remains explicit and non-success', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-cleanup-empty-'));
+  try {
+    const error = Object.assign(new Error('primary failure'), { cleanupError: Object.assign(new Error('cleanup failed'), { code: 'cleanup_unknown' }) });
+    const receipt = await buildCleanupUnknownReceipt(error, dir);
+    assert.equal(receipt.status, 'cleanup_unknown'); assert.equal(receipt.effect_state, 'uncertain');
+    assert.equal(receipt.run_id, null); assert.deepEqual(receipt.evidence, []); assert.deepEqual(receipt.artifacts, []);
+    assert.deepEqual(JSON.parse(await readFile(join(dir, '.yolo', 'last-receipt.json'), 'utf8')), receipt);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test('configured provider preserves streamed partial text when the response aborts', async () => {

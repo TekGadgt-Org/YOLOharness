@@ -41,6 +41,12 @@ const exactHistory = (history, expected) => {
   assert.equal(history.every(event => Object.isFrozen(event)), true);
 };
 
+test('exactHistory rejects an unexpected event field', () => {
+  assert.throws(() => exactHistory([
+    Object.freeze({ name: id, action: 'absence', classification: 'not-found', unexpected: true }),
+  ], [{ name: id, action: 'absence', classification: 'not-found' }]));
+});
+
  test('volume reconciliation retries transient inspect and then reaps before stable absence', async () => {
   const clock = deterministicClock();
   const mock = dockerMock({ inspect: n => n === 1 ? { output: '', error: 'temporary transport failure', code: 1 } : n === 2 ? owned() : absent() });
@@ -104,31 +110,69 @@ test('volume reconciliation classifies parse permission exit and transport as te
 });
 
 test('volume reconciliation records deadline exhaustion as typed deadline history', async () => {
+  const clock = deterministicClock();
   const mock = dockerMock({ inspect: () => owned(), remove: () => ({ output: '', error: 'volume is busy', code: 1 }) });
-  await assert.rejects(reconcileVolume('docker', id, label, mock.spawn, { deadline: Date.now() + 180 }), error => {
+  await assert.rejects(reconcileVolume('docker', id, label, mock.spawn, { deadline: clock.now() + 180, now: clock.now, sleep: clock.sleep }), error => {
     assert.equal(error.code, 'cleanup_unknown');
     assert.equal(error.cleanupHistory.at(-1).action, 'deadline');
     assert.equal(error.cleanupHistory.at(-1).classification, 'timeout');
+    exactHistory(error.cleanupHistory, [
+      { name: id, action: 'attempt', operation: 'inspect' },
+      { name: id, action: 'attempt', operation: 'remove' },
+      { name: id, action: 'error', operation: 'remove', classification: 'busy', error: 'docker operation failed (1): volume is busy' },
+      { name: id, action: 'retry', classification: 'busy' },
+      ...Array.from({ length: 3 }, () => [
+        { name: id, action: 'attempt', operation: 'remove' },
+        { name: id, action: 'error', operation: 'remove', classification: 'busy', error: 'docker operation failed (1): volume is busy' },
+        { name: id, action: 'retry', classification: 'busy' },
+      ]).flat(),
+      { name: id, action: 'deadline', classification: 'timeout' },
+    ]);
     return true;
   });
 });
 
 test('volume reconciliation retries a busy remove and records immutable retry history', async () => {
+  const clock = deterministicClock();
   const mock = dockerMock({ inspect: n => n === 1 ? owned() : absent(), remove: n => n === 1 ? { output: '', error: 'volume is busy', code: 1 } : { output: '', code: 0 } });
-  const history = await reconcileVolume('docker', id, label, mock.spawn, { deadline: Date.now() + 1800 });
-  assert.ok(history.some(event => event.action === 'retry' && event.classification === 'busy'));
-  assert.ok(history.some(event => event.action === 'remove_success'));
-  assert.equal(history.at(-1).action, 'stable_absence');
+  const history = await reconcileVolume('docker', id, label, mock.spawn, { deadline: clock.now() + 1800, now: clock.now, sleep: clock.sleep });
+  exactHistory(history, [
+    { name: id, action: 'attempt', operation: 'inspect' },
+    { name: id, action: 'attempt', operation: 'remove' },
+    { name: id, action: 'error', operation: 'remove', classification: 'busy', error: 'docker operation failed (1): volume is busy' },
+    { name: id, action: 'retry', classification: 'busy' },
+    { name: id, action: 'attempt', operation: 'remove' },
+    { name: id, action: 'remove_success', operation: 'remove' },
+    ...Array.from({ length: 11 }, () => [
+      { name: id, action: 'attempt', operation: 'inspect' },
+      { name: id, action: 'error', operation: 'inspect', classification: 'not-found', error: 'scratch volume inspect failed' },
+      { name: id, action: 'absence', classification: 'not-found' },
+    ]).flat(),
+    { name: id, action: 'stable_absence', classification: 'not-found' },
+  ]);
   assert.equal(mock.counts().remove, 2);
-  assert.ok(history.every(Object.isFrozen));
 });
 
 test('volume reconciliation waits through delayed same-identity appearance and removal', async () => {
+  const clock = deterministicClock();
   const mock = dockerMock({ inspect: n => n < 3 ? absent() : n === 3 ? owned() : absent() });
-  const history = await reconcileVolume('docker', id, label, mock.spawn, { deadline: Date.now() + 1800 });
-  assert.ok(history.some(event => event.action === 'absence'));
-  assert.ok(history.some(event => event.action === 'remove_success'));
-  assert.equal(history.at(-1).action, 'stable_absence');
+  const history = await reconcileVolume('docker', id, label, mock.spawn, { deadline: clock.now() + 1800, now: clock.now, sleep: clock.sleep });
+  exactHistory(history, [
+    ...Array.from({ length: 2 }, () => [
+      { name: id, action: 'attempt', operation: 'inspect' },
+      { name: id, action: 'error', operation: 'inspect', classification: 'not-found', error: 'scratch volume inspect failed' },
+      { name: id, action: 'absence', classification: 'not-found' },
+    ]).flat(),
+    { name: id, action: 'attempt', operation: 'inspect' },
+    { name: id, action: 'attempt', operation: 'remove' },
+    { name: id, action: 'remove_success', operation: 'remove' },
+    ...Array.from({ length: 11 }, () => [
+      { name: id, action: 'attempt', operation: 'inspect' },
+      { name: id, action: 'error', operation: 'inspect', classification: 'not-found', error: 'scratch volume inspect failed' },
+      { name: id, action: 'absence', classification: 'not-found' },
+    ]).flat(),
+    { name: id, action: 'stable_absence', classification: 'not-found' },
+  ]);
 });
 
 test('volume reconciliation distinguishes exact-name wrong-label from same-prefix wrong-name', async () => {
@@ -140,6 +184,11 @@ test('volume reconciliation distinguishes exact-name wrong-label from same-prefi
     await assert.rejects(reconcileVolume('docker', id, label, mock.spawn, { deadline: Date.now() + 1000 }), error => {
       assert.equal(error.code, 'cleanup_ownership');
       assert.equal(error.cleanupHistory.at(-1).classification, 'ownership');
+      exactHistory(error.cleanupHistory, [
+        { name: id, action: 'attempt', operation: 'inspect' },
+        { name: id, action: 'error', operation: 'inspect', classification: 'ownership', error: `scratch volume ownership mismatch (name=${inspected.Name}, label=${inspected.Labels['yoloharness.run']})` },
+        { name: id, action: 'terminal', classification: 'ownership' },
+      ]);
       return true;
     });
     assert.equal(mock.counts().remove, 0);
@@ -147,9 +196,16 @@ test('volume reconciliation distinguishes exact-name wrong-label from same-prefi
 });
 
 test('volume reconciliation preserves direct normal control and repeated absence events', async () => {
+  const clock = deterministicClock();
   const mock = dockerMock({ inspect: () => absent() });
-  const history = await reconcileVolume('docker', id, label, mock.spawn, { deadline: Date.now() + 1800 });
-  assert.ok(history.filter(event => event.action === 'absence').length >= 2);
-  assert.equal(history.at(-1).action, 'stable_absence');
+  const history = await reconcileVolume('docker', id, label, mock.spawn, { deadline: clock.now() + 1800, now: clock.now, sleep: clock.sleep });
+  exactHistory(history, [
+    ...Array.from({ length: 11 }, () => [
+      { name: id, action: 'attempt', operation: 'inspect' },
+      { name: id, action: 'error', operation: 'inspect', classification: 'not-found', error: 'scratch volume inspect failed' },
+      { name: id, action: 'absence', classification: 'not-found' },
+    ]).flat(),
+    { name: id, action: 'stable_absence', classification: 'not-found' },
+  ]);
   assert.equal(mock.counts().remove, 0);
 });

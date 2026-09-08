@@ -80,6 +80,12 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     return record.status === 'completed' ? 0 : record.status === 'interrupted' ? 130 : record.status === 'deadline' ? 124 : 1;
   } catch (error) {
     const message = error instanceof MissingProviderError ? error.message : error.message;
+    if (error?.code === 'cleanup_unknown' || /cleanup_unknown/i.test(message ?? '')) {
+      const receipt = { version: 1, run_id: null, status: 'failed', effect_state: 'uncertain', result: null, evidence: [], artifacts: [], errors: [message || 'cleanup_unknown'] };
+      if (args.includes('--json')) io.stdout.write(`${JSON.stringify(receipt)}\n`);
+      else io.stdout.write(`${JSON.stringify(receipt)}\n`);
+      return 1;
+    }
     io.stderr.write(`${message}\n`); return 1;
   }
 }

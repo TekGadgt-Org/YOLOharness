@@ -397,6 +397,7 @@ test('rootful consumer create argv carries selected ownership without duplicate 
   const id = '0123456789abcdef'.repeat(4);
   let createArgs;
   let helperArgs;
+  let initHelperArgs;
   let helperCleaned = false;
   try {
     const spawn = (_command, args) => {
@@ -405,11 +406,11 @@ test('rootful consumer create argv carries selected ownership without duplicate 
       const result = { stdout, stderr, stdin: { end() {} }, kill() { setImmediate(() => listeners.get('close')?.(137)); }, once(event, fn) { listeners.set(event, fn); } };
       const close = code => setImmediate(() => listeners.get('close')?.(code));
       if (args[0] === 'info') { setImmediate(() => stdout.emit('data', JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=seccomp,profile=builtin'] }))); close(0); }
-      else if (args[0] === 'create' && args.includes('--cap-add=CHOWN')) { helperArgs = args; setImmediate(() => stdout.emit('data', id)); close(0); }
+      else if (args[0] === 'create' && (args.includes('--cap-add=CHOWN') || args.includes('/app/src/scratch-verify.mjs'))) { helperArgs = args; if (args.includes('--cap-add=CHOWN')) initHelperArgs = args; helperCleaned = false; setImmediate(() => stdout.emit('data', id)); close(0); }
       else if (args[0] === 'create') { createArgs = args; setImmediate(() => stdout.emit('data', id)); close(0); }
-      else if (args[0] === 'inspect' && !createArgs && !helperCleaned && args.at(-1) === id) { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: id, Name: `/${helperArgs[helperArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': helperArgs[helperArgs.indexOf('--label') + 1].split('=').slice(1).join('=') } } }))); close(0); }
+      else if (args[0] === 'inspect' && !createArgs && !helperCleaned && args.at(-1) === id) { const roleLabel = helperArgs[helperArgs.indexOf('--label', helperArgs.indexOf('--label') + 1) + 1]; setImmediate(() => stdout.emit('data', JSON.stringify({ Id: id, Name: `/${helperArgs[helperArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': helperArgs[helperArgs.indexOf('--label') + 1].split('=').slice(1).join('='), 'yoloharness.role': roleLabel.split('=').slice(1).join('=') } } }))); close(0); }
       else if (args[0] === 'inspect' && createArgs && !createArgs._cleaned) { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: id, Name: `/${createArgs[createArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': createArgs[createArgs.indexOf('--label') + 1].split('=').slice(1).join('=') } } }))); close(0); }
-      else if (args[0] === 'start') { setImmediate(() => stdout.emit('data', createArgs ? '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n' : '{"version":1,"uid":1234,"gid":2345,"writable":true}\n')); close(0); }
+      else if (args[0] === 'start') { setImmediate(() => stdout.emit('data', createArgs ? '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n' : helperArgs.includes('/app/src/scratch-init.mjs') ? JSON.stringify({ version: 1, uid: process.getuid(), gid: process.getgid(), mode: 493, ownership: true }) + '\n' : JSON.stringify({ version: 1, uid: process.getuid(), gid: process.getgid(), marker: 'write-read-remove', writable: true, mode: 384 }) + '\n')); close(0); }
       else if (args[0] === 'stop' || args[0] === 'kill') close(0);
       else if (args[0] === 'rm') { if (createArgs) createArgs._cleaned = true; else helperCleaned = true; close(0); }
       else if (args[0] === 'inspect') { setImmediate(() => stderr.emit('data', `Error: No such container: ${id}`)); close(1); }
@@ -424,7 +425,7 @@ test('rootful consumer create argv carries selected ownership without duplicate 
     if (process.getuid() !== 0) {
       assert.equal(helperArgs[helperArgs.indexOf('--network') + 1], 'none');
       assert.equal(helperArgs.includes('--cap-drop=ALL'), true);
-      assert.equal(helperArgs.includes('--cap-add=CHOWN'), true);
+      assert.equal(initHelperArgs.includes('--cap-add=CHOWN'), true);
       assert.equal(helperArgs.includes('--mount') && helperArgs.filter(value => value === '--mount').length, 1);
       assert.equal(helperArgs.includes('/workspace'), false);
     }

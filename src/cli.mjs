@@ -77,11 +77,14 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     const record = await launcher.launch({ prompt: options.prompt, model, deadline: Date.now() + options.minutes * 60_000, accessToken: credentials.accessToken, expiresAt: credentials.expiresAt }, { signal: controller.signal });
     process.removeListener('SIGINT', onInterrupt);
     io.stdout.write(`${options.json ? JSON.stringify(record) : `${record.status} run=${record.run_id ?? 'unknown'} effect_state=${record.effect_state ?? 'unknown'} evidence=${record.evidence?.length ?? 0} artifacts=${record.artifacts?.length ?? 0}: ${record.result ?? record.errors.join('; ')}`}\n`);
-    return record.status === 'completed' ? 0 : record.status === 'interrupted' ? 130 : record.status === 'deadline' ? 124 : 1;
+    return record.status === 'completed' && record.effect_state !== 'uncertain' ? 0 : record.status === 'interrupted' ? 130 : record.status === 'deadline' ? 124 : 1;
   } catch (error) {
     const message = error instanceof MissingProviderError ? error.message : error.message;
     if (error?.code === 'cleanup_unknown' || /cleanup_unknown/i.test(message ?? '')) {
-      const receipt = { version: 1, run_id: null, status: 'failed', effect_state: 'uncertain', result: null, evidence: [], artifacts: [], errors: [message || 'cleanup_unknown'] };
+      const prior = error.receipt && typeof error.receipt === 'object' ? error.receipt : {};
+      const cleanupMessage = error.cleanupError?.message ?? message ?? 'cleanup_unknown';
+      const errors = [...(Array.isArray(prior.errors) ? prior.errors : []), message || 'cleanup_unknown', ...(cleanupMessage !== message ? [cleanupMessage] : [])];
+      const receipt = { version: 1, run_id: prior.run_id ?? null, status: 'cleanup_unknown', effect_state: 'uncertain', result: prior.result ?? error.partialResult ?? null, evidence: Array.isArray(prior.evidence) ? prior.evidence : [], artifacts: Array.isArray(prior.artifacts) ? prior.artifacts : [], errors, cleanup_history: error.cleanupError?.cleanupHistory ?? prior.cleanup_history ?? [] };
       if (args.includes('--json')) io.stdout.write(`${JSON.stringify(receipt)}\n`);
       else io.stdout.write(`${JSON.stringify(receipt)}\n`);
       return 1;

@@ -508,6 +508,36 @@ test('launcher uses one absolute deadline and does not create after slow preflig
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
+test('launcher removes the exact abort listener after a completed lifecycle', async () => {
+  const workspace = await mkdtemp('/tmp/yolo-launcher-listener-');
+  const controller = new AbortController();
+  const added = new Set(); const removed = new Set();
+  const add = controller.signal.addEventListener.bind(controller.signal);
+  const remove = controller.signal.removeEventListener.bind(controller.signal);
+  controller.signal.addEventListener = (type, listener, options) => { if (type === 'abort') added.add(listener); return add(type, listener, options); };
+  controller.signal.removeEventListener = (type, listener, options) => { if (type === 'abort') removed.add(listener); return remove(type, listener, options); };
+  try {
+    const launcher = new ContainerLauncher({ image: 'sha256:' + 'b'.repeat(64), workspace, timeoutMs: 1000, spawn: (_command, args) => {
+      const listeners = new Map(); const stdout = new EventEmitter(); const stderr = new EventEmitter();
+      const child = { stdout, stderr, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); } };
+      const close = code => setImmediate(() => listeners.get('close')?.(code));
+      if (args[0] === 'info') { setImmediate(() => stdout.emit('data', JSON.stringify({ OSType: 'linux', SecurityOptions: ['name=rootless'] }))); close(0); }
+      else if (args[0] === 'volume' && args[1] === 'create') { setImmediate(() => stdout.emit('data', args.at(-1))); close(0); }
+      else if (args[0] === 'volume' && args[1] === 'inspect') { setImmediate(() => stdout.emit('data', JSON.stringify({ Name: args.at(-1), Labels: { 'yoloharness.run': args.at(-1).replace('yoloharness-scratch-', '') } }))); close(0); }
+      else if (args[0] === 'volume' && args[1] === 'rm') close(0);
+      else if (args[0] === 'create') { child.id = '0123456789abcdef'.repeat(4); setImmediate(() => stdout.emit('data', child.id)); close(0); }
+      else if (args[0] === 'inspect') { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: args.at(-1), Name: `/${args.at(-1)}`, Config: { Labels: { 'yoloharness.run': 'unused' } } }))); close(0); }
+      else if (args[0] === 'start') { setImmediate(() => stdout.emit('data', '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n')); close(0); }
+      else if (args[0] === 'stop' || args[0] === 'kill' || args[0] === 'rm') close(0);
+      else if (args[0] === 'ps') { setImmediate(() => stderr.emit('data', 'No such container')); close(1); }
+      return child;
+    } });
+    await assert.rejects(launcher.launch({ prompt: 'listener' }, { signal: controller.signal }), /ownership|cleanup_unknown|container/i);
+    assert.ok(added.size > 0);
+    assert.deepEqual(removed, added);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
 test('abort starts exact cleanup while an attach client never closes', async () => {
   const workspace = await mkdtemp('/tmp/yolo-launcher-stuck-attach-');
   const controller = new AbortController();

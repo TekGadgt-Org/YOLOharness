@@ -54,6 +54,7 @@ export class ContainerLauncher {
     let abortCleanup;
     let abortCleanupError;
     let timer;
+    const abortListener = () => abort(signal.reason);
     const abort = (abortReason = signal?.reason ?? Object.assign(new Error('container interrupted'), { code: 'interrupted' })) => {
       if (reason) return;
       reason = abortReason;
@@ -75,7 +76,7 @@ export class ContainerLauncher {
       for (const group of identity.groups) args.push('--group-add', String(group));
       args.push('--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--mount', `type=volume,src=${volumeName},dst=/tmp,volume-nocopy`, '--tmpfs', `/home/worker:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.homeTmpfs},uid=${identity.uid},gid=${identity.gid},mode=700`, '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', this.image, 'node', '/app/src/container-runtime.mjs');
       timer = setTimeout(() => abort(Object.assign(new Error('container deadline exceeded'), { code: 'deadline' })), remaining());
-      signal?.addEventListener('abort', () => abort(signal.reason), { once: true });
+      signal?.addEventListener('abort', abortListener, { once: true });
       createAttempted = true;
       const create = operation(this.command, args, this.spawn, { deadline, signal });
       creating = create.child;
@@ -105,7 +106,7 @@ export class ContainerLauncher {
       failure = error;
     } finally {
       clearTimeout(timer);
-      signal?.removeEventListener('abort', abort);
+      signal?.removeEventListener('abort', abortListener);
     let cleanupError;
       if (abortCleanupError) cleanupError = abortCleanupError;
       try {

@@ -190,7 +190,7 @@ async function initializeScratchVolume(command, image, volume, label, identity, 
 
 async function runScratchHelper(command, image, volume, label, identity, role, uid, addChown, spawn, { signal, deadline, cleanupDeadline } = {}, ephemeralPaths = []) {
   const name = `${HELPER_PREFIX}${role}-${label}`;
-  const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--label', `yoloharness.role=${role}`, '--init', '--network', 'none', '--read-only', '--cap-drop=ALL', ...(addChown ? ['--cap-add=CHOWN'] : []), '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--user', `${uid}:${uid === 0 ? 0 : identity.gid}`, '--mount', `type=volume,src=${volume},dst=/tmp,volume-subpath=tmp,volume-nocopy`, '--entrypoint', 'node', image, `/app/src/${role}.mjs`, String(identity.uid), String(identity.gid), ...ephemeralPaths];
+  const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--label', `yoloharness.role=${role}`, '--init', '--network', 'none', '--read-only', '--cap-drop=ALL', ...(addChown ? ['--cap-add=CHOWN'] : []), '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--user', `${uid}:${uid === 0 ? 0 : identity.gid}`, '--mount', `type=volume,src=${volume},dst=/tmp,volume-nocopy`, '--entrypoint', 'node', image, `/app/src/${role}.mjs`, String(identity.uid), String(identity.gid), ...ephemeralPaths];
   let id;
   let verified = false;
   try {

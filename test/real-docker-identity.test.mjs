@@ -14,6 +14,7 @@ const skip = !enabled;
 const dockerPath = execFileSync('command', ['-v', 'docker'], { shell: '/bin/sh', encoding: 'utf8' }).trim();
 const docker = (...args) => execFileSync(dockerPath, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 const image = process.env.YOLO_DOCKER_IMAGE ?? 'yoloharness-local:0.1.1';
+const artifactDir = process.env.YOLO_REAL_DOCKER_ARTIFACT_DIR;
 const dockerSelectorKeys = ['DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH'];
 const originalDockerSelectors = Object.fromEntries(dockerSelectorKeys.map(key => [key, process.env[key]]));
 const jsonl = async path => (await readFile(path, 'utf8')).trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
@@ -178,7 +179,7 @@ async function makeFixture(root) {
 const cp=require('child_process'),fs=require('fs');const a=process.argv.slice(2);let base=${JSON.stringify(dockerPath)};const net=${JSON.stringify(network)},workspace=process.env.YOLO_PROXY_WORKSPACE||${JSON.stringify(workspace)},id=${JSON.stringify(baseId)},der=${JSON.stringify(derivative)},log=${JSON.stringify(log)},childFixture=${JSON.stringify(childFixture)},childMarker=${JSON.stringify(childMarker)},cleanupFailure=${JSON.stringify(cleanupFailure)},provider=${JSON.stringify(provider)};const original=[...a],selection=['DOCKER_HOST','DOCKER_CONTEXT','DOCKER_CONFIG','DOCKER_TLS_VERIFY','DOCKER_CERT_PATH','PATH'],r={argv:original,env:Object.fromEntries(selection.map(k=>[k,process.env[k]??null])),events:[]};
 if(a[0]==='info'){fs.appendFileSync(log,JSON.stringify(r)+'\\n');const security=process.env.YOLO_TEST_MODE==='rootless'?['name=rootless','name=seccomp,profile=builtin']:['name=seccomp,profile=builtin'];process.stdout.write(JSON.stringify({OSType:'linux',OperatingSystem:process.env.YOLO_TEST_MODE==='darwin'?'Vendor A':'Vendor B',SecurityOptions:security}));process.exit(0)}
 if(process.env.YOLO_CLEANUP_TRANSIENT==='1'&&a[0]==='network'&&a[1]==='rm'&&a[2]===net&&!fs.existsSync(cleanupFailure)){fs.writeFileSync(cleanupFailure,'injected');process.stderr.write('injected transient cleanup failure\\n');process.exit(75)}
-if(a[0]==='create'){for(let i=a.length-1;i>=0;i--)if(a[i]==='--group-add')a.splice(i,2);if(process.env.YOLO_TEST_MODE==='rootful'&&!a.includes('yoloharness.role=scratch-verify')&&(process.env.YOLO_PRESERVE_RUNTIME_UID!=='1'||!a.includes('/app/src/container-runtime.mjs'))){const u=a.indexOf('--user');if(u>=0)a[u+1]='0:0';for(let i=0;i<a.length;i++)if(a[i]==='--tmpfs')a[i+1]=a[i+1].replace(/uid=[0-9]+,gid=[0-9]+/,'uid=0,gid=0')}const n=a.indexOf('--network');if(n>=0)a[n+1]=net;if(a.includes(id))a[a.indexOf(id)]=der;if(process.env.YOLO_TMPFS_RED==='1'){const m=a.findIndex((value,index)=>value==='--mount'&&a[index+1]?.startsWith('type=volume,src=yoloharness-scratch-')&&a[index+1]?.endsWith(',dst=/tmp,volume-nocopy'));if(m>=0){a.splice(m,2,'--tmpfs','/tmp:rw,size=64m')}}r.image=a.at(-3);r.translatedArgv=[...a]}
+if(a[0]==='create'){for(let i=a.length-1;i>=0;i--)if(a[i]==='--group-add')a.splice(i,2);if(process.env.YOLO_TEST_MODE==='rootful'&&!a.includes('yoloharness.role=scratch-verify')&&(process.env.YOLO_PRESERVE_RUNTIME_UID!=='1'||!a.includes('/app/src/container-runtime.mjs'))){const u=a.indexOf('--user');if(u>=0)a[u+1]='0:0';for(let i=0;i<a.length;i++)if(a[i]==='--tmpfs')a[i+1]=a[i+1].replace(/uid=[0-9]+,gid=[0-9]+/,'uid=0,gid=0')}const n=a.indexOf('--network');if(n>=0)a[n+1]=net;if(a.includes(id))a[a.indexOf(id)]=der;if(process.env.YOLO_TMPFS_RED==='1'&&!a.includes('yoloharness.role=scratch-init')&&!a.includes('yoloharness.role=scratch-verify')){const m=a.findIndex((value,index)=>value==='--mount'&&a[index+1]?.startsWith('type=volume,src=yoloharness-scratch-')&&a[index+1]?.includes(',dst=/tmp,'));if(m>=0){a.splice(m,2,'--tmpfs','/tmp:rw,size=64m')}}r.image=a.at(-3);r.translatedArgv=[...a]}
 if(process.env.YOLO_PROXY_CHILD==='spawn-error'&&original[0]==='start'){base=childFixture+'-does-not-exist';r.events.push({type:'spawn'});}
 else if(process.env.YOLO_PROXY_CHILD==='timeout'&&original[0]==='start'){base=process.execPath;a.splice(0,a.length,childFixture);r.events.push({type:'spawn'});}
 else if(process.env.YOLO_PROXY_CHILD==='cleanup-unknown'&&original[0]==='start'){base=process.execPath;a.splice(0,a.length,childFixture);r.events.push({type:'spawn'});}
@@ -232,6 +233,12 @@ async function installHistoricalPacked(root, env, commit) {
   return { cli: join(root, 'home', '.local', 'bin', 'yolo'), identity };
 }
 
+async function retainArtifact(name, content) {
+  if (!artifactDir) return;
+  await mkdir(artifactDir, { recursive: true });
+  await writeFile(join(artifactDir, name), content);
+}
+
 function resetWorkloadWorkspace(fixture) {
   docker('run', '--rm', '--pull=never', '--network', 'none', '--user', '0:0', '--mount', `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--entrypoint', 'sh', image, '-c', 'rm -rf /workspace/node_modules /workspace/.yolo && mkdir -m 0777 /workspace/.yolo');
 }
@@ -266,6 +273,7 @@ test('exact historical packed CLI retains the dependency-isolation RED baseline'
     const env = { ...process.env, HOME: join(root, 'home'), XDG_CONFIG_HOME: fixture.config, XDG_DATA_HOME: fixture.data, DOCKER_CONFIG: join(root, 'docker-config'), DOCKER_HOST: fixture.endpoint, DOCKER_CONTEXT: undefined, DOCKER_TLS_VERIFY: undefined, DOCKER_CERT_PATH: undefined, PATH: `${root}:${process.env.PATH}`, YOLO_TEST_MODE: 'rootful', YOLO_TEST_ROOTFUL: '1', YOLO_PRESERVE_RUNTIME_UID: '1' };
     const run = spawnSync(cli, ['--json', '-t', '1', 'installed npm 70 MiB'], { cwd: fixture.workspace, env, encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 });
     await writeFile(join(root, 'historical-red.raw.json'), JSON.stringify({ status: run.status, error: run.error?.message ?? null, stdout: run.stdout, stderr: run.stderr }));
+    await retainArtifact('historical-red.raw.json', await readFile(join(root, 'historical-red.raw.json')));
     assert.equal(run.error, undefined, run.error?.message); assert.equal(run.status, 0, `${run.stderr}\n${run.stdout}`);
     const receipt = JSON.parse(run.stdout.trim().split(/\r?\n/).at(-1)); assert.equal(receipt.status, 'completed');
     assert.equal((await readFile(join(fixture.workspace, 'node_modules', 'historical-capacity-fixture', 'payload.bin'))).length, 73_400_320);
@@ -352,6 +360,8 @@ test('same packed npm tool call is RED on 64 MiB tmpfs and GREEN on one measured
 
     await writeFile(fixture.log, '');
     const red = run({ ...commonEnv, YOLO_TMPFS_RED: '1' }, fixture.workspace);
+    await retainArtifact('npm-red-run.json', JSON.stringify({ status: red.status, error: red.error?.message ?? null, stdout: red.stdout, stderr: red.stderr }));
+    await retainArtifact('npm-red-docker.jsonl', await readFile(fixture.log));
     assert.equal(red.error, undefined, red.error?.message); assert.ok([0, 1].includes(red.status), `${red.stderr}\n${red.stdout}`);
     const redReceipt = JSON.parse(red.stdout.trim().split(/\r?\n/).at(-1)); assert.equal(redReceipt.status, 'completed');
     const redEvidence = redReceipt.evidence.find(value => value?.call_id === 'npm-install-call'); assert.equal(redEvidence.ok, false); assert.match(redEvidence.error, /ENOSPC|no space left on device/i); assert.doesNotMatch(redEvidence.error, /(?:out of memory|oom|deadline|timed out|setup)/i);

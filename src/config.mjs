@@ -13,9 +13,9 @@ const MAX_EPHEMERAL_PATHS = 64; const MAX_EPHEMERAL_LENGTH = 240; const MAX_EPHE
 export function validateEphemeralPath(value) {
   if (typeof value !== 'string' || value.length === 0 || value.length > MAX_EPHEMERAL_LENGTH || /[\u0000-\u001f\u007f-\u009f]/u.test(value)) throw new ConfigError('ephemeral path must be a non-empty relative path without control characters', 'invalid_ephemeral_path');
   const path = value.replaceAll('\\', '/');
-  if (path.startsWith('/') || /^[A-Za-z]:\//u.test(path) || path === '.' || path.startsWith('./') || path.includes('//')) throw new ConfigError(`invalid ephemeral path: ${value}`, 'invalid_ephemeral_path');
+  if (path.startsWith('/') || /^[A-Za-z]:\//u.test(path) || path === '.' || path.startsWith('./') || path.includes('//') || path.includes(',')) throw new ConfigError(`invalid ephemeral path: ${value}`, 'invalid_ephemeral_path');
   const parts = path.split('/');
-  if (parts.length > MAX_EPHEMERAL_DEPTH || parts.some(part => !part || part === '..') || parts.includes('.git') || parts.includes('.yolo')) throw new ConfigError(`invalid ephemeral path: ${value}`, 'invalid_ephemeral_path');
+  if (parts.length > MAX_EPHEMERAL_DEPTH || parts.some(part => !part || part === '.' || part === '..') || parts.includes('.git') || parts.includes('.yolo')) throw new ConfigError(`invalid ephemeral path: ${value}`, 'invalid_ephemeral_path');
   return parts.join('/');
 }
 export function validateEphemeralPaths(values) {

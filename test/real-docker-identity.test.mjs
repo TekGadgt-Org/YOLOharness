@@ -217,6 +217,21 @@ async function installPacked(root, env) {
   return join(root, 'home', '.local', 'bin', 'yolo');
 }
 
+async function installHistoricalPacked(root, env, commit) {
+  const source = join(root, 'historical-source'); await mkdir(source);
+  const archive = join(root, 'historical.tar');
+  execFileSync('git', ['archive', '--format=tar', '-o', archive, commit, 'assets/runtime', 'install.mjs', 'package.json', 'src']);
+  execFileSync('tar', ['-xf', archive, '-C', source]);
+  const identity = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', `import { runtimeSourceIdentity } from ${JSON.stringify(new URL(`file://${source}/src/cli.mjs`).href)}; console.log(JSON.stringify(await runtimeSourceIdentity()))`], { encoding: 'utf8' }));
+  const packed = join(root, 'historical-packed'); await mkdir(packed);
+  const name = execFileSync('npm', ['pack', '--pack-destination', packed], { cwd: source, encoding: 'utf8' }).trim().split(/\r?\n/).at(-1);
+  execFileSync('tar', ['-xzf', join(packed, name), '-C', packed]);
+  const installed = spawnSync(process.execPath, [join(packed, 'package', 'install.mjs')], { cwd: join(packed, 'package'), env: { ...process.env, HOME: join(root, 'home'), XDG_CONFIG_HOME: env.config, XDG_DATA_HOME: env.data }, encoding: 'utf8' });
+  assert.equal(installed.status, 0, installed.stderr);
+  await writeFile(join(env.data, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId: env.baseId, ...identity }));
+  return { cli: join(root, 'home', '.local', 'bin', 'yolo'), identity };
+}
+
 function resetWorkloadWorkspace(fixture) {
   docker('run', '--rm', '--pull=never', '--network', 'none', '--user', '0:0', '--mount', `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--entrypoint', 'sh', image, '-c', 'rm -rf /workspace/node_modules /workspace/.yolo && mkdir -m 0777 /workspace/.yolo');
 }
@@ -232,6 +247,35 @@ function packedDockerEnvironment(endpoint, root) {
   if (!explicit) selected.DOCKER_HOST = endpoint;
   return selected;
 }
+
+test('exact historical packed CLI retains the dependency-isolation RED baseline', { skip }, async () => {
+  const historicalCommit = '4592889c2aef05ed025ab2a09396e21e33980831';
+  const root = await mkdtemp(join(tmpdir(), 'yoloharness-historical-node-red-')); let fixture;
+  try {
+    fixture = await makeFixture(root); await chmod(fixture.workspace, 0o777); await mkdir(join(fixture.workspace, '.yolo')); await chmod(join(fixture.workspace, '.yolo'), 0o777);
+    await mkdir(join(fixture.workspace, 'package-fixture'));
+    await writeFile(join(fixture.workspace, 'package-fixture', 'package.json'), JSON.stringify({ name: 'installed-capacity-fixture', version: '1.0.0' }));
+    await writeFile(join(fixture.workspace, 'package-fixture', 'payload.bin'), randomBytes(73_400_320));
+    execFileSync('npm', ['pack', '--pack-destination', join(fixture.workspace, 'package-fixture')], { cwd: join(fixture.workspace, 'package-fixture'), encoding: 'utf8' });
+    await writeFile(join(fixture.workspace, 'package.json'), JSON.stringify({ name: 'historical-project', version: '1.0.0' }));
+    await writeFile(join(fixture.workspace, 'package-lock.json'), JSON.stringify({ name: 'historical-project', version: '1.0.0', lockfileVersion: 3, packages: { '': { name: 'historical-project', version: '1.0.0' } } }));
+    await writeFile(join(fixture.workspace, 'project-artifact.txt'), 'historical-artifact\n');
+    const { cli, identity } = await installHistoricalPacked(root, fixture, historicalCommit);
+    assert.equal(identity.sourceVersion, '0.1.1'); assert.match(identity.sourceDigest, /^sha256:[0-9a-f]{64}$/);
+    await writeFile(join(root, 'docker'), `#!/bin/sh\nexec ${fixture.proxy} "$@"`, { mode: 0o755 }); await writeFile(fixture.log, '');
+    const env = { ...process.env, HOME: join(root, 'home'), XDG_CONFIG_HOME: fixture.config, XDG_DATA_HOME: fixture.data, DOCKER_CONFIG: join(root, 'docker-config'), DOCKER_HOST: fixture.endpoint, DOCKER_CONTEXT: undefined, DOCKER_TLS_VERIFY: undefined, DOCKER_CERT_PATH: undefined, PATH: `${root}:${process.env.PATH}`, YOLO_TEST_MODE: 'rootful', YOLO_TEST_ROOTFUL: '1', YOLO_PRESERVE_RUNTIME_UID: '1' };
+    const run = spawnSync(cli, ['--json', '-t', '1', 'installed npm 70 MiB'], { cwd: fixture.workspace, env, encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 });
+    await writeFile(join(root, 'historical-red.raw.json'), JSON.stringify({ status: run.status, error: run.error?.message ?? null, stdout: run.stdout, stderr: run.stderr }));
+    assert.equal(run.error, undefined, run.error?.message); assert.equal(run.status, 0, `${run.stderr}\n${run.stdout}`);
+    const receipt = JSON.parse(run.stdout.trim().split(/\r?\n/).at(-1)); assert.equal(receipt.status, 'completed');
+    assert.equal((await readFile(join(fixture.workspace, 'node_modules', 'historical-capacity-fixture', 'payload.bin'))).length, 73_400_320);
+    assert.equal(await readFile(join(fixture.workspace, 'project-artifact.txt'), 'utf8'), 'historical-artifact\n');
+    assert.equal(JSON.parse(await readFile(join(fixture.workspace, 'package-lock.json'), 'utf8')).name, 'historical-project');
+    const create = (await jsonl(fixture.log)).find(record => record.argv[0] === 'create' && record.argv.includes('/app/src/container-runtime.mjs')); assert.ok(create);
+    assert.ok(create.argv.some(value => value.startsWith('type=bind,src=') && value.endsWith(',dst=/workspace,readonly=false,bind-propagation=rprivate')));
+    assert.equal(create.argv.some(value => value.includes('volume-subpath=')), false);
+  } finally { if (fixture) await cleanupOwned(fixture); await rm(root, { recursive: true, force: true }); }
+});
 
 test('installed v0.1.1 CLI retains complete identity lifecycle evidence', { skip }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'yoloharness-identity-')); let foreignId; let fixture;
@@ -278,7 +322,7 @@ test('installed production CLI traverses provider/runtime/executor for exact 70 
     assert.equal(run.error, undefined, run.error?.message); assert.equal(run.status, 0, `${run.stderr}\n${run.stdout}`);
     const receipt = JSON.parse(run.stdout.trim().split(/\r?\n/).at(-1));
     assert.equal(receipt.status, 'completed'); assert.equal(receipt.effect_state, 'none'); assert.equal(receipt.result, 'installed-npm-70m-ok');
-    assert.equal((await readFile(join(fixture.workspace, 'node_modules', 'installed-capacity-fixture', 'payload.bin'))).length, 73_400_320);
+    await assert.rejects(readFile(join(fixture.workspace, 'node_modules', 'installed-capacity-fixture', 'payload.bin')));
     const records = await jsonl(fixture.log); const create = records.find(r => r.argv.includes('/app/src/container-runtime.mjs')); assert.ok(create);
     assert.deepEqual(values(create.argv, '--user'), [`${process.getuid()}:${process.getgid()}`]);
     assert.equal(create.translatedArgv.at(create.translatedArgv.indexOf('--user') + 1), `${process.getuid()}:${process.getgid()}`);
@@ -323,10 +367,14 @@ test('same packed npm tool call is RED on 64 MiB tmpfs and GREEN on one measured
     const greenReceipt = JSON.parse(green.stdout.trim().split(/\r?\n/).at(-1)); assert.equal(greenReceipt.status, 'completed');
     const greenEvidence = greenReceipt.evidence.find(value => value?.call_id === redCall); assert.ok(greenEvidence); assert.equal(greenEvidence.call_id, 'npm-install-call'); assert.equal(greenEvidence.ok, true); assert.equal(greenEvidence.code, 0);
     assert.deepEqual(greenReceipt.evidence.map(value => value?.call_id), redReceipt.evidence.map(value => value?.call_id));
-    assert.equal((await readFile(join(fixture.workspace, 'node_modules', 'installed-capacity-fixture', 'payload.bin'))).length, 73_400_320);
+    await assert.rejects(readFile(join(fixture.workspace, 'node_modules', 'installed-capacity-fixture', 'payload.bin')));
     const records = await jsonl(fixture.log); const greenCreate = records.find((r, index) => index > redRecords.indexOf(redCreate) && r.argv[0] === 'create' && r.argv.includes('/app/src/container-runtime.mjs')); assert.ok(greenCreate);
     const redLabel = redCreate.argv[redCreate.argv.indexOf('--label') + 1]; const greenLabel = greenCreate.argv[greenCreate.argv.indexOf('--label') + 1];
     assert.notEqual(greenLabel, redLabel); assert.match(greenLabel, /^yoloharness\.run=[0-9a-f-]+$/); assert.match(greenCreate.translatedArgv[greenCreate.translatedArgv.indexOf('--mount') + 1], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-nocopy$/);
+    assert.equal(values(greenCreate.translatedArgv, '--mount').length, 7);
+    const greenVolume = greenCreate.translatedArgv[greenCreate.translatedArgv.indexOf('--mount') + 1].match(/src=([^,]+)/)[1];
+    for (const path of ['node_modules', '.venv', 'vendor', '.godot', 'target']) assert.ok(values(greenCreate.translatedArgv, '--mount').includes(`type=volume,src=${greenVolume},dst=/workspace/${path},volume-subpath=${volumeSubpath(path)},volume-nocopy`));
+    assert.deepEqual(values(greenCreate.translatedArgv, '--env'), ['HOME=/home/worker', 'XDG_CONFIG_HOME=/home/worker/.config', 'XDG_DATA_HOME=/home/worker/.local/share', 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'LANG=C.UTF-8', 'XDG_CACHE_HOME=/tmp/cache/xdg', 'npm_config_cache=/tmp/cache/npm', 'PIP_CACHE_DIR=/tmp/cache/pip', 'UV_CACHE_DIR=/tmp/cache/uv', 'COMPOSER_CACHE_DIR=/tmp/cache/composer', 'NUGET_PACKAGES=/tmp/cache/nuget', 'CARGO_HOME=/tmp/cache/cargo', 'GOMODCACHE=/tmp/cache/go']);
     const greenStart = records.find((r, index) => index > redRecords.length - 1 && r.argv[0] === 'start' && r.argv.includes('--interactive')); assert.ok(greenStart); assert.ok(greenStart.maxTmpUsed > 64 * 1024 * 1024, `live GREEN measurement must exceed 64 MiB: ${JSON.stringify(greenStart)}`);
     const persisted = docker('run', '--rm', '--pull=never', '--user', '0:0', '--mount', `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--entrypoint', 'sh', image, '-c', 'cat /workspace/.yolo/last-receipt.json');
     assert.deepEqual(JSON.parse(persisted), greenReceipt);

@@ -86,7 +86,9 @@ export class ContainerLauncher {
       for (const group of identity.groups) args.push('--group-add', String(group));
       args.push('--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--mount', `type=volume,src=${volumeName},dst=/tmp,volume-subpath=tmp,volume-nocopy`, '--tmpfs', `/home/worker:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.homeTmpfs},uid=${identity.uid},gid=${identity.gid},mode=700`, '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`);
       for (const path of ephemeralPaths) args.push('--mount', `type=volume,src=${volumeName},dst=/workspace/${path},volume-subpath=${volumeSubpath(path)},volume-nocopy`);
-      args.push('--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', ...cacheEnvironment(), this.image, 'node', '/app/src/container-runtime.mjs');
+      args.push('--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share');
+      for (const value of cacheEnvironment()) args.push('--env', value);
+      args.push(this.image, 'node', '/app/src/container-runtime.mjs');
       createAttempted = true;
       const create = operation(this.command, args, this.spawn, { deadline: executionDeadline, signal, cleanupDeadline: () => cleanupDeadline });
       creating = create.child;

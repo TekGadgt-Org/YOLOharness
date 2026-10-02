@@ -380,7 +380,7 @@ test('same packed npm tool call is RED on 64 MiB tmpfs and GREEN on one measured
     await assert.rejects(readFile(join(fixture.workspace, 'node_modules', 'installed-capacity-fixture', 'payload.bin')));
     const records = await jsonl(fixture.log); const greenCreate = records.find((r, index) => index > redRecords.indexOf(redCreate) && r.argv[0] === 'create' && r.argv.includes('/app/src/container-runtime.mjs')); assert.ok(greenCreate);
     const redLabel = redCreate.argv[redCreate.argv.indexOf('--label') + 1]; const greenLabel = greenCreate.argv[greenCreate.argv.indexOf('--label') + 1];
-    assert.notEqual(greenLabel, redLabel); assert.match(greenLabel, /^yoloharness\.run=[0-9a-f-]+$/); assert.match(greenCreate.translatedArgv[greenCreate.translatedArgv.indexOf('--mount') + 1], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-nocopy$/);
+    assert.notEqual(greenLabel, redLabel); assert.match(greenLabel, /^yoloharness\.run=[0-9a-f-]+$/); assert.match(greenCreate.translatedArgv[greenCreate.translatedArgv.indexOf('--mount') + 1], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-subpath=tmp,volume-nocopy$/);
     assert.equal(values(greenCreate.translatedArgv, '--mount').length, 7);
     const greenVolume = greenCreate.translatedArgv[greenCreate.translatedArgv.indexOf('--mount') + 1].match(/src=([^,]+)/)[1];
     for (const path of ['node_modules', '.venv', 'vendor', '.godot', 'target']) assert.ok(values(greenCreate.translatedArgv, '--mount').includes(`type=volume,src=${greenVolume},dst=/workspace/${path},volume-subpath=${volumeSubpath(path)},volume-nocopy`));

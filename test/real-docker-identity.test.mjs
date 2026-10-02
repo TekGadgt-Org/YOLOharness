@@ -7,6 +7,7 @@ import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { runtimeSourceIdentity } from '../src/cli.mjs';
 import { RUNTIME_RESOURCE_POLICY } from '../src/resource-policy.mjs';
+import { volumeSubpath } from '../src/scratch-path.mjs';
 
 const enabled = process.env.YOLO_REAL_DOCKER === '1';
 const skip = !enabled;
@@ -29,12 +30,15 @@ const waitForVolumeAbsent = async name => {
 function expectedCreateArgv(record, fixture, mode) {
   const uid = mode === 'rootful' ? process.getuid() : 0; const gid = mode === 'rootful' ? process.getgid() : 0;
   const groups = mode === 'rootful' ? [...new Set(process.getgroups?.() ?? [])].filter(g => g !== process.getgid()).map(String) : [];
+  const scratch = values(record.argv, '--mount')[0].match(/src=([^,]+)/)[1];
   const args = ['create', '--pull=never', '--name', record.argv[3], '--label', record.argv[5], '--init', '-i', '--user', `${uid}:${gid}`];
   for (const group of groups) args.push('--group-add', group);
   args.push('--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--cpus', '1', '--mount',
     values(record.argv, '--mount')[0], '--tmpfs',
     `/home/worker:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.homeTmpfs},uid=${uid},gid=${gid},mode=700`, '--mount',
-    `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', fixture.baseId, 'node', '/app/src/container-runtime.mjs');
+    `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`);
+  for (const path of ['node_modules', '.venv', 'vendor', '.godot', 'target']) args.push('--mount', `type=volume,src=${scratch},dst=/workspace/${path},volume-subpath=${volumeSubpath(path)},volume-nocopy`);
+  args.push('--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', fixture.baseId, 'node', '/app/src/container-runtime.mjs');
   return args;
 }
 
@@ -46,7 +50,7 @@ function assertCreateContract(record, fixture, mode, selectedDockerEnv) {
   assert.deepEqual(values(argv, '--user'), [mode === 'rootful' ? `${process.getuid()}:${process.getgid()}` : '0:0']);
   assert.deepEqual(values(argv, '--group-add'), mode === 'rootful' ? [...new Set(process.getgroups?.() ?? [])].filter(g => g !== process.getgid()).map(String) : []);
   assert.deepEqual(values(argv, '--tmpfs'), [`/home/worker:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.homeTmpfs},uid=${mode === 'rootful' ? process.getuid() : 0},gid=${mode === 'rootful' ? process.getgid() : 0},mode=700`]);
-  assert.equal(values(argv, '--mount').length, 2); assert.match(values(argv, '--mount')[0], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-nocopy$/); assert.match(values(argv, '--mount')[1], /^type=bind,src=.+,dst=\/workspace,readonly=false,bind-propagation=rprivate$/);
+  assert.equal(values(argv, '--mount').length, 7); assert.match(values(argv, '--mount')[0], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-nocopy$/); assert.match(values(argv, '--mount')[1], /^type=bind,src=.+,dst=\/workspace,readonly=false,bind-propagation=rprivate$/);
   assert.deepEqual(values(argv, '--workdir'), ['/workspace']);
   assert.deepEqual(values(argv, '--network'), ['bridge']);
   assert.deepEqual(values(argv, '--pids-limit'), ['128']); assert.deepEqual(values(argv, '--memory'), ['512m']); assert.deepEqual(values(argv, '--cpus'), ['1']);
@@ -246,7 +250,7 @@ test('installed v0.1.1 CLI retains complete identity lifecycle evidence', { skip
       assert.ok(lifecycle.some(record => record.argv[0] === 'start'));
       assert.ok(lifecycle.some(record => record.argv[0] === 'rm'));
       assert.ok(records.some(record => record.argv[0] === 'inspect' && record.stdout.includes(`\"Id\":\"${createdId}\"`)));
-      assert.ok(records.some(record => record.argv[0] === 'create' && record.argv.includes('yoloharness.role=scratch-init')) === (mode === 'rootful'));
+      assert.ok(records.some(record => record.argv[0] === 'create' && record.argv.includes('yoloharness.role=scratch-init')));
       await assertStableAbsence(createdId, create.argv[3], runLabel, foreignId, foreignName);
       await writeFile(fixture.log, '');
     }

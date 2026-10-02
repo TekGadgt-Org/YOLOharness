@@ -298,9 +298,9 @@ async function configCommand(args, io) {
   const store = new ConfigStore(configPath());
   if (args[0] === 'set' && args[1] === 'model' && args.length === 3) { const model = validateModel(args[2]); const prior = await store.load(); await store.saveDocument({ model, ephemeralPaths: effectiveEphemeralPaths(prior) }); io.stdout.write(`saved model ${model}\n`); return 0; }
   if (args[0] !== 'ephemeral-path') throw new TypeError('usage: yolo config set model <model-id> | yolo config ephemeral-path list|add|remove|reset [path]');
-  const prior = await store.load(); const model = prior?.model; if (!model) throw new TypeError('a model must be configured before editing ephemeral paths');
+  const prior = await store.load(); const model = prior?.model ?? null;
   const current = effectiveEphemeralPaths(prior); const action = args[1];
-  if (action === 'list' && args.length === 2) { if (prior.version === 1) await store.saveDocument({ model, ephemeralPaths: current }); for (const path of current) io.stdout.write(`${path}\n`); return 0; }
+  if (action === 'list' && args.length === 2) { if (prior?.version === 1 || !prior) await store.saveDocument({ model, ephemeralPaths: current }); for (const path of current) io.stdout.write(`${path}\n`); return 0; }
   if (action === 'reset' && args.length === 2) { await store.saveDocument({ model, ephemeralPaths: DEFAULT_EPHEMERAL_PATHS }); io.stdout.write('ephemeral paths reset\n'); return 0; }
   if ((action === 'add' || action === 'remove') && args.length === 3) { const path = validateEphemeralPath(args[2]); const next = action === 'add' ? [...current, path] : current.filter(value => value !== path); await store.saveDocument({ model, ephemeralPaths: validateEphemeralPaths(next) }); io.stdout.write(`${action === 'add' ? 'added' : 'removed'} ephemeral path ${path}\n`); return 0; }
   throw new TypeError('usage: yolo config ephemeral-path list|add|remove|reset [path]');

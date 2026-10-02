@@ -41,17 +41,17 @@ export class ConfigStore {
   async load() {
     let value;
     try { value = JSON.parse(await readFile(this.path, 'utf8')); } catch (error) { if (error.code === 'ENOENT') return null; if (error instanceof SyntaxError) throw new ConfigError(`model configuration is malformed JSON: ${this.path}`); throw new ConfigError(`model configuration is unreadable: ${this.path}`); }
-    if (!value || ![1, 2].includes(value.version) || typeof value.model !== 'string') throw new ConfigError(`model configuration has unsupported schema (expected version 1 or 2 with a model): ${this.path}`);
+    if (!value || ![1, 2].includes(value.version) || (value.version === 1 && typeof value.model !== 'string') || (value.version === 2 && value.model !== null && value.model !== undefined && typeof value.model !== 'string')) throw new ConfigError(`model configuration has unsupported schema (expected version 1 or 2 with a model): ${this.path}`);
     const keys = Object.keys(value).sort();
     if (value.version === 1 && keys.join(',') !== 'model,version') throw new ConfigError(`model configuration has unsupported schema (expected version 1 with model only): ${this.path}`);
     if (value.version === 2 && keys.join(',') !== 'ephemeralPaths,model,version') throw new ConfigError(`model configuration has unsupported schema (expected version 2 with ephemeralPaths): ${this.path}`);
-    validateModel(value.model); if (value.version === 1) return { version: 1, model: value.model }; if (!Array.isArray(value.ephemeralPaths)) throw new ConfigError(`model configuration has unsupported schema (expected version 2 with ephemeralPaths): ${this.path}`); return { version: 2, model: value.model, ephemeralPaths: validateEphemeralPaths(value.ephemeralPaths) };
+    if (value.model !== null && value.model !== undefined) validateModel(value.model); if (value.version === 1) return { version: 1, model: value.model }; if (!Array.isArray(value.ephemeralPaths)) throw new ConfigError(`model configuration has unsupported schema (expected version 2 with ephemeralPaths): ${this.path}`); return { version: 2, model: value.model ?? null, ephemeralPaths: validateEphemeralPaths(value.ephemeralPaths) };
   }
   async save(model) { return this.saveDocument({ version: 1, model }, { legacy: true }); }
   async saveDocument(document, { legacy = false } = {}) {
-    validateModel(document?.model); const ephemeralPaths = validateEphemeralPaths(document?.ephemeralPaths ?? DEFAULT_EPHEMERAL_PATHS);
+    if (!legacy && document?.model !== null && document?.model !== undefined) validateModel(document.model); else if (legacy) validateModel(document?.model); const ephemeralPaths = validateEphemeralPaths(document?.ephemeralPaths ?? DEFAULT_EPHEMERAL_PATHS);
     await mkdir(dirname(this.path), { recursive: true, mode: 0o700 }); const tmp = `${this.path}.${randomUUID()}.tmp`; let committed = false; const fh = await open(tmp, 'wx', 0o600);
-    try { try { await fh.writeFile(JSON.stringify(legacy ? { version: 1, model: document.model } : { version: 2, model: document.model, ephemeralPaths }) + '\n'); await this.syncFile(fh); } finally { await fh.close(); } await chmod(tmp, 0o600); await rename(tmp, this.path); committed = true; await chmod(this.path, 0o600); const dir = await open(dirname(this.path), 'r'); try { await this.syncDirectory(dir); } finally { await dir.close(); } } catch (error) { if (!committed) await rm(tmp, { force: true }).catch(() => {}); throw error; }
-    return legacy ? { version: 1, model: document.model } : { version: 2, model: document.model, ephemeralPaths };
+    try { try { await fh.writeFile(JSON.stringify(legacy ? { version: 1, model: document.model } : { version: 2, model: document?.model ?? null, ephemeralPaths }) + '\n'); await this.syncFile(fh); } finally { await fh.close(); } await chmod(tmp, 0o600); await rename(tmp, this.path); committed = true; await chmod(this.path, 0o600); const dir = await open(dirname(this.path), 'r'); try { await this.syncDirectory(dir); } finally { await dir.close(); } } catch (error) { if (!committed) await rm(tmp, { force: true }).catch(() => {}); throw error; }
+    return legacy ? { version: 1, model: document.model } : { version: 2, model: document?.model ?? null, ephemeralPaths };
   }
 }

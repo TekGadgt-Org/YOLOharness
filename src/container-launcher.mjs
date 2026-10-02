@@ -384,7 +384,7 @@ function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT, deadline, sig
       child?.kill('SIGKILL');
       const check = () => {
         if (done) return;
-        const limit = typeof cleanupDeadline === 'function' ? cleanupDeadline() : cleanupDeadline;
+        const limit = typeof cleanupDeadline === 'function' ? cleanupDeadline() : cleanupDeadline ?? deadline ?? Date.now();
         if (Number.isFinite(limit) && Date.now() >= limit) {
           finish(reject, Object.assign(new Error('docker client close was not observed'), { code: 'cleanup_unknown', cause: terminalError }));
           return;
@@ -425,7 +425,7 @@ function attachedOperation(child, input, signal, cleanupDeadline) {
       child.kill('SIGTERM');
       const check = () => {
         if (done) return;
-        const limit = typeof cleanupDeadline === 'function' ? cleanupDeadline() : cleanupDeadline;
+        const limit = typeof cleanupDeadline === 'function' ? cleanupDeadline() : cleanupDeadline ?? deadline ?? Date.now();
         if (Number.isFinite(limit) && Date.now() >= limit) {
           done = true;
           signal?.removeEventListener('abort', abort);

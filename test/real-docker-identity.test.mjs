@@ -41,7 +41,7 @@ function expectedCreateArgv(record, fixture, mode) {
     `/home/worker:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.homeTmpfs},uid=${uid},gid=${gid},mode=700`, '--mount',
     `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`);
   for (const path of ['node_modules', '.venv', 'vendor', '.godot', 'target']) args.push('--mount', `type=volume,src=${scratch},dst=/workspace/${path},volume-subpath=${volumeSubpath(path)},volume-nocopy`);
-  args.push('--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', fixture.baseId, 'node', '/app/src/container-runtime.mjs');
+  args.push('--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', '--env', 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', '--env', 'LANG=C.UTF-8', '--env', 'XDG_CACHE_HOME=/tmp/cache/xdg', '--env', 'npm_config_cache=/tmp/cache/npm', '--env', 'PIP_CACHE_DIR=/tmp/cache/pip', '--env', 'UV_CACHE_DIR=/tmp/cache/uv', '--env', 'COMPOSER_CACHE_DIR=/tmp/cache/composer', '--env', 'NUGET_PACKAGES=/tmp/cache/nuget', '--env', 'CARGO_HOME=/tmp/cache/cargo', '--env', 'GOMODCACHE=/tmp/cache/go', fixture.baseId, 'node', '/app/src/container-runtime.mjs');
   return args;
 }
 
@@ -53,11 +53,11 @@ function assertCreateContract(record, fixture, mode, selectedDockerEnv) {
   assert.deepEqual(values(argv, '--user'), [mode === 'rootful' ? `${process.getuid()}:${process.getgid()}` : '0:0']);
   assert.deepEqual(values(argv, '--group-add'), mode === 'rootful' ? [...new Set(process.getgroups?.() ?? [])].filter(g => g !== process.getgid()).map(String) : []);
   assert.deepEqual(values(argv, '--tmpfs'), [`/home/worker:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.homeTmpfs},uid=${mode === 'rootful' ? process.getuid() : 0},gid=${mode === 'rootful' ? process.getgid() : 0},mode=700`]);
-  assert.equal(values(argv, '--mount').length, 7); assert.match(values(argv, '--mount')[0], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-nocopy$/); assert.match(values(argv, '--mount')[1], /^type=bind,src=.+,dst=\/workspace,readonly=false,bind-propagation=rprivate$/);
+  assert.equal(values(argv, '--mount').length, 7); assert.match(values(argv, '--mount')[0], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-subpath=tmp,volume-nocopy$/); assert.match(values(argv, '--mount')[1], /^type=bind,src=.+,dst=\/workspace,readonly=false,bind-propagation=rprivate$/);
   assert.deepEqual(values(argv, '--workdir'), ['/workspace']);
   assert.deepEqual(values(argv, '--network'), ['bridge']);
   assert.deepEqual(values(argv, '--pids-limit'), ['128']); assert.deepEqual(values(argv, '--memory'), ['512m']); assert.deepEqual(values(argv, '--cpus'), ['1']);
-  assert.deepEqual(values(argv, '--env'), ['HOME=/home/worker', 'XDG_CONFIG_HOME=/home/worker/.config', 'XDG_DATA_HOME=/home/worker/.local/share']);
+  assert.deepEqual(values(argv, '--env'), ['HOME=/home/worker', 'XDG_CONFIG_HOME=/home/worker/.config', 'XDG_DATA_HOME=/home/worker/.local/share', 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'LANG=C.UTF-8', 'XDG_CACHE_HOME=/tmp/cache/xdg', 'npm_config_cache=/tmp/cache/npm', 'PIP_CACHE_DIR=/tmp/cache/pip', 'UV_CACHE_DIR=/tmp/cache/uv', 'COMPOSER_CACHE_DIR=/tmp/cache/composer', 'NUGET_PACKAGES=/tmp/cache/nuget', 'CARGO_HOME=/tmp/cache/cargo', 'GOMODCACHE=/tmp/cache/go']);
 }
 
 async function assertStableAbsence(id, name, label, foreignId, foreignName, fixture = null) {
@@ -116,11 +116,14 @@ async function cleanupOwned(fixture, foreignId = null, runDocker = docker) {
   // is created.  Track them from the exact Docker command records rather than
   // broad label/name selectors, then verify both identities before removal.
   const volumeRecords = [];
+  const ownedContainers = new Set();
   for (const logPath of [fixture.log, fixture.d2Log].filter(Boolean)) {
     try {
       const records = (await jsonl(logPath));
       for (const record of records) {
         const argv = record.argv ?? [];
+        const createdStdout = typeof record.stdout === 'string' ? record.stdout.trim() : '';
+        if (argv[0] === 'create' && /^[a-f0-9]{64}$/i.test(createdStdout)) ownedContainers.add(createdStdout);
         for (let index = 0; index < argv.length; index += 1) {
           if (argv[index] !== '--mount') continue;
           const mount = argv[index + 1] ?? '';
@@ -133,6 +136,12 @@ async function cleanupOwned(fixture, foreignId = null, runDocker = docker) {
         }
       }
     } catch {}
+  }
+  for (const id of ownedContainers) {
+    try { runDocker('rm', '--force', id); } catch (error) {
+      const message = error.stderr?.toString() ?? error.message;
+      if (!/no such (?:container)|not found/i.test(message)) throw error;
+    }
   }
   const volumes = new Map(volumeRecords.map(record => [`${record.name}\u0000${record.label}`, record]));
   for (const { name, label } of volumes.values()) {
@@ -196,10 +205,13 @@ const argv=process.argv.slice(2), original=[...argv];
 const docker=${JSON.stringify(dockerPath)}, image=${JSON.stringify(baseId)}, output=${JSON.stringify(d2Output)}, log=${JSON.stringify(d2Log)};
 const record={argv:original,env:Object.fromEntries(['DOCKER_HOST','DOCKER_CONTEXT','DOCKER_CONFIG','DOCKER_TLS_VERIFY','DOCKER_CERT_PATH','PATH'].map(k=>[k,process.env[k]??null]))};
 const save=()=>fs.appendFileSync(log,JSON.stringify(record)+'\\n');
+const createdRecords=()=>{try{return fs.readFileSync(log,'utf8').trim().split(/\\r?\\n/).filter(Boolean).map(line=>JSON.parse(line)).filter(item=>item.argv?.[0]==='create')}catch{return []}};
+const targetRole=()=>{const target=argv.at(-1);const create=createdRecords().find(item=>item.stdout?.trim()===target);if(!create)return null;const createArgv=create.argv??[];if(createArgv.includes('/app/src/container-runtime.mjs'))return 'runtime';if(createArgv.includes('yoloharness.role=scratch-init'))return 'scratch-init';if(createArgv.includes('yoloharness.role=scratch-verify'))return 'scratch-verify';return null;};
 if(argv[0]==='info'){record.stdout=JSON.stringify({OSType:'linux',OperatingSystem:'D2 fixture',SecurityOptions:['name=rootless','name=seccomp,profile=builtin']});save();process.stdout.write(record.stdout);process.exit(0);}
-if(argv[0]==='start'&&argv.includes('--attach')){record.intercept='runtime-output.json';record.stdout=fs.readFileSync(output,'utf8');record.status=process.env.YOLO_PROXY_PRIMARY==='generic'?42:0;save();process.stdout.write(record.stdout);process.exit(record.status);}
-if(argv[0]==='rm'&&process.env.YOLO_PROXY_CHILD==='cleanup-unknown'){record.intercept='cleanup-hang';save();setTimeout(()=>process.exit(0),5000);} else {
+if(argv[0]==='start'&&argv.includes('--attach')&&targetRole()==='runtime'){record.intercept='runtime-output.json';record.stdout=fs.readFileSync(output,'utf8');record.status=process.env.YOLO_PROXY_PRIMARY==='generic'?42:0;save();process.stdout.write(record.stdout);process.exit(record.status);}
+if(argv[0]==='rm'&&targetRole()==='runtime'&&process.env.YOLO_PROXY_CHILD==='cleanup-unknown'){record.intercept='cleanup-hang';save();setTimeout(()=>process.exit(0),5000);} else {
  const child=cp.spawnSync(docker,argv,{encoding:'utf8',env:process.env,stdio:['ignore','pipe','pipe']});
+
  record.stdout=child.stdout??'';record.stderr=child.stderr??'';record.status=child.status;
  save();process.stdout.write(record.stdout);process.stderr.write(record.stderr);process.exit(child.status??1);
 }
@@ -584,16 +596,16 @@ for (const scenario of [
     const modeEnv = { ...packedDockerEnvironment(fixture.endpoint, root), HOME: join(root, 'home'), XDG_CONFIG_HOME: fixture.config, XDG_DATA_HOME: fixture.data, YOLO_TEST_MODE: 'rootless', YOLO_TEST_ROOTFUL: '0', ...(scenario.control ? {} : { YOLO_PROXY_CHILD: 'cleanup-unknown' }), ...(scenario.primary ? { YOLO_PROXY_PRIMARY: 'generic' } : {}) };
     await writeFile(join(root, 'docker'), `#!/bin/sh\nexec ${fixture.d2Proxy} \"$@\"`, { mode: 0o755 }); await writeFile(fixture.d2Log, '');
     const run = spawnSync(cli, ['--json', '-t', '0.1', `packed cleanup ${scenario.name}`], { cwd: fixture.workspace, env: modeEnv, encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 });
-    assert.equal(run.error, undefined, run.error?.message); if (scenario.control) assert.equal(run.status, 0); else assert.notEqual(run.status, 0);
+    assert.equal(run.error, undefined, run.error?.message); if (scenario.control) assert.equal(run.status, 0, `${run.stderr}\n${run.stdout}`); else assert.notEqual(run.status, 0, `${run.stderr}\n${run.stdout}`);
     const lines = run.stdout.trim().split(/\r?\n/).filter(Boolean); assert.equal(lines.length, 1, `status=${run.status} signal=${run.signal} stdout=${JSON.stringify(run.stdout)} stderr=${run.stderr}`); const receipt = JSON.parse(lines[0]);
     assert.equal(receipt.version, 1, `status=${run.status} signal=${run.signal} stdout=${JSON.stringify(run.stdout)} stderr=${run.stderr}`); assert.equal(receipt.status, scenario.control ? 'completed' : 'cleanup_unknown'); assert.equal(receipt.effect_state, scenario.control ? 'none' : 'uncertain');
-    assert.equal(await readFile(join(fixture.workspace, '.yolo', 'last-receipt.json'), 'utf8'), `${JSON.stringify(receipt)}\n`);
+    assert.equal(await readFile(join(fixture.workspace, '.yolo', 'last-receipt.json'), 'utf8'), `${JSON.stringify(receipt)}\n`, JSON.stringify(await jsonl(fixture.d2Log)));
     if (scenario.prior) { assert.equal(receipt.run_id, scenario.prior.run_id); assert.equal(receipt.result, scenario.prior.result); assert.deepEqual(receipt.evidence, scenario.prior.evidence); assert.deepEqual(receipt.artifacts, scenario.prior.artifacts); if (!scenario.control) { assert.deepEqual(receipt.cleanup_history, scenario.prior.cleanup_history); assert.deepEqual(receipt.errors.slice(0, scenario.prior.errors.length), scenario.prior.errors); } }
     else { assert.equal(receipt.run_id, null); assert.equal(receipt.result, null); assert.deepEqual(receipt.evidence, []); assert.deepEqual(receipt.artifacts, []); assert.deepEqual(receipt.cleanup_history, []); }
     if (!scenario.control) { assert.ok(receipt.errors.length >= (scenario.primary ? 2 : scenario.prior ? scenario.prior.errors.length + 1 : 2)); assert.match(receipt.errors.at(-1), /cleanup_unknown/); if (scenario.primary) assert.match(receipt.errors[0], /container exited \(42\)/); }
     const records = await jsonl(fixture.d2Log); const create = records.find(r => r.argv[0] === 'create'); assert.ok(create); createdId = create.stdout.trim();
     const selected = records.find(r => r.argv[0] === 'image'); assert.ok(selected); assert.deepEqual(selected.env, { ...Object.fromEntries(dockerSelectorKeys.map(key => [key, originalDockerSelectors[key] ?? null])), DOCKER_HOST: originalDockerSelectors.DOCKER_HOST ?? fixture.endpoint, PATH: `${root}:${process.env.PATH}` });
-    const start = records.find(r => r.intercept === 'runtime-output.json'); assert.ok(start); assert.equal(start.stdout, await readFile(fixture.d2Output, 'utf8')); assert.equal(records.filter(r => r.intercept === 'runtime-output.json').length, 1);
+    const start = records.find(r => r.intercept === 'runtime-output.json'); assert.ok(start, JSON.stringify(records.filter(r => r.argv[0] === 'start').map(r => r.argv))); assert.equal(start.stdout, await readFile(fixture.d2Output, 'utf8')); assert.equal(records.filter(r => r.intercept === 'runtime-output.json').length, 1);
     assert.equal(records.some(r => JSON.stringify(r).includes('.yolo/last-receipt.json')), false); assert.equal(records.some(r => JSON.stringify(r).includes('chmod')), false); assert.doesNotMatch(await readFile(fixture.d2Proxy, 'utf8'), /last-receipt|chmod|cp\.exec/);
     if (!scenario.control) { const cleanup = records.find(r => r.intercept === 'cleanup-hang'); assert.ok(cleanup); assert.deepEqual(cleanup.argv.slice(0, 2), ['rm', '--force']); assert.equal(cleanup.argv.length, 3); }
   } finally {

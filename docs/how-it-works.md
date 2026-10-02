@@ -26,7 +26,7 @@ The launcher selects the executable found on PATH and preserves the caller's Doc
 
 The current runtime has a read-only image root, dropped capabilities, `no-new-privileges`, bridge networking, 128 PIDs, 512 MiB memory, one CPU, a 64 MiB `noexec,nosuid` `/home/worker` tmpfs, and Docker-managed scratch (`src/resource-policy.mjs`, `src/container-launcher.mjs:83-94`). Bridge networking is general egress, not provider-only allowlisting. Generated code can read the project and access-token material in its runtime boundary; this is not a confidentiality sandbox.
 
-Current storage is a writable host bind at `/workspace` plus exact configured volume subpaths. Defaults are `node_modules`, `.venv`, `vendor`, `.godot`, and `target`; matching is exact relative path, not recursive basename matching or a future-directory watcher. Existing dependency directories are hidden by `volume-nocopy`, not copied into scratch. Only absent empty scaffolds are removed; existing or changed content is retained and reported. The launcher advertises cache variables, but `ContainerProcessExecutor` replaces the child environment and drops those variables while also changing HOME (`src/container-launcher.mjs:26-27,92-93`, `src/container-executor.mjs:30-35`). Do not promise deterministic cache placement until separately fixed and tested.
+Runtime workspace storage is now a run-owned Docker volume mounted at `/workspace`; the untrusted runtime receives no writable host workspace bind. A network-disabled seed helper copies the host workspace into the volume before execution, filtering configured dependency directory names recursively at any depth. A separate network-disabled publisher runs after runtime quiescence and copies durable files back with a bounded baseline, preserves excluded host trees, applies safe deletions, and fails closed on durable conflicts. Defaults remain `node_modules`, `.venv`, `vendor`, `.godot`, and `target`; configured entries are treated as dependency basenames at arbitrary depth. The publisher is intentionally conservative: unsupported file types, races, and ambiguous ownership are errors rather than silent overwrite/delete.
 
 ## Bootstrap, provider, and tools
 
@@ -59,13 +59,11 @@ Intended cleanup is exact and fail-closed: verify run labels/name/ID, stop, kill
 
 `npm test` is the offline suite. `npm run test:docker` is opt-in and selects `real-docker*.test.mjs`; `shipped-preflight.test.mjs` is not included by that glob. Some real-Docker tests simulate identity/platform and do not prove native rootful Linux or macOS. No live provider/OAuth entitlement, native Darwin staging, or secure copy-back has been validated in this documentation task. See test references in `test/integration.test.mjs`, `test/container-launcher.test.mjs`, `test/real-docker*.test.mjs`, `test/volume-reconciliation.test.mjs`, and `test/install-skills.test.mjs`.
 
-## Proposed containment architecture (not implemented)
+## Workspace containment architecture
 
-The current writable bind has an acceptance-blocking bypass: creating `/workspace/neobrui-vite/node_modules` writes to the host because only `/workspace/node_modules` is mounted. Offline rootless fixtures reproduced the same leak for all five defaults (`node_modules`, `.venv`, `vendor`, `.godot`, `target`). Exact mounts cannot cover arbitrary descendants created after container startup; prompt instructions and package-manager wrappers are not security boundaries.
+The previous writable bind bypass is closed: creating `/workspace/neobrui-vite/node_modules` stays in Docker-managed storage because the runtime sees only the staged workspace volume. Dependency names are filtered recursively at arbitrary depth for Node, Python, PHP, .NET/C#/Godot, and custom configured layouts; source, manifests, lockfiles, and intended outputs outside those names are published back. Existing host dependency trees are never copied over or deleted. Publication uses a baseline and fails closed on durable conflicts rather than hiding or overwriting user-authored content.
 
-Preferred design: seed one run-owned Docker workspace volume before execution; give the untrusted runtime only that volume at `/workspace` (no writable host bind); after all writers are stopped and verified absent, use a fresh trusted network-disabled read-only exporter and an independently validating host publisher. Match dependency names at any path depth, preserve source/manifests/lockfiles/intended outputs outside exclusions, and preserve pre-existing host dependency trees rather than deleting them. The publisher must use no-follow, descriptor-anchored operations, reject symlink/hardlink/special-file/race ambiguity, compare a bounded baseline, and apply conflict-aware creates/replacements/deletions. Never use `rsync --delete` or trust an agent archive. Unsupported ownership/ACL/filesystem cases fail closed.
-
-Proposed lifecycle:
+Lifecycle:
 
 ```text
 preflight -> journaled -> volume_created -> seeded -> running -> quiescing

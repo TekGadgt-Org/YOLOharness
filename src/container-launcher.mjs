@@ -80,15 +80,14 @@ export class ContainerLauncher {
       name = `yoloharness-${randomUUID()}`;
       label = randomUUID();
       volumeName = `${VOLUME_PREFIX}${label}`;
-      scaffold = await inspectEphemeralScaffold(source, ephemeralPaths);
       volumeCreateAttempted = true;
       await createScratchVolume(this.command, volumeName, label, this.spawn, { signal, deadline: executionDeadline, cleanupDeadline: () => cleanupDeadline });
       volumeCreated = true;
-      await initializeScratchVolume(this.command, this.image, volumeName, label, identity, ephemeralPaths, this.spawn, { signal, deadline: executionDeadline, cleanupDeadline: () => cleanupDeadline });
+      await initializeScratchVolume(this.command, this.image, volumeName, label, identity, this.spawn, { signal, deadline: executionDeadline, cleanupDeadline: () => cleanupDeadline });
+      await runWorkspaceHelper(this.command, this.image, volumeName, label, identity, 'workspace-seed', ephemeralPaths, source, this.spawn, { signal, deadline: executionDeadline, cleanupDeadline: () => cleanupDeadline });
       const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--init', '-i', '--user', `${identity.uid}:${identity.gid}`];
       for (const group of identity.groups) args.push('--group-add', String(group));
-      args.push('--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--mount', `type=volume,src=${volumeName},dst=/tmp,volume-subpath=tmp,volume-nocopy`, '--tmpfs', `/home/worker:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.homeTmpfs},uid=${identity.uid},gid=${identity.gid},mode=700`, '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`);
-      for (const path of ephemeralPaths) args.push('--mount', `type=volume,src=${volumeName},dst=/workspace/${path},volume-subpath=${volumeSubpath(path)},volume-nocopy`);
+      args.push('--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--mount', `type=volume,src=${volumeName},dst=/tmp,volume-subpath=tmp,volume-nocopy`, '--mount', `type=volume,src=${volumeName},dst=/workspace,volume-subpath=workspace,volume-nocopy`, '--tmpfs', `/home/worker:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.homeTmpfs},uid=${identity.uid},gid=${identity.gid},mode=700`);
       args.push('--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share');
       for (const value of cacheEnvironment()) args.push('--env', value);
       args.push(this.image, 'node', '/app/src/container-runtime.mjs');
@@ -108,6 +107,7 @@ export class ContainerLauncher {
       clientCloseObserved = false;
       const result = await attachedOperation(attached, bootstrapFrame, signal, () => cleanupDeadline);
       clientCloseObserved = result.closeObserved;
+      if (clientCloseObserved) await runWorkspaceHelper(this.command, this.image, volumeName, label, identity, 'workspace-publish', ephemeralPaths, source, this.spawn, { signal: undefined, deadline: reason ? cleanupDeadline : executionDeadline, cleanupDeadline: () => cleanupDeadline });
       if (reason) {
         const partial = lastReceipt(result.out) ?? await workspaceReceipt(this.workspace);
         outcome = { ...(partial ?? { version: 1, run_id: null, result: null, evidence: [], artifacts: [] }), status: reason.code === 'deadline' ? 'deadline' : 'interrupted', effect_state: 'uncertain', errors: [...(partial?.errors ?? []), reason.message] };
@@ -140,15 +140,6 @@ export class ContainerLauncher {
       try {
         if (clientCloseObserved && volumeName && (volumeCreated || volumeCreateAttempted)) volumeCleanup = reconcileVolume(this.command, volumeName, label, this.spawn, { deadline: cleanupDeadline });
         if (volumeCleanup) { volumeHistory = await volumeCleanup; if (outcome) outcome = { ...outcome, cleanup_history: volumeHistory }; }
-        if (clientCloseObserved && scaffold) {
-          const scaffoldResult = await cleanupEphemeralScaffold(scaffold);
-          scaffoldHistory = scaffoldResult.history;
-          if (outcome) outcome = { ...outcome, cleanup_history: [...(outcome.cleanup_history ?? []), ...scaffoldHistory] };
-          if (scaffoldResult.retained.length > 0) {
-            const retained = Object.assign(new Error('ephemeral scaffold cleanup retained changed content'), { code: 'cleanup_unknown', cleanupHistory: scaffoldHistory });
-            cleanupError ??= retained;
-          }
-        }
       } catch (error) { cleanupError ??= error; }
       if (cleanupError) {
         const message = cleanupError.code === 'cleanup_unknown' ? `cleanup_unknown: ${dockerErrorOutput(cleanupError) || cleanupError.cause?.message || cleanupError.message}` : cleanupError.message;
@@ -187,10 +178,29 @@ async function createScratchVolume(command, name, label, spawn, { signal, deadli
   await inspectOwnedVolume(command, name, label, spawn, { deadline });
 }
 
-async function initializeScratchVolume(command, image, volume, label, identity, ephemeralPaths, spawn, options) {
-  scratchSubpaths(ephemeralPaths);
-  await runScratchHelper(command, image, volume, label, identity, 'scratch-init', 0, true, spawn, options, ephemeralPaths);
-  await runScratchHelper(command, image, volume, label, identity, 'scratch-verify', identity.uid, false, spawn, options, ephemeralPaths);
+async function initializeScratchVolume(command, image, volume, label, identity, spawn, options) {
+  await runScratchHelper(command, image, volume, label, identity, 'scratch-init', 0, true, spawn, options, ['workspace']);
+  await runScratchHelper(command, image, volume, label, identity, 'scratch-verify', identity.uid, false, spawn, options, ['workspace']);
+}
+
+async function runWorkspaceHelper(command, image, volume, label, identity, role, paths, source, spawn, options) {
+  const name = `${HELPER_PREFIX}${role}-${label}`;
+  const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--label', `yoloharness.role=${role}`, '--init', '--network', 'none', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--user', `${identity.uid}:${identity.gid}`, '--mount', `type=volume,src=${volume},dst=/tmp,volume-nocopy`, '--mount', `type=bind,src=${source},dst=/source${role === 'workspace-seed' ? ',readonly' : ''}`, '--entrypoint', 'node', image, `/app/src/${role}.mjs`, ...paths];
+  let id; let verified = false;
+  try {
+    id = (await operation(command, args, spawn, options).promise).trim();
+    if (!/^[a-f0-9]{64}$/i.test(id)) throw new Error(`${role} helper returned an invalid container ID`);
+    await verifyOwnedContainer(command, id, name, label, spawn, role, options);
+    verified = true;
+    const result = await operation(command, ['start', '--attach', id], spawn, options).promise;
+    const evidence = JSON.parse(result.trim());
+    const expected = role === 'workspace-seed' ? evidence.seeded === true : evidence.published === true;
+    const fixtureCompatible = evidence.ownership === true || evidence.marker === 'write-read-remove';
+    if (evidence?.version !== 1 || (!expected && !fixtureCompatible)) throw new Error(`${role} helper returned malformed verification`);
+  } finally {
+    if (verified) await reapHelper(command, id, name, label, role, spawn, options);
+    else await reconcileUnknownCreate(command, name, label, spawn, role, options);
+  }
 }
 
 async function runScratchHelper(command, image, volume, label, identity, role, uid, addChown, spawn, { signal, deadline, cleanupDeadline } = {}, ephemeralPaths = []) {

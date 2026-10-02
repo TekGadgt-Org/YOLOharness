@@ -6,6 +6,7 @@ import { encodeBootstrap } from './bootstrap.mjs';
 import { snapshotSkills } from './skills.mjs';
 import { RUNTIME_RESOURCE_POLICY } from './resource-policy.mjs';
 import { volumeSubpath, scratchSubpaths } from './scratch-path.mjs';
+import { effectiveEphemeralPaths, validateEphemeralPaths } from './config.mjs';
 
 const MAX_OUTPUT = 1024 * 1024;
 const OP_TIMEOUT = 10_000;
@@ -37,6 +38,9 @@ export class ContainerLauncher {
     const executionDeadline = startedAt + this.timeoutMs;
     const remaining = () => Math.max(1, executionDeadline - Date.now());
     if (signal?.aborted) throw signal.reason;
+    const ephemeralPaths = bootstrap?.ephemeralPaths === undefined
+      ? effectiveEphemeralPaths()
+      : validateEphemeralPaths(bootstrap.ephemeralPaths);
     const source = await validateWorkspace(this.workspace, { signal, deadline: executionDeadline });
     if (signal?.aborted) throw signal.reason;
     if (Date.now() >= executionDeadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
@@ -76,7 +80,6 @@ export class ContainerLauncher {
       name = `yoloharness-${randomUUID()}`;
       label = randomUUID();
       volumeName = `${VOLUME_PREFIX}${label}`;
-      const ephemeralPaths = bootstrap.ephemeralPaths ?? ['node_modules', '.venv', 'vendor', '.godot', 'target'];
       scaffold = await inspectEphemeralScaffold(source, ephemeralPaths);
       volumeCreateAttempted = true;
       await createScratchVolume(this.command, volumeName, label, this.spawn, { signal, deadline: executionDeadline, cleanupDeadline: () => cleanupDeadline });
@@ -449,7 +452,6 @@ function attachedOperation(child, input, signal, cleanupDeadline) {
 
 async function reconcileUnknownCreate(command, name, label, spawn, role = undefined, { deadline } = {}) {
   if (!Number.isFinite(deadline)) throw new TypeError('container reconciliation requires one cleanup deadline');
-  const startedAt = Date.now();
   let absentSince = null;
   while (Date.now() < deadline) {
     let output;

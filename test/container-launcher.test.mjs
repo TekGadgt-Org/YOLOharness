@@ -6,6 +6,25 @@ import { EventEmitter } from 'node:events';
 import { ContainerLauncher, validateWorkspace, decodeMountInfoTargets, containerIdentity } from '../src/container-launcher.mjs';
 import { configuredImage, runtimeSourceIdentity } from '../src/cli.mjs';
 import { RUNTIME_RESOURCE_POLICY } from '../src/resource-policy.mjs';
+import { DEFAULT_EPHEMERAL_PATHS } from '../src/config.mjs';
+
+test('launcher rejects invalid ephemeral paths before workspace or Docker side effects', async () => {
+  const invalid = [
+    ['../outside'], ['a/../b'], ['a/./b'], ['./cache'], ['/absolute'], ['C:/absolute'], ['.git'],
+    ['cache,readonly'], ['a\\\\b', 'a/b'], ['cache', 'cache/nested'], ['cache', ...Array.from({ length: 16 }, () => 'nested')],
+    ['x'.repeat(241)], Array.from({ length: 65 }, (_, index) => `cache-${index}`), null,
+  ];
+  let calls = 0;
+  const launcher = new ContainerLauncher({ image: 'sha256:' + 'a'.repeat(64), workspace: '/missing-workspace', spawn: () => { calls += 1; throw new Error('Docker must not run'); } });
+  for (const ephemeralPaths of invalid) {
+    await assert.rejects(launcher.launch({ prompt: 'invalid', ephemeralPaths }), error => error.code === 'invalid_ephemeral_path' || error.code === 'invalid_ephemeral_paths');
+  }
+  assert.equal(calls, 0);
+});
+
+test('launcher uses shared ephemeral defaults when omitted', async () => {
+  assert.deepEqual(DEFAULT_EPHEMERAL_PATHS, ['node_modules', '.venv', 'vendor', '.godot', 'target']);
+});
 
 test('runtime resource policy keeps identity scratch bounded while run scratch is volume-backed', () => {
   assert.deepEqual(RUNTIME_RESOURCE_POLICY, {

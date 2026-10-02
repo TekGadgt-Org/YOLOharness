@@ -14,6 +14,8 @@ const skip = !enabled;
 const dockerPath = execFileSync('command', ['-v', 'docker'], { shell: '/bin/sh', encoding: 'utf8' }).trim();
 const docker = (...args) => execFileSync(dockerPath, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 const image = process.env.YOLO_DOCKER_IMAGE ?? 'yoloharness-local:0.1.1';
+const installationTag = 'yoloharness-local:0.1.1';
+const historicalImage = 'yoloharness-historical:4592889';
 const artifactDir = process.env.YOLO_REAL_DOCKER_ARTIFACT_DIR;
 const dockerSelectorKeys = ['DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH'];
 const originalDockerSelectors = Object.fromEntries(dockerSelectorKeys.map(key => [key, process.env[key]]));
@@ -249,6 +251,18 @@ function cleanupHistoricalWorkspace(fixture) {
   execFileSync(dockerPath, ['run', '--rm', '--pull=never', '--network', 'none', '--user', '0:0', '--mount', mount, '--entrypoint', 'sh', fixture.baseId, '-c', 'rm -rf /workspace/node_modules /workspace/.yolo'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env });
 }
 
+function imageInventory(tag) {
+  return JSON.parse(docker('image', 'inspect', '--format', '{{json .}}', tag));
+}
+
+function restoreInstallationTag(before, historicalBefore) {
+  docker('tag', before.Id, installationTag);
+  const after = imageInventory(installationTag);
+  assert.equal(after.Id, before.Id, 'installation-owned image tag was not restored');
+  assert.deepEqual(after.RepoTags, before.RepoTags, 'installation-owned image tags changed');
+  assert.equal(imageInventory(historicalImage).Id, historicalBefore.Id, 'historical image changed');
+}
+
 function packedDockerEnvironment(endpoint, root) {
   const selected = { ...process.env, PATH: `${root}:${process.env.PATH}` };
   const explicit = ['DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH']
@@ -264,7 +278,14 @@ function packedDockerEnvironment(endpoint, root) {
 test('exact historical packed CLI retains the dependency-isolation RED baseline', { skip }, async () => {
   const historicalCommit = '4592889c2aef05ed025ab2a09396e21e33980831';
   const root = await mkdtemp(join(tmpdir(), 'yoloharness-historical-node-red-')); let fixture;
+  const installationBefore = imageInventory(installationTag);
+  const historicalBefore = imageInventory(historicalImage);
+  assert.notEqual(installationBefore.Id, historicalBefore.Id, 'historical fixture requires a distinct installation image');
   try {
+    // The historical CLI validates the installation-owned tag. Point it at
+    // the exact historical image only while this fixture is running.
+    docker('tag', historicalBefore.Id, installationTag);
+    assert.equal(imageInventory(installationTag).Id, historicalBefore.Id);
     fixture = await makeFixture(root); await chmod(fixture.workspace, 0o777); await mkdir(join(fixture.workspace, '.yolo')); await chmod(join(fixture.workspace, '.yolo'), 0o777);
     await mkdir(join(fixture.workspace, 'package-fixture'));
     await writeFile(join(fixture.workspace, 'package-fixture', 'package.json'), JSON.stringify({ name: 'installed-capacity-fixture', version: '1.0.0' }));
@@ -282,20 +303,24 @@ test('exact historical packed CLI retains the dependency-isolation RED baseline'
     await retainArtifact('historical-red.raw.json', await readFile(join(root, 'historical-red.raw.json')));
     assert.equal(run.error, undefined, run.error?.message); assert.equal(run.status, 0, `${run.stderr}\n${run.stdout}`);
     const receipt = JSON.parse(run.stdout.trim().split(/\r?\n/).at(-1)); assert.equal(receipt.status, 'completed');
-    assert.equal((await readFile(join(fixture.workspace, 'node_modules', 'historical-capacity-fixture', 'payload.bin'))).length, 73_400_320);
+    assert.equal((await readFile(join(fixture.workspace, 'node_modules', 'installed-capacity-fixture', 'payload.bin'))).length, 73_400_320);
     assert.equal(await readFile(join(fixture.workspace, 'project-artifact.txt'), 'utf8'), 'historical-artifact\n');
     assert.equal(JSON.parse(await readFile(join(fixture.workspace, 'package-lock.json'), 'utf8')).name, 'historical-project');
     const create = (await jsonl(fixture.log)).find(record => record.argv[0] === 'create' && record.argv.includes('/app/src/container-runtime.mjs')); assert.ok(create);
     assert.ok(create.argv.some(value => value.startsWith('type=bind,src=') && value.endsWith(',dst=/workspace,readonly=false,bind-propagation=rprivate')));
     assert.equal(create.argv.some(value => value.includes('volume-subpath=')), false);
   } finally {
-    if (fixture) {
-      await cleanupOwned(fixture);
-      cleanupHistoricalWorkspace(fixture);
-      await assert.rejects(readFile(join(fixture.workspace, 'node_modules', 'historical-capacity-fixture', 'payload.bin')));
-      await assert.rejects(readFile(join(fixture.workspace, '.yolo', 'last-receipt.json')));
+    try {
+      if (fixture) {
+        await cleanupOwned(fixture);
+        cleanupHistoricalWorkspace(fixture);
+        await assert.rejects(readFile(join(fixture.workspace, 'node_modules', 'installed-capacity-fixture', 'payload.bin')));
+        await assert.rejects(readFile(join(fixture.workspace, '.yolo', 'last-receipt.json')));
+      }
+    } finally {
+      restoreInstallationTag(installationBefore, historicalBefore);
+      await rm(root, { recursive: true, force: true });
     }
-    await rm(root, { recursive: true, force: true });
   }
 });
 

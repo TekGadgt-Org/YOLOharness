@@ -243,6 +243,12 @@ function resetWorkloadWorkspace(fixture) {
   docker('run', '--rm', '--pull=never', '--network', 'none', '--user', '0:0', '--mount', `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--entrypoint', 'sh', image, '-c', 'rm -rf /workspace/node_modules /workspace/.yolo && mkdir -m 0777 /workspace/.yolo');
 }
 
+function cleanupHistoricalWorkspace(fixture) {
+  const mount = `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`;
+  const env = { ...process.env, DOCKER_HOST: fixture.endpoint, DOCKER_CONTEXT: undefined, DOCKER_TLS_VERIFY: undefined, DOCKER_CERT_PATH: undefined };
+  execFileSync(dockerPath, ['run', '--rm', '--pull=never', '--network', 'none', '--user', '0:0', '--mount', mount, '--entrypoint', 'sh', fixture.baseId, '-c', 'rm -rf /workspace/node_modules /workspace/.yolo'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env });
+}
+
 function packedDockerEnvironment(endpoint, root) {
   const selected = { ...process.env, PATH: `${root}:${process.env.PATH}` };
   const explicit = ['DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH']
@@ -282,7 +288,15 @@ test('exact historical packed CLI retains the dependency-isolation RED baseline'
     const create = (await jsonl(fixture.log)).find(record => record.argv[0] === 'create' && record.argv.includes('/app/src/container-runtime.mjs')); assert.ok(create);
     assert.ok(create.argv.some(value => value.startsWith('type=bind,src=') && value.endsWith(',dst=/workspace,readonly=false,bind-propagation=rprivate')));
     assert.equal(create.argv.some(value => value.includes('volume-subpath=')), false);
-  } finally { if (fixture) await cleanupOwned(fixture); await rm(root, { recursive: true, force: true }); }
+  } finally {
+    if (fixture) {
+      await cleanupOwned(fixture);
+      cleanupHistoricalWorkspace(fixture);
+      await assert.rejects(readFile(join(fixture.workspace, 'node_modules', 'historical-capacity-fixture', 'payload.bin')));
+      await assert.rejects(readFile(join(fixture.workspace, '.yolo', 'last-receipt.json')));
+    }
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('installed v0.1.1 CLI retains complete identity lifecycle evidence', { skip }, async () => {

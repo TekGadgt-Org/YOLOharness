@@ -48,8 +48,8 @@ test('launcher creates and mounts one exact owned scratch volume', async () => {
     assert.equal(operations.filter(args => args[0] === 'volume' && args[1] === 'create').length, 1);
     assert.equal(operations.filter(args => args[0] === 'volume' && args[1] === 'rm').length, 1);
     const mount = createArgs[createArgs.indexOf('--mount') + 1];
-    assert.match(mount, /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-nocopy$/);
-    assert.equal(createArgs.filter(value => value === '--mount').length, 2);
+    assert.match(mount, /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-subpath=tmp,volume-nocopy$/);
+    assert.equal(createArgs.filter(value => value === '--mount').length, 7);
     assert.equal(createArgs.some(value => String(value).includes('/tmp:rw')), false);
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
@@ -364,7 +364,7 @@ test('macOS Linux-daemon consumer create argv uses 0:0 without supplementary gro
     assert.equal((await launcher.launch({ prompt: 'linux-daemon', model: 'synthetic-model', deadline: Date.now() + 10_000, accessToken: 'synthetic-access', expiresAt: Date.now() + 20_000 })).result, 'ok');
     assert.equal(createArgs[createArgs.indexOf('--user') + 1], '0:0');
     assert.equal(createArgs.includes('--group-add'), false);
-    assert.match(createArgs[createArgs.indexOf('--mount') + 1], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-nocopy$/);
+    assert.match(createArgs[createArgs.indexOf('--mount') + 1], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-subpath=tmp,volume-nocopy$/);
     assert.match(createArgs[createArgs.indexOf('--tmpfs') + 1], new RegExp(`size=${RUNTIME_RESOURCE_POLICY.homeTmpfs}.*uid=0,gid=0,mode=700`));
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
@@ -425,7 +425,7 @@ test('rootful consumer create argv carries selected ownership without duplicate 
       assert.equal(helperArgs.includes('--mount') && helperArgs.filter(value => value === '--mount').length, 1);
       assert.equal(helperArgs.includes('/workspace'), false);
     }
-    assert.match(createArgs[createArgs.indexOf('--mount') + 1], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-nocopy$/);
+    assert.match(createArgs[createArgs.indexOf('--mount') + 1], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-subpath=tmp,volume-nocopy$/);
     assert.match(createArgs[createArgs.indexOf('--tmpfs') + 1], new RegExp(`size=${RUNTIME_RESOURCE_POLICY.homeTmpfs}.*uid=${process.getuid()},gid=${process.getgid()},mode=700`));
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });

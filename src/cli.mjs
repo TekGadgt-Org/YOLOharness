@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { AuthClient, AuthStore } from './auth.mjs';
-import { ConfigStore, configPath, configRoot, validateModel, imageMetadataPath } from './config.mjs';
+import { ConfigStore, configPath, configRoot, validateModel, imageMetadataPath, DEFAULT_EPHEMERAL_PATHS, validateEphemeralPath, validateEphemeralPaths, effectiveEphemeralPaths } from './config.mjs';
 import { ContainerLauncher } from './container-launcher.mjs';
 import { readFile, writeFile, mkdir, cp, rm, open, rename, readdir, access } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
@@ -31,7 +31,7 @@ const AUTH_ENDPOINTS = Object.freeze({
   redirectUri: 'https://auth.openai.com/deviceauth/callback',
 });
 export const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
-function usage() { return 'Usage: yolo [-t MINUTES] [--json] <prompt>\n       yolo setup\n       yolo doctor\n       yolo config set model <model-id>\n       yolo auth login|status|logout\n       yolo --help\n       yolo --version'; }
+function usage() { return 'Usage: yolo [-t MINUTES] [--json] <prompt>\n       yolo setup\n       yolo doctor\n       yolo config set model <model-id>\n       yolo config ephemeral-path list|add|remove|reset [path]\n       yolo auth login|status|logout\n       yolo --help\n       yolo --version'; }
 export function parseArgs(args) {
   let minutes = 10; let json = false; const prompt = [];
   for (let i = 0; i < args.length; i += 1) {
@@ -73,8 +73,9 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     const dockerCommand = await resolveDockerCommand();
     const image = await configuredImage({ dockerCommand });
     const credentials = await runtimeCredentials(options.minutes);
+    const config = await new ConfigStore(configPath()).load();
     const launcher = new ContainerLauncher({ image, workspace, command: dockerCommand, timeoutMs: options.minutes * 60_000 + 10_000 });
-    const record = await launcher.launch({ prompt: options.prompt, model, deadline: Date.now() + options.minutes * 60_000, accessToken: credentials.accessToken, expiresAt: credentials.expiresAt }, { signal: controller.signal });
+    const record = await launcher.launch({ prompt: options.prompt, model, ephemeralPaths: effectiveEphemeralPaths(config), deadline: Date.now() + options.minutes * 60_000, accessToken: credentials.accessToken, expiresAt: credentials.expiresAt }, { signal: controller.signal });
     process.removeListener('SIGINT', onInterrupt);
     io.stdout.write(`${options.json ? JSON.stringify(record) : `${record.status} run=${record.run_id ?? 'unknown'} effect_state=${record.effect_state ?? 'unknown'} evidence=${record.evidence?.length ?? 0} artifacts=${record.artifacts?.length ?? 0}: ${record.result ?? record.errors.join('; ')}`}\n`);
     return record.status === 'completed' && record.effect_state !== 'uncertain' ? 0 : record.status === 'interrupted' ? 130 : record.status === 'deadline' ? 124 : 1;
@@ -294,8 +295,15 @@ export async function resolveModel() {
 }
 
 async function configCommand(args, io) {
-  if (args.length !== 3 || args[0] !== 'set' || args[1] !== 'model') throw new TypeError('usage: yolo config set model <model-id>');
-  const model = validateModel(args[2]); const store = new ConfigStore(configPath()); await store.load(); await store.save(model); io.stdout.write(`saved model ${model}\n`); return 0;
+  const store = new ConfigStore(configPath());
+  if (args[0] === 'set' && args[1] === 'model' && args.length === 3) { const model = validateModel(args[2]); const prior = await store.load(); await store.saveDocument({ model, ephemeralPaths: effectiveEphemeralPaths(prior) }); io.stdout.write(`saved model ${model}\n`); return 0; }
+  if (args[0] !== 'ephemeral-path') throw new TypeError('usage: yolo config set model <model-id> | yolo config ephemeral-path list|add|remove|reset [path]');
+  const prior = await store.load(); const model = prior?.model; if (!model) throw new TypeError('a model must be configured before editing ephemeral paths');
+  const current = effectiveEphemeralPaths(prior); const action = args[1];
+  if (action === 'list' && args.length === 2) { if (prior.version === 1) await store.saveDocument({ model, ephemeralPaths: current }); for (const path of current) io.stdout.write(`${path}\n`); return 0; }
+  if (action === 'reset' && args.length === 2) { await store.saveDocument({ model, ephemeralPaths: DEFAULT_EPHEMERAL_PATHS }); io.stdout.write('ephemeral paths reset\n'); return 0; }
+  if ((action === 'add' || action === 'remove') && args.length === 3) { const path = validateEphemeralPath(args[2]); const next = action === 'add' ? [...current, path] : current.filter(value => value !== path); await store.saveDocument({ model, ephemeralPaths: validateEphemeralPaths(next) }); io.stdout.write(`${action === 'add' ? 'added' : 'removed'} ephemeral path ${path}\n`); return 0; }
+  throw new TypeError('usage: yolo config ephemeral-path list|add|remove|reset [path]');
 }
 
 export async function doctorStatus({ env = process.env, exec = execFileAsync } = {}) {

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, readlink, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -172,7 +172,7 @@ async function makeFixture(root) {
   await writeFile(join(context, 'Dockerfile'), `FROM ${image}\nCOPY ca.crt /usr/local/share/ca-certificates/yoloharness-test-ca.crt\nENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/yoloharness-test-ca.crt\n`);
   const tag = `yoloharness-identity:${process.pid}`; docker('build', '--pull=false', '-t', tag, context); const derivative = docker('image', 'inspect', '--format', '{{.Id}}', tag).trim();
   const network = `yoloharness-identity-${process.pid}`; docker('network', 'create', '--internal', network);
-  const providerScript = "const https=require('https'),fs=require('fs');let n=0;https.createServer({key:fs.readFileSync('/tls/server.key'),cert:fs.readFileSync('/tls/server.crt')},(q,r)=>{let b='';q.on('data',c=>b+=c);q.on('end',()=>{n++;const followup=b.includes('function_call_output');r.writeHead(200,{'content-type':'text/event-stream'});if(!followup)r.end('data: '+JSON.stringify({type:'response.output_item.done',item:{type:'function_call',id:b.includes('installed npm 70 MiB')?'npm-item':'identity-item',call_id:b.includes('installed npm 70 MiB')?'npm-install-call':'identity-call',name:'exec',arguments:JSON.stringify(b.includes('installed npm 70 MiB')?{command:'npm',args:['install','--offline','--ignore-scripts','--no-audit','--no-fund','/workspace/package-fixture/installed-capacity-fixture-1.0.0.tgz']}:{command:'sh',args:['-c','printf identity-canary > /workspace/identity-canary']})}})+'\\n\\ndata: '+JSON.stringify({type:'response.completed',response:{status:'completed'}})+'\\n\\n');else r.end('data: '+JSON.stringify({type:'response.output_text.delta',delta:b.includes('installed npm 70 MiB')?'installed-npm-70m-ok':'identity-runtime-ok'})+'\\n\\ndata: '+JSON.stringify({type:'response.completed',response:{status:'completed'}})+'\\n\\n')})}).listen(443,'0.0.0.0')";
+  const providerScript = "const https=require('https'),fs=require('fs');let n=0;https.createServer({key:fs.readFileSync('/tls/server.key'),cert:fs.readFileSync('/tls/server.crt')},(q,r)=>{let b='';q.on('data',c=>b+=c);q.on('end',()=>{n++;const followup=b.includes('function_call_output');const python=b.includes('python venv');r.writeHead(200,{'content-type':'text/event-stream'});if(!followup)r.end('data: '+JSON.stringify({type:'response.output_item.done',item:{type:'function_call',id:python?'python-item':b.includes('installed npm 70 MiB')?'npm-item':'identity-item',call_id:python?'python-venv-call':b.includes('installed npm 70 MiB')?'npm-install-call':'identity-call',name:'exec',arguments:JSON.stringify(python?{command:'sh',args:['-c','set -eu; test \"$PATH\" = /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; test \"$LANG\" = C; python3 -m pip --version; python3 -m venv /workspace/.venv; /workspace/.venv/bin/python /workspace/python_probe.py; test \"$(cat /workspace/python-artifact.txt)\" = python-runtime-ok']}:b.includes('installed npm 70 MiB')?{command:'npm',args:['install','--offline','--ignore-scripts','--no-audit','--no-fund','/workspace/package-fixture/installed-capacity-fixture-1.0.0.tgz']}:{command:'sh',args:['-c','printf identity-canary > /workspace/identity-canary']})}})+'\\n\\ndata: '+JSON.stringify({type:'response.completed',response:{status:'completed'}})+'\\n\\n');else r.end('data: '+JSON.stringify({type:'response.output_text.delta',delta:python?'python-venv-ok':b.includes('installed npm 70 MiB')?'installed-npm-70m-ok':'identity-runtime-ok'})+'\\n\\ndata: '+JSON.stringify({type:'response.completed',response:{status:'completed'}})+'\\n\\n')})}).listen(443,'0.0.0.0')";
   const provider = `${network}-provider`; docker('run', '--detach', '--pull=never', '--network', network, '--network-alias', 'chatgpt.com', '--name', provider, '--mount', `type=bind,src=${ca},dst=/tls,readonly=true`, '--entrypoint', 'node', tag, '-e', providerScript);
   const childMarker = join(root, 'proxy-child.pid'); const cleanupFailure = join(root, 'cleanup-transient.once');
   const childFixture = join(root, 'proxy-child.cjs'); await writeFile(childFixture, `const fs=require('fs');fs.writeFileSync(${JSON.stringify(childMarker)},String(process.pid));if(process.env.YOLO_PROXY_CHILD==='cleanup-unknown'){const p=${JSON.stringify(join(workspace, '.yolo', 'last-receipt.json'))};try{process.stdout.write(fs.readFileSync(p,'utf8'));}catch{}if(process.env.YOLO_PROXY_PRIMARY==='generic'){process.stderr.write('primary fixture failure\\n');process.exitCode=42;}else process.exitCode=0;process.exit();}setInterval(()=>{},1000);`);
@@ -381,6 +381,37 @@ test('installed production CLI traverses provider/runtime/executor for exact 70 
     docker('rm', '--force', foreignId); foreignId = null;
     docker('run', '--rm', '--pull=never', '--user', '0:0', '--mount', `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--entrypoint', 'sh', image, '-c', 'rm -rf /workspace/.yolo');
   } finally { if (foreignId) try { docker('rm', '--force', foreignId); } catch {} if (fixture) { try { docker('run', '--rm', '--pull=never', '--user', '0:0', '--mount', `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--entrypoint', 'sh', image, '-c', 'rm -rf /workspace'); } catch {} await cleanupOwned(fixture); } await rm(root, { recursive: true, force: true }); }
+});
+
+test('packed installed production CLI runs Python venv in isolated volume paths', { skip }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'yoloharness-installed-python-')); let fixture;
+  try {
+    fixture = await makeFixture(root); await chmod(fixture.workspace, 0o777); await mkdir(join(fixture.workspace, '.yolo')); await chmod(join(fixture.workspace, '.yolo'), 0o777);
+    await writeFile(join(fixture.workspace, 'python_probe.py'), "from pathlib import Path\nassert Path('/workspace/.venv/bin/python').exists()\nPath('/workspace/python-artifact.txt').write_text('python-runtime-ok')\n");
+    const cli = await installPacked(root, fixture);
+    const metadataPath = join(fixture.data, 'yoloharness', 'image.json');
+    assert.deepEqual(JSON.parse(await readFile(metadataPath, 'utf8')), { version: 1, imageId: fixture.baseId, ...fixture.identity });
+    assert.equal(await readlink(cli), join(fixture.data, 'yoloharness', 'app', 'src', 'cli.mjs'));
+    const modeEnv = { ...process.env, HOME: join(root, 'home'), XDG_CONFIG_HOME: fixture.config, XDG_DATA_HOME: fixture.data, DOCKER_CONFIG: join(root, 'docker-config'), DOCKER_HOST: fixture.endpoint, DOCKER_CONTEXT: undefined, DOCKER_TLS_VERIFY: undefined, DOCKER_CERT_PATH: undefined, PATH: `${root}:${process.env.PATH}`, YOLO_TEST_MODE: 'rootful', YOLO_TEST_ROOTFUL: '1', YOLO_PRESERVE_RUNTIME_UID: '1' };
+    const appConfig = join(fixture.data, 'yoloharness', 'app', 'src', 'config.mjs');
+    const probe = spawnSync(process.execPath, ['--input-type=module', '-e', `import { imageMetadataPath } from ${JSON.stringify(new URL(`file://${appConfig}`).href)}; console.log(JSON.stringify({ path: imageMetadataPath(), env: { HOME: process.env.HOME, XDG_DATA_HOME: process.env.XDG_DATA_HOME } }));`], { env: modeEnv, encoding: 'utf8' });
+    assert.equal(probe.status, 0, probe.stderr); assert.deepEqual(JSON.parse(probe.stdout), { path: metadataPath, env: { HOME: modeEnv.HOME, XDG_DATA_HOME: modeEnv.XDG_DATA_HOME } });
+    const list = spawnSync(cli, ['config', 'ephemeral-path', 'list'], { cwd: fixture.workspace, env: modeEnv, encoding: 'utf8' });
+    assert.equal(list.status, 0, list.stderr); assert.deepEqual(list.stdout.trim().split(/\r?\n/), ['node_modules', '.venv', 'vendor', '.godot', 'target']);
+    await writeFile(join(root, 'docker'), `#!/bin/sh\nexec ${fixture.proxy} \"$@\"`, { mode: 0o755 }); await writeFile(fixture.log, '');
+    const run = spawnSync(cli, ['--json', '-t', '1', 'python venv'], { cwd: fixture.workspace, env: modeEnv, encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 });
+    assert.equal(run.error, undefined, run.error?.message); assert.equal(run.status, 0, `${run.stderr}\n${run.stdout}`);
+    const receipt = JSON.parse(run.stdout.trim().split(/\r?\n/).at(-1)); assert.equal(receipt.status, 'completed'); assert.equal(receipt.result, 'python-venv-ok');
+    const pythonEvidence = receipt.evidence.find(value => value?.call_id === 'python-venv-call'); assert.ok(pythonEvidence); assert.equal(pythonEvidence.ok, true, JSON.stringify(pythonEvidence));
+    assert.equal(docker('run', '--rm', '--pull=never', '--user', '0:0', '--mount', `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--entrypoint', 'sh', image, '-c', 'cat /workspace/python-artifact.txt'), 'python-runtime-ok');
+    assert.equal(await readFile(join(fixture.workspace, 'python-artifact.txt'), 'utf8'), 'python-runtime-ok');
+    await assert.rejects(readFile(join(fixture.workspace, '.venv', 'bin', 'python')));
+    const records = await jsonl(fixture.log); const create = records.find(record => record.argv[0] === 'create' && record.argv.includes('/app/src/container-runtime.mjs')); assert.ok(create);
+    const scratch = create.argv[create.argv.indexOf('--mount') + 1].match(/^type=volume,src=([^,]+)/)?.[1]; assert.match(scratch ?? '', /^yoloharness-scratch-[0-9a-f-]+$/);
+    assert.equal(values(create.argv, '--mount').length, 7); assert.equal(values(create.argv, '--mount').some(value => value.includes(`dst=/workspace/.venv,volume-subpath=${volumeSubpath('.venv')}`)), true);
+    assert.deepEqual(values(create.argv, '--env').slice(-10), ['PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'LANG=C.UTF-8', 'XDG_CACHE_HOME=/tmp/cache/xdg', 'npm_config_cache=/tmp/cache/npm', 'PIP_CACHE_DIR=/tmp/cache/pip', 'UV_CACHE_DIR=/tmp/cache/uv', 'COMPOSER_CACHE_DIR=/tmp/cache/composer', 'NUGET_PACKAGES=/tmp/cache/nuget', 'CARGO_HOME=/tmp/cache/cargo', 'GOMODCACHE=/tmp/cache/go']);
+    await assertStableAbsence(create.stdout, create.argv[3], create.argv[5].split('=')[1], '', '');
+  } finally { if (fixture) { try { docker('run', '--rm', '--pull=never', '--user', '0:0', '--mount', `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--entrypoint', 'sh', image, '-c', 'rm -rf /workspace/.yolo /workspace/.venv /workspace/python-artifact.txt /workspace/runs'); } catch {} await cleanupOwned(fixture); } await rm(root, { recursive: true, force: true }); }
 });
 
 test('same packed npm tool call is RED on 64 MiB tmpfs and GREEN on one measured scratch volume', { skip }, async () => {

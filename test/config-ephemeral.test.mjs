@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { ConfigStore, DEFAULT_EPHEMERAL_PATHS } from '../src/config.mjs';
+import { ConfigStore, DEFAULT_EPHEMERAL_PATHS, ConfigError, validateEphemeralPath, validateEphemeralPaths } from '../src/config.mjs';
 import { volumeSubpath } from '../src/scratch-path.mjs';
 
 test('v2 storage policy is usable before model setup and preserves paths', async () => {
@@ -26,4 +26,21 @@ test('v1 model configuration migrates losslessly to default storage paths', asyn
   assert.equal(legacy.version, 1);
   const migrated = await store.saveDocument({ model: legacy.model, ephemeralPaths: legacy.ephemeralPaths ?? DEFAULT_EPHEMERAL_PATHS });
   assert.deepEqual(migrated.ephemeralPaths, [...DEFAULT_EPHEMERAL_PATHS]);
+});
+
+test('ephemeral path controls reject unsafe and overlapping schemas while preserving explicit options', async () => {
+  for (const value of ['', '.', './x', '/absolute', '../escape', 'a/../b', '.git', '.yolo', 'a/.git/b', 'a\u0000b', 'a\u000ab']) assert.throws(() => validateEphemeralPath(value), ConfigError);
+  for (const values of [['a', 'a'], ['a', 'a/b'], ['a/b', 'a'], ['a\\b', 'a/b']]) assert.throws(() => validateEphemeralPaths(values), ConfigError);
+  assert.deepEqual(validateEphemeralPaths(['a/b', 'a__b', 'vendor', '.godot', 'target', 'bin', 'obj', 'nested/path']), ['a/b', 'a__b', 'vendor', '.godot', 'target', 'bin', 'obj', 'nested/path']);
+  const dir = await mkdtemp('/tmp/yoloharness-config-controls-'); const old = process.env.XDG_CONFIG_HOME; process.env.XDG_CONFIG_HOME = dir;
+  const { main } = await import('../src/cli.mjs'); const output = []; const io = { stdout: { write(value) { output.push(value); } }, stderr: { write() {} } };
+  try {
+    assert.equal(await main(['config', 'ephemeral-path', 'list'], io), 0);
+    assert.deepEqual(output.slice(-5), DEFAULT_EPHEMERAL_PATHS.map(value => `${value}\n`));
+    assert.equal(await main(['config', 'ephemeral-path', 'add', 'bin'], io), 0);
+    assert.equal(await main(['config', 'ephemeral-path', 'remove', 'vendor'], io), 0);
+    assert.deepEqual((await new ConfigStore(join(dir, 'yoloharness', 'config.json')).load()).ephemeralPaths, ['node_modules', '.venv', '.godot', 'target', 'bin']);
+    assert.equal(await main(['config', 'ephemeral-path', 'reset'], io), 0);
+    assert.deepEqual((await new ConfigStore(join(dir, 'yoloharness', 'config.json')).load()).ephemeralPaths, [...DEFAULT_EPHEMERAL_PATHS]);
+  } finally { if (old === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = old; }
 });

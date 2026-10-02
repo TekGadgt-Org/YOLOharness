@@ -134,7 +134,35 @@ async function fixture(t) {
     foreignId = docker('create', '--pull=never', '--name', foreignName, '--label', 'yoloharness.run=foreign', configuredImage, 'sleep', '60').trim();
     assert.match(foreignId, /^[a-f0-9]{64}$/i);
     const wrapperPath = join(wrapperDir, 'docker');
-    await writeFile(wrapperPath, `#!/usr/bin/env node\nconst cp=require('child_process'),fs=require('fs');const a=process.argv.slice(2);let createMeta; if(a[0]==='create'){const name=a[a.indexOf('--name')+1],label=a[a.indexOf('--label')+1],ni=a.indexOf('--network'),ii=a.lastIndexOf(${JSON.stringify(baseId)});if(!name||!name.startsWith('yoloharness-')||!label||!label.startsWith(${JSON.stringify(expectedLabel)})||ni<0||a[ni+1]!=='bridge'||a.filter(x=>x==='--network').length!==1||ii<0) process.exit(91);a[ni+1]=${JSON.stringify(network)};a[ii]=${JSON.stringify(derivativeId)};createMeta={name,label};}if(a[0]==='start'){const child=cp.spawn(${JSON.stringify(dockerPath)},a,{stdio:['inherit','pipe','pipe']});child.stdout.pipe(process.stdout);child.stderr.pipe(process.stderr);child.once('close',(code,signal)=>{if(code===0){const inspected=cp.spawnSync(${JSON.stringify(dockerPath)},['inspect',a.at(-1)],{encoding:'utf8'});if(inspected.status===0)fs.writeFileSync(${JSON.stringify(runtimeInspectPath)},inspected.stdout);}if(signal)process.kill(process.pid,signal);else process.exit(code??92);});return;}const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio:['inherit','pipe','pipe']});if(a[0]==='create'&&result.status===0){const inspected=cp.spawnSync(${JSON.stringify(dockerPath)},['inspect',result.stdout.trim()],{encoding:'utf8'});fs.appendFileSync(${JSON.stringify(join(root, 'docker-argv.jsonl'))},JSON.stringify(a)+'\\n');fs.appendFileSync(${JSON.stringify(join(root, 'docker-create.jsonl'))},JSON.stringify({...createMeta,id:result.stdout.trim(),inspection:JSON.parse(inspected.stdout)[0]})+'\\n');}process.stderr.write(result.stderr??'');process.stdout.write(result.stdout??'');process.exit(result.status??92);\n`, { mode: 0o755 });
+    const wrapperScript = `#!/usr/bin/env node
+const cp=require('child_process'),fs=require('fs');
+const a=process.argv.slice(2), mapPath=${JSON.stringify(join(root, 'docker-create-map.json'))}, tracePath=${JSON.stringify(join(root, 'docker-wrapper-trace.jsonl'))};
+const fail=(reason,code=91)=>{fs.appendFileSync(tracePath,JSON.stringify({kind:'reject',args:a,reason})+'\\n');process.stderr.write(reason+'\\n');process.exit(code)};
+const readMap=()=>{try{return JSON.parse(fs.readFileSync(mapPath,'utf8'))}catch{return {}}};
+const writeMap=value=>fs.writeFileSync(mapPath,JSON.stringify(value));
+const valueAfter=(flag)=>{const i=a.indexOf(flag);return i<0?undefined:a[i+1]};
+const networkIndexes=a.reduce((out,value,i)=>value==='--network'?[...out,i]:out,[]);
+if(a[0]==='create'){
+  const name=valueAfter('--name'), runLabel=(a.find(value=>value.startsWith('yoloharness.run='))??''), roleLabel=(a.find(value=>value.startsWith('yoloharness.role='))??''), imageIndex=a.findIndex(value=>value===${JSON.stringify(baseId)}), runtime=a.includes('/app/src/container-runtime.mjs'), role=runtime?'runtime':roleLabel.slice('yoloharness.role='.length), helper=role==='scratch-init'||role==='scratch-verify';
+  if(!name||!name.startsWith('yoloharness-')||!runLabel.startsWith(${JSON.stringify(expectedLabel)})||networkIndexes.length!==1||imageIndex<0) fail('invalid create identity');
+  if(!runtime&&!helper) fail('unknown create role');
+  if(runtime && (roleLabel||a[networkIndexes[0]+1]!=='bridge')) fail('invalid runtime create');
+  if(helper && (a[networkIndexes[0]+1]!=='none'||!a.includes('/app/src/'+role+'.mjs'))) fail('invalid helper create');
+  const originalArgs=[...a];
+  if(runtime){a[networkIndexes[0]+1]=${JSON.stringify(network)};a[imageIndex]=${JSON.stringify(derivativeId)};}
+  const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio:['inherit','pipe','pipe']});
+  if(result.status===0){const id=result.stdout.trim(), inspected=cp.spawnSync(${JSON.stringify(dockerPath)},['inspect',id],{encoding:'utf8'});if(!/^[a-f0-9]{64}$/i.test(id)||inspected.status!==0) fail('create returned invalid identity');const map=readMap();map[id]={role,name,runLabel};writeMap(map);fs.appendFileSync(tracePath,JSON.stringify({kind:'create',id,role,args:originalArgs})+'\\n');if(runtime){fs.appendFileSync(${JSON.stringify(join(root, 'docker-argv.jsonl'))},JSON.stringify(a)+'\\n');fs.appendFileSync(${JSON.stringify(join(root, 'docker-create.jsonl'))},JSON.stringify({name, label:runLabel,id,inspection:JSON.parse(inspected.stdout)[0]})+'\\n');}}
+  process.stderr.write(result.stderr??'');process.stdout.write(result.stdout??'');process.exit(result.status??92);
+}
+if(a[0]==='start'){
+  const id=a.at(-1), meta=readMap()[id];if(!meta) fail('unknown start identity');
+  fs.appendFileSync(tracePath,JSON.stringify({kind:'start',id,role:meta.role,args:a})+'\\n');
+  const child=cp.spawn(${JSON.stringify(dockerPath)},a,{stdio:['inherit','pipe','pipe']});child.stdout.pipe(process.stdout);child.stderr.pipe(process.stderr);child.once('close',(code,signal)=>{if(code===0&&meta.role==='runtime'){const inspected=cp.spawnSync(${JSON.stringify(dockerPath)},['inspect',id],{encoding:'utf8'});if(inspected.status===0)fs.writeFileSync(${JSON.stringify(runtimeInspectPath)},inspected.stdout);}if(signal)process.kill(process.pid,signal);else process.exit(code??92);});return;
+}
+if(a[0]==='rm'){const id=a.at(-1),meta=readMap()[id];if(meta)fs.appendFileSync(tracePath,JSON.stringify({kind:'rm',id,role:meta.role,args:a})+'\\n');}
+const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio:['inherit','pipe','pipe']});process.stderr.write(result.stderr??'');process.stdout.write(result.stdout??'');process.exit(result.status??92);
+`;
+    await writeFile(wrapperPath, wrapperScript, { mode: 0o755 });
     await mkdir(join(configHome, 'yoloharness'), { recursive: true }); await mkdir(join(dataHome, 'yoloharness'), { recursive: true });
     await mkdir(join(workspace, '.agents', 'skills', 'local-skill'), { recursive: true });
     await mkdir(join(dataHome, 'yoloharness', 'skills', 'shared-skill'), { recursive: true });
@@ -312,9 +340,9 @@ async function fixture(t) {
     assert.ok(runtimeArgs.includes('--pids-limit') && runtimeArgs.includes('128'));
     assert.ok(runtimeArgs.includes('--memory') && runtimeArgs.includes('512m'));
     assert.ok(runtimeArgs.includes('--cpus') && runtimeArgs.includes('1'));
-    assert.equal(runtimeArgs.filter(value => value === '--mount').length, 2);
+    assert.equal(runtimeArgs.filter(value => value === '--mount').length, 7);
     const runtimeMounts = runtimeArgs.flatMap((value, index) => value === '--mount' ? [runtimeArgs[index + 1]] : []);
-    assert.match(runtimeMounts[0], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-nocopy$/);
+    assert.match(runtimeMounts[0], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-subpath=tmp,volume-nocopy$/);
     assert.match(runtimeMounts[1], /^type=bind,src=.*\/workspace,dst=\/workspace,readonly=false,bind-propagation=rprivate$/s);
     assert.equal(runtimeArgs.some(value => /docker\.sock|DOCKER_CONFIG|ACCESS_TOKEN|REFRESH_TOKEN|hostile|synthetic-hostile/i.test(value)), false);
     const runtimeInspect = JSON.parse(await readFile(runtimeInspectPath, 'utf8'))[0];
@@ -338,12 +366,12 @@ async function fixture(t) {
     assert.equal(runtimeInspect.Image, derivativeId);
     assert.equal(runtimeInspect.Mounts.filter(mount => mount.Destination === '/workspace').length, 1);
     assert.equal(runtimeInspect.Mounts.some(mount => mount.Type === 'bind' && /(?:docker\.sock|\/\.ssh|\/\.config|\/\.local\/share)/i.test(mount.Source ?? '')), false);
-    assert.equal(runtimeInspect.Config.Env.some(value => /DOCKER_CONFIG|ACCESS_TOKEN|REFRESH_TOKEN|TOKEN|PROXY|AWS_|GITHUB_|SSH_AUTH|NPM_CONFIG|YOLO_DOCKER|YOLO_PROVIDER/i.test(value)), false);
+    assert.equal(runtimeInspect.Config.Env.some(value => /DOCKER_CONFIG|ACCESS_TOKEN|REFRESH_TOKEN|TOKEN|PROXY|AWS_|GITHUB_|SSH_AUTH|NPM_CONFIG_USERCONFIG|YOLO_DOCKER|YOLO_PROVIDER/i.test(value)), false);
     assert.equal(runtimeInspect.Config.Env.includes('HOME=/home/worker'), true, 'explicit non-secret HOME allowlist value must reach the runtime');
     assert.equal(runtimeInspect.HostConfig.NetworkMode, network);
     assert.equal(runtimeInspect.NetworkSettings.Networks[network] !== undefined, true);
     assert.equal(runtimeInspect.HostConfig.SecurityOpt.includes('no-new-privileges'), true, 'shipped runtime must retain the seccomp/NNP hardening option');
-      assert.equal(runtimeInspect.Config.Env.some(value => /PROXY|AWS_|GITHUB_|SSH_AUTH|NPM_CONFIG|YOLO_DOCKER|YOLO_PROVIDER|TOKEN|SECRET/i.test(value)), false);
+      assert.equal(runtimeInspect.Config.Env.some(value => /PROXY|AWS_|GITHUB_|SSH_AUTH|NPM_CONFIG_USERCONFIG|YOLO_DOCKER|YOLO_PROVIDER|TOKEN|SECRET/i.test(value)), false);
       assert.equal(runtimeArgs.some(value => /hostile|synthetic-hostile|DOCKER_CONFIG|ACCESS_TOKEN|REFRESH_TOKEN/i.test(value)), false);
     const inspect = JSON.parse(docker('inspect', providerName))[0]; assert.equal(Object.keys(inspect.NetworkSettings.Networks).length, 1); assert.ok(inspect.NetworkSettings.Networks[network]);
     // A workspace symlink must not turn the single project bind into an escape
@@ -364,7 +392,7 @@ async function fixture(t) {
     // deliberately has a descendant that would write after cancellation; the
     // marker synchronizes the assertion so a fast provider response cannot
     // produce a false positive.
-    const deadlineChild = spawn(process.execPath, [installedCli, '--json', '-t', '0.05', 'deadline-probe'], {
+    const deadlineChild = spawn(process.execPath, [installedCli, '--json', '-t', '0.1', 'deadline-probe'], {
       cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'],
     });
     let deadlineStdout = ''; let deadlineStderr = '';

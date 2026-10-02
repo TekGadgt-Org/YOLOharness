@@ -16,6 +16,8 @@ const docker = (...args) => execFileSync(dockerPath, args, { encoding: 'utf8', s
 const image = process.env.YOLO_DOCKER_IMAGE ?? 'yoloharness-local:0.1.1';
 const installationTag = 'yoloharness-local:0.1.1';
 const historicalImage = 'yoloharness-historical:4592889';
+// test:docker serializes real-Docker files because the historical RED fixture
+// temporarily repoints this daemon-global installation tag.
 const artifactDir = process.env.YOLO_REAL_DOCKER_ARTIFACT_DIR;
 const dockerSelectorKeys = ['DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH'];
 const originalDockerSelectors = Object.fromEntries(dockerSelectorKeys.map(key => [key, process.env[key]]));

@@ -8,7 +8,7 @@ import { snapshotSkills } from './skills.mjs';
 import { RUNTIME_RESOURCE_POLICY } from './resource-policy.mjs';
 import { volumeSubpath, scratchSubpaths } from './scratch-path.mjs';
 import { effectiveEphemeralPaths, validateEphemeralPaths } from './config.mjs';
-import { persistReceipt } from './receipt-persistence.mjs';
+import { reserveReceipt } from './receipt-persistence.mjs';
 
 const MAX_OUTPUT = 1024 * 1024;
 const OP_TIMEOUT = 10_000;
@@ -47,6 +47,22 @@ export class ContainerLauncher {
 
     if (signal?.aborted) throw signal.reason;
     if (Date.now() >= executionDeadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
+    const receiptAuthority = await reserveReceipt(this.workspace);
+    if (!receiptAuthority) {
+      return {
+        version: 1,
+        run_id: null,
+        status: 'cleanup_unknown',
+        effect_state: 'uncertain',
+        result: null,
+        evidence: [],
+        artifacts: [],
+        errors: ['authoritative receipt reservation conflict'],
+        execution_deadline: executionDeadline,
+        cleanup_deadline: null,
+        cleanup_grace_ms: CLEANUP_TOTAL_MS,
+      };
+    }
     let outcome;
     let failure;
     let identity;
@@ -174,11 +190,26 @@ export class ContainerLauncher {
         else failure = cleanupError;
       }
     }
+    if (!outcome && failure) {
+      const cleanupUnknown = failure.cleanupError?.code === 'cleanup_unknown';
+      outcome = {
+        version: 1,
+        run_id: null,
+        status: 'cleanup_unknown',
+        effect_state: 'uncertain',
+        result: null,
+        evidence: [],
+        artifacts: [],
+        errors: [failure.message, ...(cleanupUnknown ? ['cleanup_unknown'] : [])],
+        cleanup_history: failure.cleanupError?.cleanupHistory ?? [],
+      };
+    }
     if (outcome) {
-      outcome = { ...outcome, execution_deadline: executionDeadline, cleanup_deadline: cleanupDeadline, cleanup_grace_ms: CLEANUP_TOTAL_MS };
-      try { await persistReceipt(this.workspace, outcome); }
+      if (!failure) outcome = { ...outcome, execution_deadline: executionDeadline, cleanup_deadline: cleanupDeadline, cleanup_grace_ms: CLEANUP_TOTAL_MS };
+      try { await receiptAuthority.write(outcome); }
       catch (error) { outcome = { ...outcome, status: 'cleanup_unknown', effect_state: 'uncertain', errors: [...(outcome.errors ?? []), `receipt persistence failed: ${error.message}`] }; }
     }
+    await receiptAuthority.close();
     if (failure) throw failure;
     return outcome;
   }

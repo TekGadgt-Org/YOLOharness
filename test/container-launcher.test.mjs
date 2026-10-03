@@ -24,6 +24,25 @@ test('receipt persistence never truncates a preexisting runtime marker sentinel'
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
+test('launcher fails closed on a preexisting authoritative receipt before Docker side effects', async () => {
+  const workspace = await mkdtemp('/tmp/yolo-launcher-receipt-conflict-');
+  const sentinel = Buffer.from('{"receipt_owner":"runtime","operator":true}\n');
+  let calls = 0;
+  try {
+    await mkdir(join(workspace, '.yolo'));
+    const receipt = join(workspace, '.yolo', 'last-receipt.json');
+    await writeFile(receipt, sentinel, { mode: 0o640 });
+    const before = await stat(receipt);
+    const launcher = new ContainerLauncher({ image: 'sha256:' + 'a'.repeat(64), workspace, spawn: () => { calls += 1; throw new Error('Docker must not run'); } });
+    const outcome = await launcher.launch({ prompt: 'receipt-conflict' });
+    assert.notEqual(outcome.status, 'completed');
+    assert.equal(outcome.effect_state, 'uncertain');
+    assert.equal(calls, 0);
+    assert.deepEqual(await readFile(receipt), sentinel);
+    assert.equal((await stat(receipt)).mode & 0o777, before.mode & 0o777);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
 test('launcher rejects invalid ephemeral paths before workspace or Docker side effects', async () => {
   const invalid = [
     ['../outside'], ['a/../b'], ['a/./b'], ['./cache'], ['/absolute'], ['C:/absolute'], ['.git'],

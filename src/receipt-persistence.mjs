@@ -3,7 +3,7 @@ import { constants as fsConstants } from 'node:fs';
 
 const RECEIPT_NAME = 'last-receipt.json';
 
-export async function persistReceipt(workspace, receipt, { beforeReceiptDirectoryOpen } = {}) {
+export async function reserveReceipt(workspace, { beforeReceiptDirectoryOpen } = {}) {
   const root = await open(workspace, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
   try {
     const directory = `/proc/self/fd/${root.fd}/.yolo`;
@@ -21,20 +21,46 @@ export async function persistReceipt(workspace, receipt, { beforeReceiptDirector
       try {
         file = await open(`/proc/self/fd/${yolo.fd}/${RECEIPT_NAME}`, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
       } catch (error) {
-        if (error.code === 'EEXIST') return false;
+        if (error.code === 'EEXIST') {
+          await yolo.close();
+          await root.close();
+          return null;
+        }
         throw error;
       }
-      try {
-        await file.writeFile(`${JSON.stringify(receipt)}\n`);
-        await file.sync();
-      } finally {
-        await file.close();
-      }
-      return true;
-    } finally {
+      let closed = false;
+      return {
+        async write(receipt) {
+          if (closed) throw new Error('receipt authority is closed');
+          await file.writeFile(`${JSON.stringify(receipt)}\n`);
+          await file.sync();
+          await yolo.sync();
+        },
+        async close() {
+          if (closed) return;
+          closed = true;
+          try { await file.close(); } finally {
+            try { await yolo.close(); } finally { await root.close(); }
+          }
+        },
+      };
+    } catch (error) {
       await yolo.close();
+      throw error;
     }
-  } finally {
+  } catch (error) {
     await root.close();
+    throw error;
+  }
+}
+
+export async function persistReceipt(workspace, receipt, options = {}) {
+  const authority = await reserveReceipt(workspace, options);
+  if (!authority) return false;
+  try {
+    await authority.write(receipt);
+    return true;
+  } finally {
+    await authority.close();
   }
 }

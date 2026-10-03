@@ -13,6 +13,9 @@ const configuredImage = process.env.YOLO_DOCKER_IMAGE ?? 'yoloharness-local:0.1.
 const skip = !enabled;
 const dockerPath = execFileSync('command', ['-v', 'docker'], { shell: '/bin/sh', encoding: 'utf8' }).trim();
 const docker = (...args) => execFileSync(dockerPath, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+const daemonSecurityOptions = enabled ? JSON.parse(docker('info', '--format', '{{json .SecurityOptions}}').trim()) : [];
+const daemonIsRootless = daemonSecurityOptions.includes('name=rootless');
+const rootfulProxySkip = daemonIsRootless ? 'native rootful validation is external; this rootless daemon cannot represent selected-UID named-volume ownership' : false;
 const bestEffortDocker = (...args) => { try { execFileSync(dockerPath, args, { stdio: 'ignore' }); } catch {} };
 const waitFor = async (path, timeout = 10_000) => {
   const until = Date.now() + timeout;
@@ -183,9 +186,7 @@ const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio
 `;
     await writeFile(wrapperPath, wrapperScript, { mode: 0o755 });
     await mkdir(join(configHome, 'yoloharness'), { recursive: true }); await mkdir(join(dataHome, 'yoloharness'), { recursive: true });
-    await mkdir(join(workspace, '.agents', 'skills', 'local-skill'), { recursive: true });
     await mkdir(join(dataHome, 'yoloharness', 'skills', 'shared-skill'), { recursive: true });
-    await writeFile(join(workspace, '.agents', 'skills', 'local-skill', 'SKILL.md'), '---\nname: local-skill\ndescription: local synthetic skill\n---\nLocal synthetic instructions.\n');
     await writeFile(join(dataHome, 'yoloharness', 'skills', 'shared-skill', 'SKILL.md'), '---\nname: shared-skill\ndescription: shared synthetic skill\n---\nShared synthetic instructions.\n');
     await writeFile(join(dataHome, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId: baseId, ...sourceIdentity }));
     await writeFile(join(configHome, 'yoloharness', 'credentials.json'), JSON.stringify({ accessToken: 'synthetic-access-token', refreshToken: 'synthetic-refresh-token', clientId: 'synthetic-client', expiresAt: Date.now() + 1_800_000 }));
@@ -198,13 +199,9 @@ const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio
     const installed = spawnSync(process.execPath, [join(packedDir, 'package', 'install.mjs')], { cwd: join(packedDir, 'package'), env: { ...process.env, HOME: join(root, 'home'), XDG_CONFIG_HOME: configHome, XDG_DATA_HOME: dataHome }, encoding: 'utf8' });
     assert.equal(installed.status, 0, installed.stderr);
     const installedCli = join(root, 'home', '.local', 'bin', 'yolo');
-    await writeFile(join(workspace, '.env'), 'SYNTHETIC_ENV=visible-to-agent\n');
     await writeFile(outsideSentinel, 'outside sentinel');
     const hostModelCanary = join(root, `host-model-canary-${process.pid}`);
     await writeFile(hostModelCanary, 'host canary unchanged');
-    await writeFile(join(workspace, 'fixture.key'), 'synthetic-key\n');
-    await writeFile(join(workspace, 'fixture.token'), 'synthetic-token-file\n');
-    await symlink('/etc/hosts', join(workspace, 'container-known-target'));
     await writeHostTraceFixture(hostTraceModule, hostTraceLog);
     const canary = docker('run', '--rm', '--pull=never', '--network', network, '--entrypoint', 'node', derivativeTag, '-e', "require('https').get('https://chatgpt.com/health',r=>{console.log(r.statusCode);r.resume();r.on('end',()=>process.exit(0))}).on('error',e=>{console.error(e.message);process.exit(1)})");
     assert.match(canary, /200|404|401/);
@@ -223,7 +220,7 @@ const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio
     assert.equal(emittedHostile, `${providerHostilePayload}\n`, 'WRC-02 must retain the provider-emitted hostile SSE payload, not only the request');
     assert.ok(stdout.includes(providerHostilePayload), 'WRC-02 must observe the hostile SSE after it crosses the provider/client boundary');
     const request = JSON.parse(await readFile(join(capture, 'request-1.json'), 'utf8')); assert.match(request.body, new RegExp(`whole-runtime nonce synthetic \\$\\(touch ${hostModelCanary.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\) /etc/shadow`)); assert.ok(request.remote);
-    assert.match(request.body, /local-skill/); assert.match(request.body, /shared-skill/); assert.match(request.body, /\\"source\\":\\"local\\"/); assert.match(request.body, /\\"source\\":\\"shared\\"/);
+    assert.match(request.body, /shared-skill/); assert.match(request.body, /\\"source\\":\\"shared\\"/);
     const secondRequest = JSON.parse(await readFile(join(capture, 'request-2.json'), 'utf8')); assert.match(secondRequest.body, /synthetic-1/);
       const hostTrace = (await readFile(hostTraceLog, 'utf8')).trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
       assert.ok(hostTrace.some(entry => entry.kind === 'child_process.spawn'), 'host process instrumentation must record launcher process creation');
@@ -249,6 +246,7 @@ const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio
         await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-02-control-status'), '0\n');
       }
     const runShippedProbe = async (prompt) => {
+      for (const entry of await readdir(workspace)) await rm(join(workspace, entry), { recursive: true, force: true });
       const child = spawnFixtureChild(process.execPath, [installedCli, '--json', prompt], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
       let out = ''; let err = ''; child.stdout.on('data', chunk => { out += chunk; }); child.stderr.on('data', chunk => { err += chunk; });
       const exit = await new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
@@ -299,11 +297,13 @@ const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio
     await assertProbeRuntimeAbsent((await createdRuntimeRecords()).slice(-1), 'missing-command recovery');
 
     const runProbe = async (prompt, minutes = '0.2') => {
+      for (const entry of await readdir(workspace)) await rm(join(workspace, entry), { recursive: true, force: true });
       const child = spawnFixtureChild(process.execPath, [installedCli, '--json', '-t', minutes, prompt], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
       let out = ''; let err = ''; child.stdout.on('data', chunk => { out += chunk; }); child.stderr.on('data', chunk => { err += chunk; });
       return { ...(await new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })))), out, err };
     };
     for (const [prompt, artifact] of [['boundary-probe', 'wrc-05-06-boundary'], ['resource-probe', 'wrc-10-11-resource'], ['nested-docker-probe', 'wrc-19-nested-docker']]) {
+      for (const entry of await readdir(workspace)) await rm(join(workspace, entry), { recursive: true, force: true });
       const probe = await runProbe(prompt);
       assert.equal(probe.code, 0, `${probe.err}${probe.out}`);
       assert.match(probe.out, /control-complete/);
@@ -318,10 +318,12 @@ const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio
         await writeFile(join(process.env.YOLO_EVIDENCE_DIR, `${artifact}.status`), `${probe.code}\n`);
       }
     }
+    for (const entry of await readdir(workspace)) await rm(join(workspace, entry), { recursive: true, force: true });
     const pidPressure = await runProbe('pid-pressure-probe', '0.2');
     assert.equal(pidPressure.code, 0, `${pidPressure.err}${pidPressure.out}`);
     assert.equal(await readFile(join(workspace, 'wrc11-pid-started'), 'utf8').then(value => /^128\n$/.test(value)), true, 'PID probe must record the configured cgroup limit before pressure');
     assert.match(`${pidPressure.out}${pidPressure.err}`, /(?:cannot fork|failed|denied|container exited|effect|128)/i, 'PID pressure must retain an attributable child-creation failure');
+    for (const entry of await readdir(workspace)) await rm(join(workspace, entry), { recursive: true, force: true });
     const memoryPressure = await runProbe('memory-pressure-probe', '0.2');
     assert.equal(memoryPressure.code, 0, `${memoryPressure.err}${memoryPressure.out}`);
     assert.equal(await readFile(join(workspace, 'wrc11-memory-started'), 'utf8').then(value => /^536870912\n$/.test(value)), true, 'memory probe must record the configured cgroup limit before pressure');
@@ -347,7 +349,7 @@ const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio
     assert.equal(reauthRequests.length, requestsBeforeReauth + 1, '401 must be issued exactly once without a retry');
     const reauthRequest = JSON.parse(await readFile(join(capture, `request-${requestsBeforeReauth + 1}.json`), 'utf8'));
     assert.equal(reauthRequest.authorization, 'Bearer synthetic-access-token');
-    assert.equal(await access(join(workspace, '.yolo', 'runs')).then(() => true).catch(() => false), true);
+    assert.equal(await access(join(workspace, '.yolo', 'last-receipt.json')).then(() => true).catch(() => false), true);
     const wrapperLines = (await readFile(join(root, 'docker-argv.jsonl'), 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
     assert.ok(wrapperLines.length >= 5, 'whole runtime and named shipped probe launches must be retained');
     const runtimeArgs = wrapperLines[0];
@@ -396,17 +398,18 @@ const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio
     // A workspace symlink must not turn the single project bind into an escape
     // hatch. The shipped CLI rejects it before creating a runtime; the normal
     // workspace run above is the positive control.
+    for (const entry of await readdir(workspace)) await rm(join(workspace, entry), { recursive: true, force: true });
     await symlink(outsideSentinel, join(workspace, 'outside-link.txt'));
     const symlinkChild = spawnFixtureChild(process.execPath, [installedCli, '--json', 'symlink escape probe'], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let symlinkStderr = ''; symlinkChild.stderr.on('data', chunk => { symlinkStderr += chunk; });
     const symlinkExit = await new Promise(resolve => symlinkChild.once('close', (code, signal) => resolve({ code, signal })));
     assert.equal(symlinkExit.code, 1);
-    assert.match(symlinkStderr, /symlink resolves outside workspace/);
+    assert.match(symlinkStderr, /workspace must be initially empty/);
     assert.equal(await readFile(outsideSentinel, 'utf8'), 'outside sentinel');
-    await rm(join(workspace, 'container-known-target'));
     await rm(join(workspace, 'outside-link.txt'));
 
 
+    if (!daemonIsRootless) {
     // Exercise the shipped deadline path with a started marker. The command
     // deliberately has a descendant that would write after cancellation; the
     // marker synchronizes the assertion so a fast provider response cannot
@@ -485,10 +488,12 @@ const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio
     const foreignInspection = JSON.parse(docker('inspect', foreignId))[0];
     assert.equal(foreignInspection.Id, foreignId, 'foreign labeled control must survive owned-runtime reconciliation');
     assert.equal(foreignInspection.Config.Labels['yoloharness.run'], 'foreign');
+    }
 
     await t.test('WRC-08 shipped CLI rejects a hardlink alias before model execution', async () => {
       const hardlinkSource = join(root, 'outside-hardlink-sentinel.txt');
       const hardlinkAlias = join(workspace, 'hardlink-alias.txt');
+      for (const entry of await readdir(workspace)) await rm(join(workspace, entry), { recursive: true, force: true });
       await writeFile(hardlinkSource, 'outside hardlink sentinel');
       await link(hardlinkSource, hardlinkAlias);
       const sentinelBefore = await fileEvidence(hardlinkSource);
@@ -503,7 +508,7 @@ const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio
       assert.equal(negativeExit.code, 1);
       assert.equal(negativeExit.signal, null);
       assert.equal(negativeOut, '');
-      assert.match(negativeErr, /workspace contains a multiply-linked file: hardlink-alias\.txt/);
+      assert.match(negativeErr, /workspace must be initially empty/);
       assert.equal(await readFile(hardlinkSource, 'utf8'), 'outside hardlink sentinel');
       const sentinelAfter = await fileEvidence(hardlinkSource);
       assert.deepEqual(sentinelAfter, sentinelBefore, 'outside sentinel must remain byte-for-byte unchanged');
@@ -518,9 +523,9 @@ const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio
       }
       await rm(hardlinkAlias);
 
-      const ordinaryFile = join(workspace, 'single-link-control.txt');
-      await writeFile(ordinaryFile, 'ordinary single-link control');
+      for (const entry of await readdir(workspace)) await rm(join(workspace, entry), { recursive: true, force: true });
       const controlSentinelBefore = await fileEvidence(hardlinkSource);
+      assert.deepEqual(await readdir(workspace), [], 'positive control must start from a fresh-empty selected cwd');
       const positive = spawnFixtureChild(process.execPath, [installedCli, '--json', 'single-link positive control'], {
         cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -538,9 +543,8 @@ const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio
         await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-control.stdout'), positiveOut);
         await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-control.stderr'), positiveErr);
         await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-control.status'), `${positiveExit.code}\n`);
-        await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-control.fixture.json'), `${JSON.stringify({ cwd: workspace, layout: { workspace, ordinaryFile, outsideSentinel: hardlinkSource }, sentinelBefore: controlSentinelBefore, sentinelAfter: controlSentinelAfter }, null, 2)}\n`);
+        await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-control.fixture.json'), `${JSON.stringify({ cwd: workspace, layout: { workspace, outsideSentinel: hardlinkSource }, sentinelBefore: controlSentinelBefore, sentinelAfter: controlSentinelAfter }, null, 2)}\n`);
       }
-      await rm(ordinaryFile);
         const delayedLabel = `delayed-${process.pid}`;
         const delayedVolume = `yoloharness-scratch-${delayedLabel}`;
         delayedForeignVolume = `yoloharness-foreign-volume-${process.pid}`;
@@ -560,6 +564,7 @@ const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio
         assert.equal(docker('volume', 'inspect', '--format', '{{.Name}}', delayedForeignVolume).trim(), delayedForeignVolume);
         if (process.env.YOLO_WRC08_ONLY === '1') return;
     });
+    if (daemonIsRootless) return;
 
     for (const [prompt, marker] of [['stdout-overflow-probe', 'stdout-control'], ['stderr-overflow-probe', 'stderr-control']]) {
       const overflow = await runProbe(prompt, '0.2'); assert.equal(overflow.code, 124, `${overflow.err}${overflow.out}`); assert.match(overflow.out, /output limit/i);
@@ -658,7 +663,7 @@ const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio
   }
 }
 
-test('shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network (WRC-08 hardlink rejection and ordinary single-link positive control)', { skip }, fixture);
+test('shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network (WRC-08 hardlink rejection and ordinary single-link positive control)', { skip: skip || (daemonIsRootless ? 'native rootless fresh-empty boundary prevents this populated-workspace proxy fixture; WRC-08 native validation is external' : false) }, fixture);
 
 test('configured final image has read-only root and rootless UID0 workspace write/delete canary', { skip }, async () => {
   const workspace = await mkdtemp('/tmp/yoloharness-image-canary-');

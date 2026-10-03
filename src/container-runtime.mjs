@@ -34,6 +34,7 @@ try {
   record = { version: 1, run_id: null, status: controller.signal.aborted ? 'interrupted' : 'failed', effect_state: controller.signal.aborted ? 'uncertain' : 'none', result: error?.partialResult ?? null, evidence: [], artifacts: [], errors: [message] };
 }
 try {
+  record = { ...record, receipt_owner: 'runtime' };
   // The host launcher is the sole durable receipt writer. Keep a private
   // volume-local copy only so publication failure can retain runtime fields;
   // /tmp is never published to the selected destination.

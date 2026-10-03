@@ -176,7 +176,20 @@ export class ContainerLauncher {
           const yoloPath = `/proc/self/fd/${root.fd}/.yolo`;
           await mkdir(yoloPath, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
           const yolo = await open(yoloPath, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
-          try { const receipt = await open(`/proc/self/fd/${yolo.fd}/last-receipt.json`, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600); try { await receipt.writeFile(`${JSON.stringify(outcome)}\n`); await receipt.sync(); } finally { await receipt.close(); } }
+          try {
+          let receipt;
+          try { receipt = await open(`/proc/self/fd/${yolo.fd}/last-receipt.json`, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600); }
+          catch (error) {
+            if (error.code !== 'EEXIST') throw error;
+            const existing = await open(`/proc/self/fd/${yolo.fd}/last-receipt.json`, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+            try {
+              const value = JSON.parse(await existing.readFile('utf8'));
+              if (value?.receipt_owner !== 'runtime' || value.run_id !== outcome.run_id) throw error;
+            } finally { await existing.close(); }
+            receipt = null;
+          }
+          if (receipt) { try { await receipt.writeFile(`${JSON.stringify(outcome)}\n`); await receipt.sync(); } finally { await receipt.close(); } }
+          }
           finally { await yolo.close(); }
         } finally { await root.close(); }
       }

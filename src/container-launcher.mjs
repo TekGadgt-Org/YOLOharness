@@ -136,18 +136,29 @@ export class ContainerLauncher {
     let cleanupError;
     let scaffoldHistory = [];
       cleanupDeadline ??= Date.now() + CLEANUP_TOTAL_MS;
-      try {
-        // A lost Docker client close does not revoke ownership of resources
-        // whose exact identity was already established.  Reconcile those
-        // resources independently; otherwise a deadline race leaves the
-        // task-owned container/volume behind while still reporting uncertainty.
-        if (id && owned) await cleanup(this.command, id, name, label, this.spawn, undefined, { deadline: cleanupDeadline });
-        else if (createAttempted) await reconcileUnknownCreate(this.command, name, label, this.spawn, undefined, { deadline: cleanupDeadline });
-      } catch (error) { cleanupError = error; }
-      try {
-        if (volumeName && (volumeCreated || volumeCreateAttempted)) volumeCleanup = reconcileVolume(this.command, volumeName, label, this.spawn, { deadline: cleanupDeadline });
-        if (volumeCleanup) { volumeHistory = await volumeCleanup; if (outcome) outcome = { ...outcome, cleanup_history: volumeHistory }; }
-      } catch (error) { cleanupError ??= error; }
+      const containerCleanup = id && owned
+        ? cleanup(this.command, id, name, label, this.spawn, undefined, { deadline: cleanupDeadline })
+        : createAttempted
+          ? reconcileUnknownCreate(this.command, name, label, this.spawn, undefined, { deadline: cleanupDeadline })
+          : Promise.resolve();
+      const volumeCleanupPromise = volumeName && (volumeCreated || volumeCreateAttempted)
+        ? reconcileVolume(this.command, volumeName, label, this.spawn, { deadline: cleanupDeadline })
+        : Promise.resolve(undefined);
+      // A lost attach close can leave container teardown and volume removal
+      // racing; run those two reconciliations together in that case.  Keep
+      // the established sequential ordering for ordinary completed attaches
+      // so scaffold cleanup history remains stable.
+      if (clientCloseObserved === false) {
+        const [containerResult, volumeResult] = await Promise.allSettled([containerCleanup, volumeCleanupPromise]);
+        if (containerResult.status === 'rejected') cleanupError = containerResult.reason;
+        if (volumeResult.status === 'fulfilled') volumeHistory = volumeResult.value;
+        else cleanupError ??= volumeResult.reason;
+      } else {
+        try { await containerCleanup; } catch (error) { cleanupError = error; }
+        try { volumeHistory = await volumeCleanupPromise; } catch (error) { cleanupError ??= error; }
+      }
+      if (outcome && volumeHistory) outcome = { ...outcome, cleanup_history: volumeHistory };
+      if (cleanupError?.cleanupHistory && outcome) outcome = { ...outcome, cleanup_history: cleanupError.cleanupHistory };
       if (cleanupError) {
         const message = cleanupError.code === 'cleanup_unknown' ? `cleanup_unknown: ${dockerErrorOutput(cleanupError) || cleanupError.cause?.message || cleanupError.message}` : cleanupError.message;
         if (outcome) outcome = { ...outcome, status: reason ? (reason.code === 'deadline' ? 'deadline' : 'interrupted') : (['interrupted', 'deadline'].includes(outcome.status) ? outcome.status : 'cleanup_unknown'), effect_state: 'uncertain', errors: [...(outcome.errors ?? []), message], cleanup_history: cleanupError.cleanupHistory ?? outcome.cleanup_history ?? [] }
@@ -307,7 +318,7 @@ export async function reconcileVolume(command, name, label, spawn, { deadline, n
 
 function classifyCleanupError(error, output) {
   if (error.code === 'cleanup_not_found' || /no such volume|not found/i.test(output)) return 'not-found';
-  if (error.code === 'cleanup_busy' || /already in use|being used|busy/i.test(output)) return 'busy';
+  if (error.code === 'cleanup_busy' || /already in use|is in use|being used|busy/i.test(output)) return 'busy';
   if (error.code === 'cleanup_timeout' || error.code === 'deadline' || /timeout|deadline/i.test(output) || error?.cause?.code === 'deadline') return 'timeout';
   if (/temporary|transient/i.test(output)) return 'transient';
   if (error.code === 'cleanup_parse' || /malformed JSON/i.test(error.message)) return 'parse';

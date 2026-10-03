@@ -37,3 +37,29 @@ test('parser rejects traversal, duplicate, unsupported and truncated frames', as
     });
   }
 });
+
+test('metadata is closed, typed, and rejects duplicate or non-canonical fields', async () => {
+  const raw = (header, payload = Buffer.alloc(0)) => {
+    const h = Buffer.from(header); const p = Buffer.alloc(8); p.writeUInt32BE(h.length); p.writeUInt32BE(payload.length, 4);
+    return Buffer.concat([Buffer.from('YHP1'), p, h, payload]);
+  };
+  for (const header of [
+    '{"version":1,"version":1,"type":"directory","path":"x","mode":493}',
+    '{"version":1,"type":"directory","path":"x","mode":"493"}',
+    '{"version":1,"type":"directory","path":"x","mode":493,"extra":true}',
+    '{"version":1.0,"type":"directory","path":"x","mode":493}',
+  ]) await assert.rejects(async () => { for await (const _ of parseExport(Readable.from([raw(header)]))) {} }, /metadata|canonical/);
+});
+
+test('partial publication reports the created leaf and exact bytes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'yolo-partial-'));
+  try {
+    const header = Buffer.from('{"version":1,"type":"file","path":"partial.bin","mode":420,"size":10}');
+    const prefix = Buffer.alloc(8); prefix.writeUInt32BE(header.length); prefix.writeUInt32BE(10, 4);
+    await assert.rejects(() => publishExport(Readable.from([Buffer.concat([Buffer.from('YHP1'), prefix, header, Buffer.from('abc')])]), root), error => {
+      assert.equal(error.code, 'publication_incomplete'); assert.deepEqual(error.created_entry_paths, ['partial.bin']);
+      assert.deepEqual(error.partial_evidence, [{ path: 'partial.bin', bytes: 3 }]); return true;
+    });
+    assert.equal((await readFile(join(root, 'partial.bin'))).toString(), 'abc');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

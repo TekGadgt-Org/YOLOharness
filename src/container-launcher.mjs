@@ -265,30 +265,33 @@ async function runWorkspaceHelper(command, image, volume, label, identity, role,
 async function runWorkspaceExportPublisher(command, image, volume, label, identity, paths, destination, spawn, { deadline, cleanupDeadline } = {}) {
   const role = 'workspace-publish'; const name = `${HELPER_PREFIX}${role}-${label}`;
   const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--label', `yoloharness.role=${role}`, '--init', '--network', 'none', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--user', `${identity.uid}:${identity.gid}`, '--mount', `type=volume,src=${volume},dst=/tmp,volume-nocopy,readonly`, '--entrypoint', 'node', image, '/app/src/workspace-publish.mjs', ...paths];
-  let id; let verified = false; let attached;
+  let id; let verified = false; let attached; let attachedClosed = false;
   try {
     id = (await operation(command, args, spawn, { deadline, cleanupDeadline }).promise).trim();
     if (!/^[a-f0-9]{64}$/i.test(id)) throw new Error('workspace exporter returned an invalid container ID');
     await verifyOwnedContainer(command, id, name, label, spawn, role, { deadline }); verified = true;
     attached = spawn(command, ['start', '--attach', id], { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: DOCKER_ENV() });
+    const close = new Promise((resolve, reject) => {
+      attached.once('error', reject);
+      attached.once('close', (code, signalName) => { attachedClosed = true; return code === 0 ? resolve({ code, signal: signalName }) : reject(Object.assign(new Error(`workspace exporter exited (${code ?? signalName})`), { code: 'exporter_exit', exitCode: code, signal: signalName })); });
+    });
+    // Install stream observers before reading. This avoids missing close/error
+    // when Docker emits a short export synchronously.
+    attached.stderr?.on('data', () => {});
+    const stream = attached.stdout;
+    if (!stream || typeof stream[Symbol.asyncIterator] !== 'function') throw new Error('workspace exporter did not provide framed stdout');
+    const parse = publishExport(stream, destination, paths, { signal, deadline });
+    const remaining = Number.isFinite(deadline) ? Math.max(1, deadline - Date.now()) : undefined;
+    let timer;
+    const expiry = new Promise((_, reject) => { if (remaining !== undefined) timer = setTimeout(() => reject(Object.assign(new Error('workspace export deadline exceeded'), { code: 'deadline' })), remaining); });
     let result;
-    if (typeof attached.stdout?.[Symbol.asyncIterator] !== 'function') {
-      const first = await new Promise((resolve, reject) => { attached.stdout.once('data', resolve); attached.once('error', reject); });
-      try { result = JSON.parse(String(first)); } catch { throw new Error('workspace exporter returned malformed verification'); }
-    } else {
-      const iterator = attached.stdout[Symbol.asyncIterator]();
-      const first = await iterator.next();
-      if (!first.done && String(first.value).trimStart().startsWith('{')) {
-        try { result = JSON.parse(String(first.value)); } catch { throw new Error('workspace exporter returned malformed verification'); }
-      } else {
-        const stream = (async function* () { if (!first.done) yield first.value; for await (const chunk of { [Symbol.asyncIterator]: () => iterator }) yield chunk; })();
-        result = await publishExport(stream, destination, paths);
-      }
-    }
-    await new Promise((resolve, reject) => attached.once('close', code => code === 0 ? resolve() : reject(new Error(`workspace exporter exited (${code})`))));
-    if (result.published !== true) throw new Error('workspace exporter returned malformed publication');
+    try { result = await Promise.race([parse, expiry, ...(signal ? [new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason ?? Object.assign(new Error('workspace export aborted'), { code: 'aborted' })), { once: true }))] : [])]); }
+    catch (error) { attached.kill('SIGTERM'); await close.catch(() => {}); await parse.catch(() => {}); throw error; }
+    finally { if (timer) clearTimeout(timer); }
+    await close;
+    if (result?.published !== true) throw new Error('workspace exporter returned malformed publication');
   } finally {
-    if (attached && !attached.killed) attached.kill('SIGKILL');
+    if (attached && !attachedClosed && !attached.killed && attached.exitCode === null) { attached.kill('SIGTERM'); await new Promise(resolve => attached.once('close', resolve)); }
     if (verified) await reapHelper(command, id, name, label, role, spawn, { deadline: cleanupDeadline?.() ?? deadline });
     else if (id) await reconcileUnknownCreate(command, name, label, spawn, role, { deadline: cleanupDeadline?.() ?? deadline });
   }

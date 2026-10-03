@@ -12,7 +12,7 @@ async function walk(root, current = root) {
     if (excluded.has(name)) continue;
     const path = join(current, name); const info = await lstat(path);
     const key = relative(root, path).split('\\').join('/');
-    if (info.isSymbolicLink() || info.isBlockDevice() || info.isCharacterDevice() || info.isFIFO() || info.isSocket() || info.nlink > 1) throw new Error(`unsupported export entry: ${key}`);
+    if (info.isSymbolicLink() || info.isBlockDevice() || info.isCharacterDevice() || info.isFIFO() || info.isSocket() || (info.isFile() && info.nlink > 1)) throw new Error(`unsupported export entry: ${key}`);
     if (info.isDirectory()) { await write(encodeRecordHeader({ type: 'directory', path: key, mode: info.mode & 0o777 }, 0)); await walk(root, path); }
     else if (info.isFile()) { await write(encodeRecordHeader({ type: 'file', path: key, mode: info.mode & 0o777 }, info.size)); for await (const chunk of createReadStream(path)) await write(chunk); }
     else throw new Error(`unsupported export entry: ${key}`);

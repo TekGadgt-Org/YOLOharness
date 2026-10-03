@@ -102,7 +102,7 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
   }
 }
 
-export async function buildCleanupUnknownReceipt(error, workspace = process.cwd()) {
+export async function buildCleanupUnknownReceipt(error, workspace = process.cwd(), persistenceOptions) {
   const prior = bestReceiptIn(error) ?? await readWorkspaceReceipt(workspace) ?? {};
   const cleanup = cleanupErrorIn(error);
   const errors = [...(Array.isArray(prior.errors) ? prior.errors : [])];
@@ -120,7 +120,7 @@ export async function buildCleanupUnknownReceipt(error, workspace = process.cwd(
     errors,
     cleanup_history: cleanup?.cleanupHistory ?? prior.cleanup_history ?? [],
   };
-  try { await persistReceipt(workspace, receipt); } catch {}
+  try { await persistReceipt(workspace, receipt, persistenceOptions); } catch {}
   return receipt;
 }
 

@@ -3,7 +3,7 @@ import { constants as fsConstants } from 'node:fs';
 
 const RECEIPT_NAME = 'last-receipt.json';
 
-export async function persistReceipt(workspace, receipt) {
+export async function persistReceipt(workspace, receipt, { beforeReceiptDirectoryOpen } = {}) {
   const root = await open(workspace, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
   try {
     const directory = `/proc/self/fd/${root.fd}/.yolo`;
@@ -12,6 +12,7 @@ export async function persistReceipt(workspace, receipt) {
     });
     const before = await lstat(directory);
     if (!before.isDirectory() || before.isSymbolicLink()) throw new Error('receipt directory is not a local directory');
+    await beforeReceiptDirectoryOpen?.();
     const yolo = await open(directory, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
     try {
       const after = await yolo.stat();

@@ -110,7 +110,12 @@ export class ContainerLauncher {
       clientCloseObserved = false;
       const result = await attachedOperation(attached, bootstrapFrame, signal, () => cleanupDeadline);
       clientCloseObserved = result.closeObserved;
-      if (clientCloseObserved) await runWorkspaceHelper(this.command, this.image, volumeName, label, identity, 'workspace-publish', ephemeralPaths, source, this.spawn, { signal: undefined, deadline: reason ? cleanupDeadline : executionDeadline, cleanupDeadline: () => cleanupDeadline });
+      if (clientCloseObserved) {
+        // Publication is a separate durability step. Keep the runtime's
+        // authoritative receipt as the launcher outcome; the publication
+        // helper must not replace it with its transport-only summary.
+        await runWorkspaceHelper(this.command, this.image, volumeName, label, identity, 'workspace-publish', ephemeralPaths, source, this.spawn, { signal: undefined, deadline: reason ? cleanupDeadline : executionDeadline, cleanupDeadline: () => cleanupDeadline });
+      }
       if (reason) {
         const partial = lastReceipt(result.out) ?? await workspaceReceipt(this.workspace);
         outcome = { ...(partial ?? { version: 1, run_id: null, result: null, evidence: [], artifacts: [] }), status: reason.code === 'deadline' ? 'deadline' : 'interrupted', effect_state: 'uncertain', errors: [...(partial?.errors ?? []), reason.message] };

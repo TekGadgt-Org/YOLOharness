@@ -11,7 +11,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { validateEmptyWorkspace } from './workspace-sync.mjs';
-import { persistReceipt } from './receipt-persistence.mjs';
+import { persistReceipt, reserveReceipt } from './receipt-persistence.mjs';
 const execFileAsync = promisify(execFile);
 
 const VERSION = '0.1.1';
@@ -56,6 +56,8 @@ export function parseArgs(args) {
 export async function main(args = process.argv.slice(2), io = { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr }, { clientFactory } = {}) {
   let deadlineTimer;
   let runStarted = false;
+  let receiptAuthority;
+  let receiptTransferred = false;
   try {
     if (args[0] === 'setup') return await setupCommand(io);
     if (args[0] === 'doctor') return await doctorCommand(io);
@@ -74,6 +76,12 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     const model = await resolveModel();
     // Refuse before Docker, credentials, provider, or host mutation.
     await validateEmptyWorkspace(workspace);
+    receiptAuthority = await reserveReceipt(workspace);
+    if (!receiptAuthority) {
+      const conflict = { version: 1, run_id: null, status: 'receipt_conflict', effect_state: 'none', result: null, evidence: [], artifacts: [], errors: ['authoritative receipt reservation conflict'] };
+      io.stdout.write(`${options.json ? JSON.stringify(conflict) : `receipt_conflict: ${conflict.errors[0]}`}\n`);
+      return 1;
+    }
     io.stderr.write(`starting bounded run (${options.minutes} minutes)\n`);
     io.stderr.write('Warning: files in the selected project are intentionally exposed to the agent and may be disclosed\n');
     runStarted = true;
@@ -85,12 +93,14 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     const credentials = await runtimeCredentials(options.minutes, deadline, { signal: controller.signal });
     const config = await new ConfigStore(configPath()).load();
     const launcher = new ContainerLauncher({ image, workspace, command: dockerCommand, timeoutMs: options.minutes * 60_000 });
-    const record = await launcher.launch({ prompt: options.prompt, model, ephemeralPaths: effectiveEphemeralPaths(config), deadline, accessToken: credentials.accessToken, expiresAt: credentials.expiresAt }, { signal: controller.signal, deadline });
+    const record = await launcher.launch({ prompt: options.prompt, model, ephemeralPaths: effectiveEphemeralPaths(config), deadline, accessToken: credentials.accessToken, expiresAt: credentials.expiresAt }, { signal: controller.signal, deadline, receiptAuthority });
+    receiptTransferred = true;
     clearTimeout(deadlineTimer);
     process.removeListener('SIGINT', onInterrupt);
     io.stdout.write(`${options.json ? JSON.stringify(record) : `${record.status} run=${record.run_id ?? 'unknown'} effect_state=${record.effect_state ?? 'unknown'} evidence=${record.evidence?.length ?? 0} artifacts=${record.artifacts?.length ?? 0}: ${record.result ?? record.errors.join('; ')}`}\n`);
     return record.status === 'completed' && record.effect_state !== 'uncertain' ? 0 : record.status === 'interrupted' ? 130 : record.status === 'deadline' ? 124 : 1;
   } catch (error) {
+    if (receiptAuthority && !receiptTransferred) await receiptAuthority.close().catch(() => {});
     clearTimeout(deadlineTimer);
     const message = error instanceof MissingProviderError ? error.message : error.message;
     if (hasCleanupUnknown(error)) {
@@ -139,9 +149,9 @@ async function readWorkspaceReceipt(workspace) {
   try {
     const root = await open(workspace, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
     try {
-      const yolo = await open(`/proc/self/fd/${root.fd}/.yolo`, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+      const yolo = await open(join(workspace, '.yolo'), fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
       try {
-        const receipt = await open(`/proc/self/fd/${yolo.fd}/last-receipt.json`, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+        const receipt = await open(join(workspace, '.yolo', 'last-receipt.json'), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
         const value = JSON.parse(await receipt.readFile('utf8'));
         await receipt.close();
         return value?.version === 1 ? value : null;

@@ -9,6 +9,7 @@ import { RUNTIME_RESOURCE_POLICY } from './resource-policy.mjs';
 import { volumeSubpath, scratchSubpaths } from './scratch-path.mjs';
 import { effectiveEphemeralPaths, validateEphemeralPaths } from './config.mjs';
 import { reserveReceipt } from './receipt-persistence.mjs';
+import { publishExport } from './workspace-protocol.mjs';
 
 const MAX_OUTPUT = 1024 * 1024;
 const OP_TIMEOUT = 10_000;
@@ -35,7 +36,7 @@ export class ContainerLauncher {
     this.image = image; this.workspace = workspace; this.command = command; this.spawn = spawn; this.timeoutMs = timeoutMs; this.hostPlatform = hostPlatform;
   }
 
-  async launch(bootstrap, { signal, deadline } = {}) {
+  async launch(bootstrap, { signal, deadline, receiptAuthority: suppliedReceiptAuthority } = {}) {
     const startedAt = Date.now();
     const executionDeadline = Number.isFinite(deadline) ? deadline : startedAt + this.timeoutMs;
     const remaining = () => Math.max(1, executionDeadline - Date.now());
@@ -47,7 +48,7 @@ export class ContainerLauncher {
 
     if (signal?.aborted) throw signal.reason;
     if (Date.now() >= executionDeadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
-    const receiptAuthority = await reserveReceipt(this.workspace);
+    const receiptAuthority = suppliedReceiptAuthority ?? await reserveReceipt(this.workspace);
     if (!receiptAuthority) {
       return {
         version: 1,
@@ -130,7 +131,7 @@ export class ContainerLauncher {
         // Publication is a separate durability step. Keep the runtime's
         // authoritative receipt as the launcher outcome; the publication
         // helper must not replace it with its transport-only summary.
-        await runWorkspaceHelper(this.command, this.image, volumeName, label, identity, 'workspace-publish', ephemeralPaths, source, this.spawn, { signal: undefined, deadline: reason ? cleanupDeadline : executionDeadline, cleanupDeadline: () => cleanupDeadline });
+        await runWorkspaceExportPublisher(this.command, this.image, volumeName, label, identity, ephemeralPaths, this.workspace, this.spawn, { deadline: reason ? cleanupDeadline : executionDeadline, cleanupDeadline: () => cleanupDeadline });
       }
       if (reason) {
         const partial = lastReceipt(result.out) ?? await workspaceReceipt(this.workspace);
@@ -258,6 +259,38 @@ async function runWorkspaceHelper(command, image, volume, label, identity, role,
   } finally {
     if (verified) await reapHelper(command, id, name, label, role, spawn, options);
     else await reconcileUnknownCreate(command, name, label, spawn, role, options);
+  }
+}
+
+async function runWorkspaceExportPublisher(command, image, volume, label, identity, paths, destination, spawn, { deadline, cleanupDeadline } = {}) {
+  const role = 'workspace-publish'; const name = `${HELPER_PREFIX}${role}-${label}`;
+  const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--label', `yoloharness.role=${role}`, '--init', '--network', 'none', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--user', `${identity.uid}:${identity.gid}`, '--mount', `type=volume,src=${volume},dst=/tmp,volume-nocopy,readonly`, '--entrypoint', 'node', image, '/app/src/workspace-publish.mjs', ...paths];
+  let id; let verified = false; let attached;
+  try {
+    id = (await operation(command, args, spawn, { deadline, cleanupDeadline }).promise).trim();
+    if (!/^[a-f0-9]{64}$/i.test(id)) throw new Error('workspace exporter returned an invalid container ID');
+    await verifyOwnedContainer(command, id, name, label, spawn, role, { deadline }); verified = true;
+    attached = spawn(command, ['start', '--attach', id], { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: DOCKER_ENV() });
+    let result;
+    if (typeof attached.stdout?.[Symbol.asyncIterator] !== 'function') {
+      const first = await new Promise((resolve, reject) => { attached.stdout.once('data', resolve); attached.once('error', reject); });
+      try { result = JSON.parse(String(first)); } catch { throw new Error('workspace exporter returned malformed verification'); }
+    } else {
+      const iterator = attached.stdout[Symbol.asyncIterator]();
+      const first = await iterator.next();
+      if (!first.done && String(first.value).trimStart().startsWith('{')) {
+        try { result = JSON.parse(String(first.value)); } catch { throw new Error('workspace exporter returned malformed verification'); }
+      } else {
+        const stream = (async function* () { if (!first.done) yield first.value; for await (const chunk of { [Symbol.asyncIterator]: () => iterator }) yield chunk; })();
+        result = await publishExport(stream, destination, paths);
+      }
+    }
+    await new Promise((resolve, reject) => attached.once('close', code => code === 0 ? resolve() : reject(new Error(`workspace exporter exited (${code})`))));
+    if (result.published !== true) throw new Error('workspace exporter returned malformed publication');
+  } finally {
+    if (attached && !attached.killed) attached.kill('SIGKILL');
+    if (verified) await reapHelper(command, id, name, label, role, spawn, { deadline: cleanupDeadline?.() ?? deadline });
+    else if (id) await reconcileUnknownCreate(command, name, label, spawn, role, { deadline: cleanupDeadline?.() ?? deadline });
   }
 }
 

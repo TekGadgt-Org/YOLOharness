@@ -6,7 +6,7 @@ const RECEIPT_NAME = 'last-receipt.json';
 export async function reserveReceipt(workspace, { beforeReceiptDirectoryOpen } = {}) {
   const root = await open(workspace, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
   try {
-    const directory = `/proc/self/fd/${root.fd}/.yolo`;
+    const directory = `${workspace}/.yolo`;
     await mkdir(directory, { mode: 0o700 }).catch(error => {
       if (error.code !== 'EEXIST') throw error;
     });
@@ -19,7 +19,7 @@ export async function reserveReceipt(workspace, { beforeReceiptDirectoryOpen } =
       if (before.dev !== after.dev || before.ino !== after.ino) throw new Error('receipt directory changed during persistence');
       let file;
       try {
-        file = await open(`/proc/self/fd/${yolo.fd}/${RECEIPT_NAME}`, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
+        file = await open(`${directory}/${RECEIPT_NAME}`, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
       } catch (error) {
         if (error.code === 'EEXIST') {
           await yolo.close();

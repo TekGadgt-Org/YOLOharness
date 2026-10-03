@@ -12,7 +12,7 @@ async function runtimeReceipt() {
   return null;
 }
 try {
-  const result = await publishWorkspace('/tmp/workspace', '/source', excluded, '/tmp/workspace-baseline.json');
+  const result = await publishWorkspace('/tmp/workspace', '/source', excluded);
   const runtime = await runtimeReceipt();
   process.stdout.write(`${JSON.stringify(runtime?.version === 1 ? { ...runtime, ...result } : { version: 1, ...result })}\n`);
 } catch (error) {

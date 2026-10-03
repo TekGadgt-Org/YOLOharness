@@ -61,6 +61,21 @@ test('deadline returns from a non-cooperative provider', async () => {
   assert.equal(record.status, 'deadline'); assert.ok(Date.now() - started < 1000);
 });
 
+test('generic failures and interruptions explain retained output cleanup', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'yolo-'));
+  const failed = await runOnce({ prompt: 'fail', workspace, provider: { async next() { throw new Error('provider failed'); } } });
+  assert.equal(failed.status, 'failed');
+  assert.match(failed.errors[0], /generated output may be retained or partial/);
+  assert.match(failed.errors[0], /delete the generated directory before retrying/);
+  const controller = new AbortController();
+  const interruptedPromise = runOnce({ prompt: 'interrupt', workspace, minutes: 1, provider: { async next({ signal }) { if (signal.aborted) throw signal.reason; await new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })); } }, signal: controller.signal });
+  controller.abort(new Error('SIGINT'));
+  const interrupted = await interruptedPromise;
+  assert.equal(interrupted.status, 'interrupted');
+  assert.match(interrupted.errors[0], /inspect it and delete the generated directory before retrying/);
+  await rm(workspace, { recursive: true, force: true });
+});
+
 test('deadline awaits executor cleanup before returning', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'yolo-'));
   let cleaned = false;

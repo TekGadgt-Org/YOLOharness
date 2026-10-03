@@ -35,13 +35,14 @@ export class FixtureProvider {
   }
 }
 
-function deadlineSignal(signal, ms) {
+function deadlineSignal(signal, ms, clock = { setTimeout, clearTimeout }) {
   const controller = new AbortController();
   const abort = reason => { if (!controller.signal.aborted) controller.abort(reason); };
-  const timer = setTimeout(() => abort(new Error('deadline exceeded')), ms);
+  const timer = clock.setTimeout(() => abort(new Error('deadline exceeded')), ms);
   const parentAbort = () => abort(signal.reason ?? new Error('interrupted'));
   signal?.addEventListener('abort', parentAbort, { once: true });
-  return { signal: controller.signal, cancel: () => { clearTimeout(timer); signal?.removeEventListener('abort', parentAbort); } };
+  if (signal?.aborted) parentAbort();
+  return { signal: controller.signal, cancel: () => { clock.clearTimeout(timer); signal?.removeEventListener('abort', parentAbort); } };
 }
 
 function abortable(promise, signal) {
@@ -71,19 +72,19 @@ function awaitExecutorCleanup(promise, signal, graceMs) {
   });
 }
 
-export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(), provider, executor, tools = [], skills = {}, skillLoader, maxSteps = 100, cleanupGraceMs = 5000, deadlineAt, hardDeadlineAt, reserveMs = 30_000, now = Date.now, signal = new AbortController().signal }) {
+export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(), provider, executor, tools = [], skills = {}, skillLoader, maxSteps = 100, cleanupGraceMs = 5000, deadlineAt, hardDeadlineAt, reserveMs = 30_000, now = Date.now, clock = { setTimeout, clearTimeout }, signal = new AbortController().signal }) {
   if (typeof prompt !== 'string' || !prompt.trim()) throw new TypeError('prompt must be non-empty');
   if (!(Number.isFinite(minutes) && minutes > 0)) throw new TypeError('minutes must be positive and finite');
   if (!(Number.isFinite(cleanupGraceMs) && cleanupGraceMs > 0)) throw new TypeError('cleanupGraceMs must be positive and finite');
   if (!provider) throw new MissingProviderError();
-  if (signal.aborted) return { version: 1, run_id: null, status: 'interrupted', effect_state: 'uncertain', result: null, evidence: [], artifacts: [], errors: ['interrupted before start'] };
-  const runId = `run-${Date.now()}-${randomUUID().slice(0, 8)}`;
+  if (signal.aborted) return { version: 1, run_id: null, status: 'interrupted', effect_state: 'uncertain', result: null, evidence: [], artifacts: [], errors: ['interrupted before start; generated output may be retained or partial; inspect it and delete the generated directory before retrying'] };
+  const runId = `run-${now()}-${randomUUID().slice(0, 8)}`;
   const runDir = join(workspace, '.yolo', 'runs', runId);
   await mkdir(runDir, { recursive: true, mode: 0o750 });
   const log = new EventLog(join(runDir, 'events.jsonl'));
   const hardAt = hardDeadlineAt ?? (now() + minutes * 60_000);
   const softAt = deadlineAt ?? (hardDeadlineAt ? Math.max(now() + 1, hardAt - Math.max(1_000, Math.min(reserveMs, Math.max(1_000, hardAt - now() - 1)))) : hardAt);
-  const timer = deadlineSignal(signal, Math.max(1, softAt - now()));
+  const timer = deadlineSignal(signal, Math.max(1, softAt - now()), clock);
   const initialBudget = Math.max(1, Math.ceil((softAt - now()) / 60_000));
   const messages = [skillCatalogMessage(skills), { role: 'developer', content: `[YOLO TIME BUDGET] Approximately ${initialBudget} minute(s) are available for agent work. Establish an early runnable baseline, save continuously, stop expanding scope near the work deadline, and verify before finalizing.` }, { role: 'user', content: prompt }];
   let budgetNotice;
@@ -151,13 +152,14 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
       status = signal.aborted ? 'interrupted' : 'deadline';
       if (typeof error?.partialResult === 'string') result = error.partialResult;
       else if (typeof provider?.partialResult === 'string' && provider.partialResult) result = provider.partialResult;
-      errors.push(error?.message === 'cleanup_unknown' ? 'cleanup_unknown: executor cleanup grace expired' : status === 'deadline' ? 'deadline exceeded; partial result may be incomplete' : 'interrupted by SIGINT');
+      errors.push(error?.message === 'cleanup_unknown' ? 'cleanup_unknown: executor cleanup grace expired' : status === 'deadline' ? 'deadline exceeded; generated output may be retained or partial; inspect it and delete the generated directory before retrying' : 'interrupted by SIGINT; generated output may be retained or partial; inspect it and delete the generated directory before retrying');
     }
-    else { status = 'failed'; errors.push(error?.code === 'reauth_required' ? 'reauth_required' : error instanceof Error ? error.message : String(error)); }
+    else { status = 'failed'; errors.push(`${error?.code === 'reauth_required' ? 'reauth_required' : error instanceof Error ? error.message : String(error)}; generated output may be retained or partial; inspect it and delete the generated directory before retrying`); }
   } finally {
     timer.cancel();
     try { await log.append(runId, status === 'completed' ? 'run_completed' : 'run_stopped', { status, steps }); } catch (error) { errors.push(`receipt write failed: ${error.message}`); if (status === 'completed') status = 'failed'; }
-  }
-  const effectState = status === 'completed' ? 'none' : errors.some(error => String(error).includes('cleanup_unknown')) ? 'unknown' : status === 'deadline' || status === 'interrupted' ? 'uncertain' : 'none';
+ }
+ if ((status === 'deadline' || status === 'interrupted') && !errors.length) errors.push(`${status} ended the run; generated output may be retained or partial; inspect it and delete the generated directory before retrying`);
+ const effectState = status === 'completed' ? 'none' : errors.some(error => String(error).includes('cleanup_unknown')) ? 'unknown' : status === 'deadline' || status === 'interrupted' ? 'uncertain' : 'none';
   return { version: 1, run_id: runId, status, effect_state: effectState, result: result ?? null, evidence, artifacts, errors };
 }

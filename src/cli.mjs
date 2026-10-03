@@ -54,6 +54,7 @@ export function parseArgs(args) {
 
 export async function main(args = process.argv.slice(2), io = { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr }, { clientFactory } = {}) {
   let deadlineTimer;
+  let runStarted = false;
   try {
     if (args[0] === 'setup') return await setupCommand(io);
     if (args[0] === 'doctor') return await doctorCommand(io);
@@ -63,8 +64,6 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     const options = parseArgs(args);
     if (options.help) { io.stdout.write(`${usage()}\n`); return 0; }
     if (options.version) { io.stdout.write(`${VERSION}\n`); return 0; }
-    io.stderr.write(`starting bounded run (${options.minutes} minutes)\n`);
-    io.stderr.write('Warning: files in the selected project are intentionally exposed to the agent and may be disclosed\n');
     const deadline = Date.now() + options.minutes * 60_000;
     const controller = new AbortController();
     deadlineTimer = setTimeout(() => controller.abort(Object.assign(new Error('run deadline exceeded'), { code: 'deadline' })), Math.max(1, deadline - Date.now()));
@@ -74,6 +73,9 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     const model = await resolveModel();
     // Refuse before Docker, credentials, provider, or host mutation.
     await validateEmptyWorkspace(workspace);
+    io.stderr.write(`starting bounded run (${options.minutes} minutes)\n`);
+    io.stderr.write('Warning: files in the selected project are intentionally exposed to the agent and may be disclosed\n');
+    runStarted = true;
     // Resolve the trusted invoker-selected Docker client once.  The same
     // executable and normal Docker context/host configuration are used for
     // image inspection and the subsequent container lifecycle.
@@ -95,7 +97,7 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
       io.stdout.write(`${JSON.stringify(receipt)}\n`);
       return 1;
     }
-    io.stderr.write(`${message}\n`); return 1;
+    io.stderr.write(`${message}${runStarted ? '; generated output may be retained or partial; inspect it and delete the generated directory before retrying' : ''}\n`); return 1;
   }
 }
 

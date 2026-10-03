@@ -121,7 +121,12 @@ export class ContainerLauncher {
       }
 
     } catch (error) {
-      failure = error;
+      if (error?.code === 'publication_incomplete') {
+        outcome = { version: 1, run_id: null, status: 'publication_incomplete', effect_state: 'uncertain', result: null, evidence: [], artifacts: [], errors: [error.message] };
+        failure = null;
+      } else {
+        failure = error;
+      }
       if (error?.clientCloseObserved === false || error?.code === 'cleanup_unknown') clientCloseObserved = false;
       else if (error?.clientCloseObserved === true) clientCloseObserved = true;
     } finally {

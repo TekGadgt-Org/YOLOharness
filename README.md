@@ -26,7 +26,7 @@ Authentication is separate from a run and never starts automatically. Run `yolo 
 
 ## Install and run (Linux MVP; macOS Docker-compatible Linux VM candidate)
 
-WARNING: Run in a fresh, disposable directory. The agent can overwrite or delete anything in the working directory without asking. Using it on an existing project is at your own risk; back up or commit your work first. Keep secrets out of the directory: networked generated code can send project contents out, and Docker does not protect files inside the mounted project.
+WARNING: `yolo` refuses to start unless the selected cwd is an initially empty, real directory. It is a fresh, disposable one-shot generator, not an existing-project merge tool. Generated output is published create-only: it never overwrites, renames, chmods, or deletes an existing host entry. A timeout, conflict, or interruption can leave partial output; inspect it or delete the directory before retrying. Keep secrets out of the directory: networked generated code can send generated contents out.
 
 Node 22+ and Docker are prerequisites. From a downloaded package directory (or an extracted `yoloharness-0.1.1.tgz`), install to the user account; this never uses sudo, a global prefix, or shell startup files:
 
@@ -36,11 +36,11 @@ Node 22+ and Docker are prerequisites. From a downloaded package directory (or a
 4. In a fresh disposable project, run `yolo setup`.
 5. Authenticate: `yolo auth login`.
 6. Set a model if needed: `yolo config set model <model-id>`.
-7. Run: `yolo -t 10 "verify the harness"` (or `yolo "verify the harness"`).
+7. Run from the empty disposable directory: `yolo -t 10 "verify the harness"` (or `yolo "verify the harness"`).
 
 `yolo doctor` performs no provider call and reports Docker executable, runtime image metadata, built-in device-auth client readiness, local credentials, and model status.
 
-The installer atomically replaces only app assets below `${XDG_DATA_HOME:-$HOME/.local/share}/yoloharness`, preserves config, credentials, and shared skills, and creates `$HOME/.local/bin/yolo`. It refuses symlinked or non-directory data/bin destinations. Back up or commit the selected project first: the agent can overwrite or delete files there, and networked generated code may disclose them.
+The installer atomically replaces only app assets below `${XDG_DATA_HOME:-$HOME/.local/share}/yoloharness`, preserves config, credentials, and shared skills, and creates `$HOME/.local/bin/yolo`. It refuses symlinked or non-directory data/bin destinations. Keep the selected output directory disposable: partial publication may require deleting it before retrying, and networked generated code may disclose generated contents.
 
 ## Uninstall
 

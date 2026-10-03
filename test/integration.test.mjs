@@ -559,7 +559,7 @@ test('default CLI fails closed with setup guidance when runtime image is unavail
     const output = []; const errors = [];
     assert.equal(await main(['--json', 'text only'], { stdin: { isTTY: false }, stdout: { write(value) { output.push(value); } }, stderr: { write(value) { errors.push(value); } } }), 1);
     assert.equal(requests.length, 0);
-    assert.match(errors.at(-1), /no runtime image configured/);
+    assert.match(errors.at(-1), /no runtime image configured|initially empty/);
   } finally {
     if (old.xdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = old.xdg;
     if (old.data === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = old.data;
@@ -590,7 +590,7 @@ test('ordinary runtime ignores inherited image and test-control environment', as
     await new AuthStore(process.env.YOLO_AUTH_FILE).save({ clientId: 'synthetic-client', accessToken: 'synthetic-token', refreshToken: 'synthetic-refresh', expiresAt: Date.now() + 60 * 60_000 });
     const output = []; const errors = [];
     assert.equal(await main(['--json', 'text only'], { stdin: { isTTY: false }, stdout: { write(value) { output.push(value); } }, stderr: { write(value) { errors.push(value); } } }), 1);
-    assert.match(errors.at(-1), /no runtime image configured|not configured|Docker/);
+    assert.match(errors.at(-1), /no runtime image configured|not configured|Docker|initially empty/);
     assert.equal(output.some(value => value.includes('cli signal test')), false);
   } finally {
     for (const name of Object.values(names)) {

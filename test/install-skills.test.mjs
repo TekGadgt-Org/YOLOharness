@@ -54,7 +54,7 @@ test('doctor reports missing controls and recognizes an offline ready fixture', 
 
 test('README numbered setup flow requires only yolo auth login for authentication', async () => {
   const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
-  const numberedFlow = readme.match(/Node 22\+ and Docker are prerequisites\.[\s\S]*?7\. Run: `yolo/);
+  const numberedFlow = readme.match(/Node 22\+ and Docker are prerequisites\.[\s\S]*?7\. Run(?: from the empty disposable directory)?: `yolo/);
   assert.ok(numberedFlow, 'README numbered setup flow should remain present');
   assert.match(numberedFlow[0], /5\. Authenticate: `yolo auth login`/);
   assert.doesNotMatch(numberedFlow[0], /YOLO_CLIENT_ID/);

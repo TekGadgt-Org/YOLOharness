@@ -71,7 +71,7 @@ function awaitExecutorCleanup(promise, signal, graceMs) {
   });
 }
 
-export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(), provider, executor, tools = [], skills = {}, skillLoader, maxSteps = 100, cleanupGraceMs = 5000, signal = new AbortController().signal }) {
+export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(), provider, executor, tools = [], skills = {}, skillLoader, maxSteps = 100, cleanupGraceMs = 5000, deadlineAt, hardDeadlineAt, reserveMs = 30_000, now = Date.now, signal = new AbortController().signal }) {
   if (typeof prompt !== 'string' || !prompt.trim()) throw new TypeError('prompt must be non-empty');
   if (!(Number.isFinite(minutes) && minutes > 0)) throw new TypeError('minutes must be positive and finite');
   if (!(Number.isFinite(cleanupGraceMs) && cleanupGraceMs > 0)) throw new TypeError('cleanupGraceMs must be positive and finite');
@@ -81,14 +81,21 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
   const runDir = join(workspace, '.yolo', 'runs', runId);
   await mkdir(runDir, { recursive: true, mode: 0o750 });
   const log = new EventLog(join(runDir, 'events.jsonl'));
-  const timer = deadlineSignal(signal, minutes * 60_000);
-  const messages = [skillCatalogMessage(skills), { role: 'user', content: prompt }];
+  const hardAt = hardDeadlineAt ?? (now() + minutes * 60_000);
+  const softAt = deadlineAt ?? (hardDeadlineAt ? Math.max(now() + 1, hardAt - Math.max(1_000, Math.min(reserveMs, Math.max(1_000, hardAt - now() - 1)))) : hardAt);
+  const timer = deadlineSignal(signal, Math.max(1, softAt - now()));
+  const initialBudget = Math.max(1, Math.ceil((softAt - now()) / 60_000));
+  const messages = [skillCatalogMessage(skills), { role: 'developer', content: `[YOLO TIME BUDGET] Approximately ${initialBudget} minute(s) are available for agent work. Establish an early runnable baseline, save continuously, stop expanding scope near the work deadline, and verify before finalizing.` }, { role: 'user', content: prompt }];
+  let budgetNotice;
   const evidence = []; const artifacts = []; const errors = []; let result;
   let status = 'running'; let steps = 0;
   try {
     await log.append(runId, 'run_started', { prompt, max_steps: maxSteps });
     while (steps < maxSteps) {
       if (timer.signal.aborted) { status = signal.aborted ? 'interrupted' : 'deadline'; break; }
+      const remainingMs = Math.max(0, softAt - now());
+      const notice = `[YOLO REMAINING TIME] Approximately ${Math.ceil(remainingMs / 1000)} second(s) remain for agent work.${remainingMs <= Math.max(5_000, reserveMs / 2) ? ' Stop expanding scope and finalize a runnable, verified result now.' : ''}`;
+      if (budgetNotice) budgetNotice.content = notice; else { budgetNotice = { role: 'developer', content: notice }; messages.splice(1, 0, budgetNotice); }
       const response = await abortable(provider.next({ messages, tools, signal: timer.signal }), timer.signal);
       if (typeof provider.partialResult === 'string' && provider.partialResult) result = provider.partialResult;
       steps += 1;

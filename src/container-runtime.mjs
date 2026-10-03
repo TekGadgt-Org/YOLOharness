@@ -22,8 +22,11 @@ try {
   if (boot.expiresAt <= boot.deadline) throw new Error('access token does not cover run deadline');
   const provider = new ConfiguredProvider({ credentials: { accessToken: boot.accessToken, expiresAt: boot.expiresAt }, url: RESPONSES_ENDPOINT, model: boot.model });
   const remaining = Math.max(1, (boot.deadline - Date.now()) / 60000);
+  const hardDeadlineAt = boot.deadline;
+  const reserveMs = Math.min(30_000, Math.max(5_000, Math.floor((hardDeadlineAt - Date.now()) * 0.1)));
+  const deadlineAt = hardDeadlineAt - reserveMs;
   const executor = new ContainerProcessExecutor({ timeoutMs: Math.max(1_000, boot.deadline - Date.now()) });
-  record = await runOnce({ prompt: boot.prompt, minutes: remaining, workspace: '/workspace', provider, executor, tools: [EXEC_TOOL, SKILL_LOAD_TOOL], skills: boot.skills, maxSteps: 100, signal: controller.signal });
+  record = await runOnce({ prompt: boot.prompt, minutes: remaining, deadlineAt, hardDeadlineAt, reserveMs, workspace: '/workspace', provider, executor, tools: [EXEC_TOOL, SKILL_LOAD_TOOL], skills: boot.skills, maxSteps: 100, signal: controller.signal });
 } catch (error) {
   const message = error?.code === 'reauth_required' ? 'reauth_required' : (error?.message ?? String(error));
   record = { version: 1, run_id: null, status: controller.signal.aborted ? 'interrupted' : 'failed', effect_state: controller.signal.aborted ? 'uncertain' : 'none', result: error?.partialResult ?? null, evidence: [], artifacts: [], errors: [message] };

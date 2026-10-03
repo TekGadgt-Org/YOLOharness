@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
-import { inspectPublication, recoverPublicationState, discardPublication } from './workspace-sync.mjs';
+import { validateEmptyWorkspace } from './workspace-sync.mjs';
 const execFileAsync = promisify(execFile);
 
 const VERSION = '0.1.1';
@@ -32,7 +32,7 @@ const AUTH_ENDPOINTS = Object.freeze({
   redirectUri: 'https://auth.openai.com/deviceauth/callback',
 });
 export const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
-function usage() { return 'Usage: yolo [-t MINUTES] [--json] <prompt>\n       yolo setup\n       yolo doctor\n       yolo publication inspect|recover|discard [workspace]\n       yolo config set model <model-id>\n       yolo config ephemeral-path list|add|remove|reset [path]\n       yolo auth login|status|logout\n       yolo --help\n       yolo --version'; }
+function usage() { return 'Usage: yolo [-t MINUTES] [--json] <prompt>\n       yolo setup\n       yolo doctor\n       yolo config set model <model-id>\n       yolo config ephemeral-path list|add|remove|reset [path]\n       yolo auth login|status|logout\n       yolo --help\n       yolo --version'; }
 export function parseArgs(args) {
   let minutes = 10; let json = false; const prompt = [];
   for (let i = 0; i < args.length; i += 1) {
@@ -57,7 +57,7 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     if (args[0] === 'setup') return await setupCommand(io);
     if (args[0] === 'doctor') return await doctorCommand(io);
     if (args[0] === 'auth') return await authCommand(args.slice(1), io, { clientFactory });
-    if (args[0] === 'publication') return await publicationCommand(args.slice(1), io);
+
     if (args[0] === 'config') return await configCommand(args.slice(1), io);
     const options = parseArgs(args);
     if (options.help) { io.stdout.write(`${usage()}\n`); return 0; }
@@ -69,6 +69,8 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     process.once('SIGINT', onInterrupt);
     const workspace = process.cwd();
     const model = await resolveModel();
+    // Refuse before Docker, credentials, provider, or host mutation.
+    await validateEmptyWorkspace(workspace);
     // Resolve the trusted invoker-selected Docker client once.  The same
     // executable and normal Docker context/host configuration are used for
     // image inspection and the subsequent container lifecycle.
@@ -296,13 +298,6 @@ export async function resolveModel() {
   return saved.model;
 }
 
-async function publicationCommand(args, io) {
-  const action = args[0]; const workspace = args[1] ?? process.cwd();
-  if (args.length > 2 || !['inspect', 'recover', 'discard'].includes(action)) throw new TypeError('usage: yolo publication inspect|recover|discard [workspace]');
-  if (action === 'inspect') { io.stdout.write(`${JSON.stringify(await inspectPublication(workspace))}\n`); return 0; }
-  const changed = action === 'recover' ? await recoverPublicationState(workspace) : await discardPublication(workspace);
-  io.stdout.write(`${action} publication state: ${changed ? 'completed' : 'no retained state'}\n`); return 0;
-}
 
 async function configCommand(args, io) {
   const store = new ConfigStore(configPath());

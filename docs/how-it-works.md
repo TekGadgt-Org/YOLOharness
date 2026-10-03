@@ -49,7 +49,7 @@ Frontmatter is a deliberately small parser, not general YAML: optional exact `na
 
 ## Deadlines, receipts, and cleanup
 
-`-t` excludes preflight and is not currently a strict end-to-end wall-clock promise. The bootstrap deadline starts just before launch; the launcher has a separate launch-plus-budget timer and a shared approximately 3-second cleanup deadline. Runtime remaining minutes floors to one minute, which can extend a nearly exhausted loop. The launcher timer directly aborts creation, but source inspection does not establish that it terminates an already attached, non-cooperative Docker client (`src/container-runtime.mjs:24-26`, `src/container-launcher.mjs:68-75,101-109,425-450`). These are acceptance-blocking remediation items, not behavior this document silently upgrades.
+`-t` is one immutable total wall-clock deadline. The launcher uses that same absolute deadline for Docker creation, attached execution, and hard abort. The runtime reserves a bounded finalization window for its final response, container stop, and create-only publication; before every provider turn it replaces a single remaining-time notice, and the initial instructions require an early runnable baseline, continuous saves, and final verification. Cleanup has its own bounded grace after the hard deadline; timeout/interruption receipts are uncertain and may be partial (`src/container-runtime.mjs`, `src/runtime.mjs`, `src/container-launcher.mjs`).
 
 Intended cleanup is exact and fail-closed: verify run labels/name/ID, stop, kill if needed, remove, poll for absence, reconcile the run-owned volume/helpers, and remove only safe empty scaffolds. Unknown create responses and late resources are reconciled without broad prune. Busy, ownership, parse, transport, and permission uncertainty is retained as `cleanup_unknown`; interrupted runs may preserve evidence. A completion receipt is not an independent verifier. Current implementation writes `.yolo/runs/<run>/events.jsonl` and `.yolo/last-receipt.json`; there is no resume/replay CLI.
 
@@ -61,17 +61,17 @@ Intended cleanup is exact and fail-closed: verify run labels/name/ID, stop, kill
 
 ## Workspace containment architecture
 
-The previous writable bind bypass is closed: creating `/workspace/neobrui-vite/node_modules` stays in Docker-managed storage because the runtime sees only the staged workspace volume. Dependency names are filtered recursively at arbitrary depth for Node, Python, PHP, .NET/C#/Godot, and custom configured layouts; source, manifests, lockfiles, and intended outputs outside those names are published back. Existing host dependency trees are never copied over or deleted. Publication uses a baseline and fails closed on durable conflicts rather than hiding or overwriting user-authored content.
+The previous writable bind bypass is closed: creating `/workspace/neobrui-vite/node_modules` stays in Docker-managed storage because the untrusted runtime sees only the staged workspace volume. Dependency names are filtered recursively at arbitrary depth; source, manifests, lockfiles, configuration, and intended outputs outside those names are published create-only back. The selected cwd must be empty before Docker discovery or authentication. Existing host entries are never copied over, overwritten, renamed, chmodded, or deleted; interruption can leave retained partial output.
 
 Lifecycle:
 
 ```text
-preflight -> journaled -> volume_created -> seeded -> running -> quiescing
- -> frozen -> export_validated -> publish_prepared -> publishing -> published
+preflight -> volume_created -> seeded -> running -> quiescing
+ -> frozen -> export_validated -> publishing -> published
  -> resources_removed -> complete
 ```
 
-Unknown publication or cleanup enters retained recovery with `effect_state: uncertain`; no false success and no promise of immediate volume erasure after crash. Workspace publication journals are versioned, bounded, path-validated records. Journal contents and their containing directory are fsynced before the first destructive rename and after each rename phase. A retained publication can be inspected, recovered, or discarded explicitly with `yolo publication inspect|recover|discard [workspace]`; these commands are provider-free, operate only on the exact workspace sidecar and same-parent candidate/backup paths, and return bounded JSON/status. Recovery restores the original source when needed and removes retained candidates; discard removes both retained trees without invoking a provider. The design preserves source but intentionally makes host changes visible only after final publication; outputs under excluded names require a separate trusted artifact policy. Rootless Linux primitives were exercised narrowly; rootful Linux and Darwin/Colima, secure publisher races, crash recovery, ownership/ACLs, and full end-to-end CLI acceptance remain gates.
+Unknown publication or cleanup enters `effect_state: uncertain`; no false success and no promise of whole-tree atomicity. Publication is create-only into the originally selected empty directory. If interruption or conflict occurs after output creation, the partial output is retained and the user must inspect or delete the directory before retrying. There is no journal, merge, recovery, inspect, or discard command. The runtime preserves recursive dependency exclusions while retaining source, manifests, lockfiles, configuration, and intended outputs.
 
 The runtime retains the existing versioned `ephemeralPaths` policy; no migration is performed here. Optional feedback and memory remain unimplemented and are not part of publication recovery.
 

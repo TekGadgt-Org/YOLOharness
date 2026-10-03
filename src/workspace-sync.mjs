@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readlink, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, readlink, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 
 const MANIFEST = '.yoloharness-workspace-manifest.json';
@@ -61,7 +62,7 @@ async function entries(root, excludedNames, current = root) {
 async function copyTreeFiltered(source, target, excludedNames) {
   await mkdir(target, { recursive: true });
   for (const name of await readdir(source)) {
-    if (name === MANIFEST || excluded(name, excludedNames)) continue;
+    if (name === MANIFEST || name.startsWith('.yoloharness-publication-') || excluded(name, excludedNames)) continue;
     const sourcePath = join(source, name);
     const targetPath = join(target, name);
     const info = await lstat(sourcePath);
@@ -89,17 +90,83 @@ async function safeTarget(source, key) {
   }
 }
 
+const JOURNAL_VERSION = 2;
+const MAX_JOURNAL_BYTES = 16 * 1024;
+function journalPath(source) { return join(source, '.yoloharness-publication.json'); }
+function absolutePath(value) { return typeof value === 'string' && value.startsWith('/') && !value.includes('\0'); }
+function validateJournal(state, source) {
+  if (!state || state.version !== JOURNAL_VERSION || state.source !== source ||
+      !absolutePath(state.candidate) || !absolutePath(state.backup) ||
+      !['prepared', 'source-renamed', 'candidate-renamed', 'backup-removed'].includes(state.phase)) {
+    throw new Error('workspace publication journal is malformed');
+  }
+  const parent = dirname(source);
+  for (const value of [state.candidate, state.backup]) {
+    if (parent !== '/' && dirname(value) !== parent && !value.startsWith(`${parent}/`)) throw new Error('workspace publication journal path escapes source parent');
+  }
+  return state;
+}
+async function readJournal(source) {
+  let path = journalPath(source); let info = await lstat(path).catch(() => null);
+  if (!info) {
+    const names = await readdir(dirname(source)).catch(() => []);
+    for (const name of names.filter(value => value.includes('.yoloharness-backup-')).slice(0, 32)) {
+      const candidate = join(dirname(source), name, '.yoloharness-publication.json');
+      if (await lstat(candidate).then(value => { info = value; path = candidate; return true; }).catch(() => false)) break;
+    }
+  }
+  if (!info) return null;
+  if (!info.isFile() || info.size > MAX_JOURNAL_BYTES) throw new Error('workspace publication journal is invalid');
+  return validateJournal(JSON.parse(await readFile(path, 'utf8')), source);
+}
+async function syncDirectory(path) { const handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0)); try { await handle.sync(); } finally { await handle.close(); } }
+async function writeJournal(source, state) {
+  const journalRoot = await lstat(source).then(() => source).catch(() => state.backup);
+  const path = journalPath(journalRoot); const handle = await open(path, 'w', 0o600);
+  try { await handle.writeFile(`${JSON.stringify(validateJournal(state, source))}\n`); await handle.sync(); } finally { await handle.close(); }
+  await syncDirectory(journalRoot);
+}
+async function removeJournal(source) {
+  const state = await readJournal(source).catch(() => null); const path = state ? journalPath(await lstat(source).then(() => source).catch(() => state.backup)) : journalPath(source);
+  await rm(path, { force: true }); await syncDirectory(dirname(source));
+}
+
 async function recoverPublication(source) {
-  const journal = `${source}.yoloharness-publication.json`;
-  let state;
-  try { state = JSON.parse(await readFile(journal, 'utf8')); } catch { return; }
-  if (!state || state.version !== 1 || typeof state.backup !== 'string') throw new Error('workspace publication journal is malformed');
+  const state = await readJournal(source); if (!state) return false;
   const sourceInfo = await lstat(source).catch(() => null);
   const backupInfo = await lstat(state.backup).catch(() => null);
   if (!sourceInfo && backupInfo) await rename(state.backup, source);
   else if (sourceInfo && backupInfo) await rm(state.backup, { recursive: true, force: true });
   else if (!sourceInfo) throw new Error('workspace publication recovery is incomplete');
-  await rm(journal, { force: true });
+  await rm(state.candidate, { recursive: true, force: true });
+  await removeJournal(source); return true;
+}
+
+export async function inspectPublication(source) {
+  const absolute = source.startsWith('/') ? source : join(process.cwd(), source);
+  const state = await readJournal(absolute);
+  if (!state) return { version: 1, retained: false, source: absolute };
+  const [sourceInfo, candidateInfo, backupInfo] = await Promise.all([lstat(absolute).catch(() => null), lstat(state.candidate).catch(() => null), lstat(state.backup).catch(() => null)]);
+  return { version: 1, retained: true, source: absolute, phase: state.phase, source_present: Boolean(sourceInfo), candidate_present: Boolean(candidateInfo), backup_present: Boolean(backupInfo) };
+}
+export async function recoverPublicationState(source) { const absolute = source.startsWith('/') ? source : join(process.cwd(), source); return recoverPublication(absolute); }
+export async function discardPublication(source) {
+  const absolute = source.startsWith('/') ? source : join(process.cwd(), source); const state = await readJournal(absolute);
+  if (!state) return false;
+  await rm(state.candidate, { recursive: true, force: true }); await rm(state.backup, { recursive: true, force: true }); await removeJournal(absolute); return true;
+}
+
+async function publishInPlace(candidate, source) {
+  const backup = join(source, `.yoloharness-backup-${process.pid}-${Math.random().toString(16).slice(2)}`);
+  await mkdir(backup, { mode: 0o700 });
+  const candidateName = candidate.slice(source.length + 1); const backupName = backup.slice(source.length + 1);
+  for (const name of await readdir(source)) {
+    if (name === candidateName || name === backupName || name === '.yoloharness-publication.json') continue;
+    await rename(join(source, name), join(backup, name));
+  }
+  await writeJournal(source, { version: JOURNAL_VERSION, source, candidate, backup, phase: 'source-renamed' });
+  for (const name of await readdir(candidate)) await rename(join(candidate, name), join(source, name));
+  await rm(candidate, { recursive: true, force: true }); await rm(backup, { recursive: true, force: true }); await removeJournal(source);
 }
 
 export async function publishWorkspace(staged, source, dependencyNames = [], baselinePath = join(staged, MANIFEST)) {
@@ -143,8 +210,13 @@ export async function publishWorkspace(staged, source, dependencyNames = [], bas
   // Build an entire replacement tree off to the side. Host state is not touched
   // until every conflict and staged type has passed validation.
   const parent = dirname(source);
-  const candidate = await mkdtemp(join(parent, '.yoloharness-publication-'));
+  // The helper has a read-only root and only /source is writable.  Keep the
+  // candidate below source so it is writable and remains on the same mount.
+  const candidate = await mkdtemp(join(source, '.yoloharness-publication-'));
   const backup = `${source}.yoloharness-backup-${process.pid}-${Math.random().toString(16).slice(2)}`;
+  const parentHandle = await open(parent, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0));
+  const anchored = value => `/proc/self/fd/${parentHandle.fd}/${value.slice(parent === '/' ? 1 : parent.length + 1)}`;
+  let phase = 'prepared';
   try {
     await copyTreeFiltered(source, candidate, new Set());
     for (const [key, path] of stagedEntries) {
@@ -162,17 +234,29 @@ export async function publishWorkspace(staged, source, dependencyNames = [], bas
         await rm(join(candidate, key), { recursive: true, force: true });
       }
     }
-    const journal = `${source}.yoloharness-publication.json`;
-    await writeFile(journal, JSON.stringify({ version: 1, source, candidate, backup }) + '\n', { mode: 0o600 });
-    await rename(source, backup);
+    await writeJournal(source, { version: JOURNAL_VERSION, source, candidate, backup, phase });
+    if (process.env.YOLO_PUBLICATION_FAULT === 'after-journal') throw new Error('publication interrupted after journal');
+    try { await rename(anchored(source), anchored(backup)); }
+    catch (error) {
+      if (!['EROFS', 'EXDEV', 'EBUSY'].includes(error.code)) throw error;
+      await publishInPlace(candidate, source); return;
+    }
+    phase = 'source-renamed'; await writeJournal(source, { version: JOURNAL_VERSION, source, candidate: `${backup}/${candidate.slice(source.length + 1)}`, backup, phase });
     if (process.env.YOLO_PUBLICATION_FAULT === 'after-source-rename') throw new Error('publication interrupted after source rename');
-    await rename(candidate, source);
-    await rm(backup, { recursive: true, force: true });
-    await rm(journal, { force: true });
+    await rename(anchored(`${backup}/${candidate.slice(source.length + 1)}`), anchored(source));
+    phase = 'candidate-renamed'; await writeJournal(source, { version: JOURNAL_VERSION, source, candidate: `${backup}/${candidate.slice(source.length + 1)}`, backup, phase });
+    if (process.env.YOLO_PUBLICATION_FAULT === 'after-candidate-rename') throw new Error('publication interrupted after candidate rename');
+    await rm(anchored(backup), { recursive: true, force: true });
+    phase = 'backup-removed'; await writeJournal(source, { version: JOURNAL_VERSION, source, candidate: `${backup}/${candidate.slice(source.length + 1)}`, backup, phase });
+    if (process.env.YOLO_PUBLICATION_FAULT === 'after-backup-remove') throw new Error('publication interrupted after backup removal');
+    await removeJournal(source);
   } catch (error) {
-    await rm(candidate, { recursive: true, force: true }).catch(() => {});
+    // A journal is intentionally retained after any destructive phase.  The
+    // provider is not involved in recovery; the next explicit recovery can
+    // safely reconcile the anchored names.
+    if (phase === 'prepared') await rm(candidate, { recursive: true, force: true }).catch(() => {});
     throw error;
-  }
+  } finally { await parentHandle.close(); }
 }
 
 export { MANIFEST };

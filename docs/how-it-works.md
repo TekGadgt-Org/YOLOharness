@@ -1,6 +1,6 @@
 # How YOLOharness works
 
-Status: current behavior at commit `5087fa32bbfe959716bf962905bab9d32698d2af`, with proposed changes explicitly marked. This guide is an implementation inventory, not a guarantee that every retained test has been executed on every platform.
+Status: current behavior at the checked-out implementation. This guide is an implementation inventory, not a guarantee that every retained test has been executed on every platform.
 
 ## One invocation
 
@@ -71,9 +71,9 @@ preflight -> journaled -> volume_created -> seeded -> running -> quiescing
  -> resources_removed -> complete
 ```
 
-Unknown publication or cleanup enters retained recovery with `effect_state: uncertain`; no false success and no promise of immediate volume erasure after crash. A journal records exact daemon, image, policy, volume/helper identities and phase. Recovery/discard must be explicit and provider-free. The design preserves source but intentionally makes host changes visible only after final publication; outputs under excluded names require a separate trusted artifact policy. Rootless Linux primitives were exercised narrowly; rootful Linux and Darwin/Colima, secure publisher races, crash recovery, ownership/ACLs, and full end-to-end CLI acceptance remain gates.
+Unknown publication or cleanup enters retained recovery with `effect_state: uncertain`; no false success and no promise of immediate volume erasure after crash. Workspace publication journals are versioned, bounded, path-validated records. Journal contents and their containing directory are fsynced before the first destructive rename and after each rename phase. A retained publication can be inspected, recovered, or discarded explicitly with `yolo publication inspect|recover|discard [workspace]`; these commands are provider-free, operate only on the exact workspace sidecar and same-parent candidate/backup paths, and return bounded JSON/status. Recovery restores the original source when needed and removes retained candidates; discard removes both retained trees without invoking a provider. The design preserves source but intentionally makes host changes visible only after final publication; outputs under excluded names require a separate trusted artifact policy. Rootless Linux primitives were exercised narrowly; rootful Linux and Darwin/Colima, secure publisher races, crash recovery, ownership/ACLs, and full end-to-end CLI acceptance remain gates.
 
-Proposed migration adds versioned recursive `ephemeralNames` while retaining anchored legacy `ephemeralPaths`; it must not silently reinterpret old paths or removed defaults. Add explicit recovery commands and expose effective policy/limits. No writable-bind fallback is acceptable.
+The runtime retains the existing versioned `ephemeralPaths` policy; no migration is performed here. Optional feedback and memory remain unimplemented and are not part of publication recovery.
 
 ## Proposed feedback and memory (not approved)
 

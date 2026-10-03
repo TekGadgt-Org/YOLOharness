@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, rm, access, chmod, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { seedWorkspace, publishWorkspace } from '../src/workspace-sync.mjs';
+import { seedWorkspace, publishWorkspace, inspectPublication, recoverPublicationState, discardPublication } from '../src/workspace-sync.mjs';
 
 async function exists(path) { return access(path).then(() => true).catch(() => false); }
 
@@ -95,4 +95,33 @@ test('workspace publication never publishes harness-owned receipt state', async 
     await mkdir(join(source, '.yolo'), { recursive: true }); await writeFile(join(source, '.yolo', 'last-receipt.json'), 'host'); await seedWorkspace(source, staged); await writeFile(join(staged, '.yolo', 'last-receipt.json'), 'staged');
     await publishWorkspace(staged, source); assert.equal(await readFile(join(source, '.yolo', 'last-receipt.json'), 'utf8'), 'host');
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('workspace publication retains a durable journal and provider-free recovery handles a rename fault', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'yoloharness-sync-'));
+  const source = join(root, 'source'); const staged = join(root, 'staged');
+  try {
+    await mkdir(source); await writeFile(join(source, 'result'), 'before'); await seedWorkspace(source, staged); await writeFile(join(staged, 'result'), 'after');
+    process.env.YOLO_PUBLICATION_FAULT = 'after-source-rename';
+    await assert.rejects(publishWorkspace(staged, source), /publication interrupted/);
+    delete process.env.YOLO_PUBLICATION_FAULT;
+    assert.equal((await inspectPublication(source)).phase, 'source-renamed');
+    assert.equal(await recoverPublicationState(source), true);
+    assert.equal(await readFile(join(source, 'result'), 'utf8'), 'before');
+    assert.equal((await inspectPublication(source)).retained, false);
+  } finally { delete process.env.YOLO_PUBLICATION_FAULT; await rm(root, { recursive: true, force: true }); }
+});
+
+test('publication discard removes retained state without changing the source when no destructive phase ran', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'yoloharness-sync-'));
+  const source = join(root, 'source'); const staged = join(root, 'staged');
+  try {
+    await mkdir(source); await writeFile(join(source, 'result'), 'before'); await seedWorkspace(source, staged); await writeFile(join(staged, 'result'), 'after');
+    process.env.YOLO_PUBLICATION_FAULT = 'after-journal';
+    await assert.rejects(publishWorkspace(staged, source), /publication interrupted/);
+    delete process.env.YOLO_PUBLICATION_FAULT;
+    assert.equal(await discardPublication(source), true);
+    assert.equal(await readFile(join(source, 'result'), 'utf8'), 'before');
+    assert.equal((await inspectPublication(source)).retained, false);
+  } finally { delete process.env.YOLO_PUBLICATION_FAULT; await rm(root, { recursive: true, force: true }); }
 });

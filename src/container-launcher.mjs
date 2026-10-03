@@ -137,15 +137,15 @@ export class ContainerLauncher {
     let scaffoldHistory = [];
       cleanupDeadline ??= Date.now() + CLEANUP_TOTAL_MS;
       try {
-        if (clientCloseObserved) {
-          if (id && owned) await cleanup(this.command, id, name, label, this.spawn, undefined, { deadline: cleanupDeadline });
-          else if (createAttempted) await reconcileUnknownCreate(this.command, name, label, this.spawn, undefined, { deadline: cleanupDeadline });
-        } else {
-          throw Object.assign(new Error('docker client close was not observed'), { code: 'cleanup_unknown' });
-        }
+        // A lost Docker client close does not revoke ownership of resources
+        // whose exact identity was already established.  Reconcile those
+        // resources independently; otherwise a deadline race leaves the
+        // task-owned container/volume behind while still reporting uncertainty.
+        if (id && owned) await cleanup(this.command, id, name, label, this.spawn, undefined, { deadline: cleanupDeadline });
+        else if (createAttempted) await reconcileUnknownCreate(this.command, name, label, this.spawn, undefined, { deadline: cleanupDeadline });
       } catch (error) { cleanupError = error; }
       try {
-        if (clientCloseObserved && volumeName && (volumeCreated || volumeCreateAttempted)) volumeCleanup = reconcileVolume(this.command, volumeName, label, this.spawn, { deadline: cleanupDeadline });
+        if (volumeName && (volumeCreated || volumeCreateAttempted)) volumeCleanup = reconcileVolume(this.command, volumeName, label, this.spawn, { deadline: cleanupDeadline });
         if (volumeCleanup) { volumeHistory = await volumeCleanup; if (outcome) outcome = { ...outcome, cleanup_history: volumeHistory }; }
       } catch (error) { cleanupError ??= error; }
       if (cleanupError) {

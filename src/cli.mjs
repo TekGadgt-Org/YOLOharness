@@ -2,7 +2,7 @@
 import { AuthClient, AuthStore } from './auth.mjs';
 import { ConfigStore, configPath, configRoot, validateModel, imageMetadataPath, DEFAULT_EPHEMERAL_PATHS, validateEphemeralPath, validateEphemeralPaths, effectiveEphemeralPaths } from './config.mjs';
 import { ContainerLauncher } from './container-launcher.mjs';
-import { readFile, writeFile, mkdir, cp, rm, open, rename, readdir, access } from 'node:fs/promises';
+import { readFile, mkdir, cp, rm, open, rename, readdir, access, lstat } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { mkdtemp } from 'node:fs/promises';
@@ -53,6 +53,7 @@ export function parseArgs(args) {
 }
 
 export async function main(args = process.argv.slice(2), io = { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr }, { clientFactory } = {}) {
+  let deadlineTimer;
   try {
     if (args[0] === 'setup') return await setupCommand(io);
     if (args[0] === 'doctor') return await doctorCommand(io);
@@ -66,6 +67,7 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     io.stderr.write('Warning: files in the selected project are intentionally exposed to the agent and may be disclosed\n');
     const deadline = Date.now() + options.minutes * 60_000;
     const controller = new AbortController();
+    deadlineTimer = setTimeout(() => controller.abort(Object.assign(new Error('run deadline exceeded'), { code: 'deadline' })), Math.max(1, deadline - Date.now()));
     const onInterrupt = () => { io.stderr.write('interrupt requested; stopping run\n'); controller.abort(new Error('SIGINT')); };
     process.once('SIGINT', onInterrupt);
     const workspace = process.cwd();
@@ -76,15 +78,17 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     // executable and normal Docker context/host configuration are used for
     // image inspection and the subsequent container lifecycle.
     const dockerCommand = await resolveDockerCommand();
-    const image = await configuredImage({ dockerCommand });
-    const credentials = await runtimeCredentials(options.minutes, deadline);
+    const image = await configuredImage({ dockerCommand, signal: controller.signal, deadline });
+    const credentials = await runtimeCredentials(options.minutes, deadline, { signal: controller.signal });
     const config = await new ConfigStore(configPath()).load();
     const launcher = new ContainerLauncher({ image, workspace, command: dockerCommand, timeoutMs: options.minutes * 60_000 });
     const record = await launcher.launch({ prompt: options.prompt, model, ephemeralPaths: effectiveEphemeralPaths(config), deadline, accessToken: credentials.accessToken, expiresAt: credentials.expiresAt }, { signal: controller.signal, deadline });
+    clearTimeout(deadlineTimer);
     process.removeListener('SIGINT', onInterrupt);
     io.stdout.write(`${options.json ? JSON.stringify(record) : `${record.status} run=${record.run_id ?? 'unknown'} effect_state=${record.effect_state ?? 'unknown'} evidence=${record.evidence?.length ?? 0} artifacts=${record.artifacts?.length ?? 0}: ${record.result ?? record.errors.join('; ')}`}\n`);
     return record.status === 'completed' && record.effect_state !== 'uncertain' ? 0 : record.status === 'interrupted' ? 130 : record.status === 'deadline' ? 124 : 1;
   } catch (error) {
+    clearTimeout(deadlineTimer);
     const message = error instanceof MissingProviderError ? error.message : error.message;
     if (hasCleanupUnknown(error)) {
       const receipt = await buildCleanupUnknownReceipt(error, process.cwd());
@@ -114,8 +118,11 @@ export async function buildCleanupUnknownReceipt(error, workspace = process.cwd(
     cleanup_history: cleanup?.cleanupHistory ?? prior.cleanup_history ?? [],
   };
   try {
-    await mkdir(join(workspace, '.yolo'), { recursive: true, mode: 0o700 });
-    await writeFile(join(workspace, '.yolo', 'last-receipt.json'), `${JSON.stringify(receipt)}\n`, { mode: 0o600 });
+    const directory = join(workspace, '.yolo');
+    try { const info = await lstat(directory); if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('receipt directory is not a local directory'); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; await mkdir(directory, { mode: 0o700 }); }
+    const fh = await open(join(directory, 'last-receipt.json'), fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
+    try { await fh.writeFile(`${JSON.stringify(receipt)}\n`); await fh.sync(); } finally { await fh.close(); }
   } catch {}
   return receipt;
 }
@@ -151,7 +158,7 @@ function cleanupErrorIn(error, seen = new Set()) {
 
 function hasCleanupUnknown(error) { return Boolean(cleanupErrorIn(error)); }
 
-export async function configuredImage({ inspect, dockerCommand } = {}) {
+export async function configuredImage({ inspect, dockerCommand, signal, deadline } = {}) {
   try {
     const value = JSON.parse(await readFile(imageMetadataPath(), 'utf8'));
     if (!value || Object.keys(value).length !== 4 || value.version !== 1 ||
@@ -160,7 +167,7 @@ export async function configuredImage({ inspect, dockerCommand } = {}) {
         typeof value.sourceVersion !== 'string' || !value.sourceVersion) throw new Error('invalid image metadata');
     const installed = await runtimeSourceIdentity();
     if (value.sourceDigest !== installed.sourceDigest || value.sourceVersion !== installed.sourceVersion) throw new Error('configured image metadata does not match installed runtime source');
-    const inspectImage = inspect ?? (image => inspectRuntimeImage(image, dockerCommand));
+    const inspectImage = inspect ?? (image => inspectRuntimeImage(image, dockerCommand, { signal, deadline }));
     const inspected = JSON.parse(await inspectImage(value.imageId));
     const config = inspected?.Config ?? {};
     if (inspected.Id !== value.imageId) throw new Error('runtime image identity did not match configured immutable ID');
@@ -171,9 +178,10 @@ export async function configuredImage({ inspect, dockerCommand } = {}) {
   } catch (error) { if (error.code === 'ENOENT') throw new MissingProviderError('no runtime image configured; run `yolo setup` before starting a run'); throw error; }
 }
 
-async function inspectRuntimeImage(image, dockerCommand = undefined) {
+async function inspectRuntimeImage(image, dockerCommand = undefined, { signal, deadline } = {}) {
   const docker = dockerCommand ?? await resolveDockerCommand();
-  const { stdout } = await execFileAsync(docker, ['image', 'inspect', '--format', '{{json .}}', image], { maxBuffer: 64 * 1024, env: dockerEnvironment() });
+  const remaining = deadline === undefined ? undefined : Math.max(1, deadline - Date.now());
+  const { stdout } = await execFileAsync(docker, ['image', 'inspect', '--format', '{{json .}}', image], { maxBuffer: 64 * 1024, env: dockerEnvironment(), signal, ...(remaining === undefined ? {} : { timeout: remaining }) });
   return stdout;
 }
 
@@ -253,13 +261,13 @@ async function saveImageMetadata(value) {
   } catch (error) { await rm(temp, { force: true }).catch(() => {}); throw error; }
 }
 
-export async function runtimeCredentials(minutes, deadline = Date.now() + minutes * 60_000) {
+export async function runtimeCredentials(minutes, deadline = Date.now() + minutes * 60_000, { signal } = {}) {
   const path = process.env.YOLO_AUTH_FILE ?? join(configRoot(), 'yoloharness', 'credentials.json');
   const store = new AuthStore(path); let credentials = await store.load();
   if (!credentials?.accessToken || !credentials?.refreshToken || !Number.isFinite(credentials.expiresAt)) throw new MissingProviderError('no usable credentials; run `yolo auth login`');
   const required = deadline + 30_000;
   if (credentials.expiresAt <= required) {
-    credentials = await new AuthClient(authConfig(store, credentials.clientId, false)).refresh(credentials);
+    credentials = await new AuthClient(authConfig(store, credentials.clientId, false)).refresh(credentials, { signal });
   }
   if (!Number.isFinite(credentials.expiresAt) || credentials.expiresAt <= required) throw new MissingProviderError('access token lifetime does not cover the requested deadline; run `yolo auth login`');
   return credentials;

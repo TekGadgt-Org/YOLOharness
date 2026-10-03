@@ -176,7 +176,7 @@ export class ContainerLauncher {
           const yoloPath = `/proc/self/fd/${root.fd}/.yolo`;
           await mkdir(yoloPath, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
           const yolo = await open(yoloPath, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
-          try { const receipt = await open(`/proc/self/fd/${yolo.fd}/last-receipt.json`, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW, 0o600); try { await receipt.writeFile(`${JSON.stringify(outcome)}\n`); await receipt.sync(); } finally { await receipt.close(); } }
+          try { const receipt = await open(`/proc/self/fd/${yolo.fd}/last-receipt.json`, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600); try { await receipt.writeFile(`${JSON.stringify(outcome)}\n`); await receipt.sync(); } finally { await receipt.close(); } }
           finally { await yolo.close(); }
         } finally { await root.close(); }
       }
@@ -355,10 +355,13 @@ function lastReceipt(output) {
 }
 
 async function workspaceReceipt(workspace) {
+  let fh;
   try {
-    const value = JSON.parse(await readFile(join(workspace, '.yolo', 'last-receipt.json'), 'utf8'));
+    fh = await open(join(workspace, '.yolo', 'last-receipt.json'), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    const value = JSON.parse(await fh.readFile('utf8'));
+    await fh.close();
     return value?.version === 1 ? value : null;
-  } catch { return null; }
+  } catch { await fh?.close().catch(() => {}); return null; }
 }
 
 async function inspectEphemeralScaffold(workspace, paths) {

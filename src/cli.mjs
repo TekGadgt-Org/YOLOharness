@@ -118,11 +118,23 @@ export async function buildCleanupUnknownReceipt(error, workspace = process.cwd(
     cleanup_history: cleanup?.cleanupHistory ?? prior.cleanup_history ?? [],
   };
   try {
-    const directory = join(workspace, '.yolo');
-    try { const info = await lstat(directory); if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('receipt directory is not a local directory'); }
-    catch (error) { if (error.code !== 'ENOENT') throw error; await mkdir(directory, { mode: 0o700 }); }
-    const fh = await open(join(directory, 'last-receipt.json'), fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
-    try { await fh.writeFile(`${JSON.stringify(receipt)}\n`); await fh.sync(); } finally { await fh.close(); }
+    const root = await open(workspace, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+    try {
+      const directory = `/proc/self/fd/${root.fd}/.yolo`;
+      await mkdir(directory, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
+      // Bind the leaf operation to the directory descriptor, and reject an
+      // ancestor exchange observed between mkdir and open.  O_NOFOLLOW alone
+      // does not prevent replacement with a different real directory.
+      const before = await lstat(directory);
+      if (!before.isDirectory() || before.isSymbolicLink()) throw new Error('receipt directory is not a local directory');
+      const yolo = await open(directory, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+      try {
+        const after = await yolo.stat();
+        if (before.dev !== after.dev || before.ino !== after.ino) throw new Error('receipt directory changed during persistence');
+        const fh = await open(`/proc/self/fd/${yolo.fd}/last-receipt.json`, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
+        try { await fh.writeFile(`${JSON.stringify(receipt)}\n`); await fh.sync(); } finally { await fh.close(); }
+      } finally { await yolo.close(); }
+    } finally { await root.close(); }
   } catch {}
   return receipt;
 }
@@ -140,8 +152,16 @@ function bestReceiptIn(value, seen = new Set()) {
 
 async function readWorkspaceReceipt(workspace) {
   try {
-    const value = JSON.parse(await readFile(join(workspace, '.yolo', 'last-receipt.json'), 'utf8'));
-    return value?.version === 1 ? value : null;
+    const root = await open(workspace, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+    try {
+      const yolo = await open(`/proc/self/fd/${root.fd}/.yolo`, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+      try {
+        const receipt = await open(`/proc/self/fd/${yolo.fd}/last-receipt.json`, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+        const value = JSON.parse(await receipt.readFile('utf8'));
+        await receipt.close();
+        return value?.version === 1 ? value : null;
+      } finally { await yolo.close(); }
+    } finally { await root.close(); }
   } catch { return null; }
 }
 

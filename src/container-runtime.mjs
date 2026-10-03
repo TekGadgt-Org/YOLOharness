@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { readFile, open, mkdir, lstat } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
-import { join } from 'node:path';
+
 import { decodeBootstrap } from './bootstrap.mjs';
 import { ConfiguredProvider } from './provider.mjs';
 import { runOnce, EXEC_TOOL, SKILL_LOAD_TOOL } from './runtime.mjs';
@@ -34,11 +34,10 @@ try {
   record = { version: 1, run_id: null, status: controller.signal.aborted ? 'interrupted' : 'failed', effect_state: controller.signal.aborted ? 'uncertain' : 'none', result: error?.partialResult ?? null, evidence: [], artifacts: [], errors: [message] };
 }
 try {
-  const directory = '/workspace/.yolo';
-  try { const info = await lstat(directory); if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('receipt directory is not a local directory'); }
-  catch (error) { if (error.code !== 'ENOENT') throw error; await mkdir(directory, { mode: 0o700 }); }
-  const receipt = join(directory, 'last-receipt.json');
-  const fh = await open(receipt, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
+  // The host launcher is the sole durable receipt writer. Keep a private
+  // volume-local copy only so publication failure can retain runtime fields;
+  // /tmp is never published to the selected destination.
+  const fh = await open('/tmp/runtime-receipt.json', fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
   try { await fh.writeFile(`${JSON.stringify(record)}\n`); await fh.sync(); } finally { await fh.close(); }
 } catch (error) {
   record = { ...record, status: 'publication_incomplete', effect_state: 'uncertain', errors: [...(record.errors ?? []), `receipt persistence failed: ${error.message}`] };

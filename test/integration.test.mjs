@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtemp, readFile, stat, rm, utimes, mkdir, writeFile, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, stat, rm, utimes, mkdir, writeFile, readdir, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -76,6 +76,21 @@ test('cleanup_unknown receipt without prior state remains explicit and non-succe
     assert.equal(receipt.run_id, null); assert.deepEqual(receipt.evidence, []); assert.deepEqual(receipt.artifacts, []);
     assert.deepEqual(JSON.parse(await readFile(join(dir, '.yolo', 'last-receipt.json'), 'utf8')), receipt);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('cleanup_unknown receipt rejects a substituted receipt directory without touching the outside sentinel', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'yolo-receipt-anchor-'));
+  const outside = await mkdtemp(join(tmpdir(), 'yolo-receipt-outside-'));
+  try {
+    const sentinel = JSON.stringify({ operator: true }) + '\\n';
+    await writeFile(join(outside, 'last-receipt.json'), sentinel, { mode: 0o640 });
+    await symlink(outside, join(workspace, '.yolo'));
+    const before = await stat(join(outside, 'last-receipt.json'));
+    await buildCleanupUnknownReceipt(new Error('cleanup unknown'), workspace);
+    assert.equal(await readFile(join(outside, 'last-receipt.json'), 'utf8'), sentinel);
+    const after = await stat(join(outside, 'last-receipt.json'));
+    assert.equal(after.mode & 0o777, before.mode & 0o777);
+  } finally { await rm(workspace, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
 });
 
 test('configured provider preserves streamed partial text when the response aborts', async () => {

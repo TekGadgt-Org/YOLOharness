@@ -8,7 +8,7 @@ try {
 } catch (error) {
   if (error?.code !== 'publication_incomplete') throw error;
   let runtime;
-  try { runtime = JSON.parse(await readFile('/tmp/workspace/last-receipt.json', 'utf8')); } catch {}
+  try { runtime = JSON.parse(await readFile('/tmp/runtime-receipt.json', 'utf8')); } catch {}
   const receipt = {
     version: 1,
     status: 'publication_incomplete',

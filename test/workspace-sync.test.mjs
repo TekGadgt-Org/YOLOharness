@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, rm, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm, access, chmod, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { seedWorkspace, publishWorkspace } from '../src/workspace-sync.mjs';
@@ -24,6 +24,18 @@ test('workspace staging filters dependency directories at arbitrary depth while 
     assert.equal(await exists(join(staged, 'vendor', 'custom-cache')), false);
     assert.equal(await readFile(join(staged, 'apps', 'web', 'package.json'), 'utf8'), '{}');
     assert.equal(await readFile(join(staged, 'README.md'), 'utf8'), 'source');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('workspace staging preserves writable directory modes after a restrictive helper umask', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'yoloharness-sync-'));
+  const source = join(root, 'source'); const staged = join(root, 'staged');
+  try {
+    await mkdir(source); await chmod(source, 0o777); await mkdir(join(source, '.yolo'), { recursive: true });
+    await chmod(join(source, '.yolo'), 0o777);
+    await seedWorkspace(source, staged);
+    assert.equal((await stat(staged)).mode & 0o777, 0o777);
+    assert.equal((await stat(join(staged, '.yolo'))).mode & 0o777, 0o777);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -51,5 +63,36 @@ test('workspace publication fails closed when an existing durable file conflicts
     await writeFile(join(staged, 'manifest.json'), 'generated');
     await assert.rejects(publishWorkspace(staged, source, []), /workspace publication conflict/);
     assert.equal(await readFile(join(source, 'manifest.json'), 'utf8'), 'host');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('workspace publication uses the seed manifest as a three-way baseline', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'yoloharness-sync-'));
+  const source = join(root, 'source'); const staged = join(root, 'staged');
+  try {
+    await mkdir(source); await writeFile(join(source, 'unchanged'), 'base'); await writeFile(join(source, 'replace'), 'base'); await writeFile(join(source, 'delete'), 'base'); await writeFile(join(source, 'host-only'), 'host');
+    await seedWorkspace(source, staged); await writeFile(join(staged, 'new-output'), 'new'); await writeFile(join(staged, 'replace'), 'staged'); await rm(join(staged, 'delete')); await writeFile(join(source, 'host-only'), 'host-edit');
+    await publishWorkspace(staged, source);
+    assert.equal(await readFile(join(source, 'new-output'), 'utf8'), 'new'); assert.equal(await readFile(join(source, 'replace'), 'utf8'), 'staged'); assert.equal(await exists(join(source, 'delete')), false); assert.equal(await readFile(join(source, 'host-only'), 'utf8'), 'host-edit');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('workspace publication rejects concurrent create and both-sides edits', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'yoloharness-sync-'));
+  const source = join(root, 'source'); const staged = join(root, 'staged');
+  try {
+    await mkdir(source); await writeFile(join(source, 'base'), 'base'); await seedWorkspace(source, staged); await writeFile(join(staged, 'new'), 'staged'); await writeFile(join(source, 'new'), 'host');
+    await assert.rejects(publishWorkspace(staged, source), /workspace publication conflict: new/);
+    await rm(join(source, 'new')); await writeFile(join(staged, 'base'), 'staged'); await writeFile(join(source, 'base'), 'host');
+    await assert.rejects(publishWorkspace(staged, source), /workspace publication conflict: base/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('workspace publication never publishes harness-owned receipt state', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'yoloharness-sync-'));
+  const source = join(root, 'source'); const staged = join(root, 'staged');
+  try {
+    await mkdir(join(source, '.yolo'), { recursive: true }); await writeFile(join(source, '.yolo', 'last-receipt.json'), 'host'); await seedWorkspace(source, staged); await writeFile(join(staged, '.yolo', 'last-receipt.json'), 'staged');
+    await publishWorkspace(staged, source); assert.equal(await readFile(join(source, '.yolo', 'last-receipt.json'), 'utf8'), 'host');
   } finally { await rm(root, { recursive: true, force: true }); }
 });

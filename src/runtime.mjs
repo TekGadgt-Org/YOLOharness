@@ -79,7 +79,7 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
   if (signal.aborted) return { version: 1, run_id: null, status: 'interrupted', effect_state: 'uncertain', result: null, evidence: [], artifacts: [], errors: ['interrupted before start'] };
   const runId = `run-${Date.now()}-${randomUUID().slice(0, 8)}`;
   const runDir = join(workspace, '.yolo', 'runs', runId);
-  await mkdir(runDir, { recursive: true, mode: 0o700 });
+  await mkdir(runDir, { recursive: true, mode: 0o750 });
   const log = new EventLog(join(runDir, 'events.jsonl'));
   const timer = deadlineSignal(signal, minutes * 60_000);
   const messages = [skillCatalogMessage(skills), { role: 'user', content: prompt }];

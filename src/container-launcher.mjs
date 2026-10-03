@@ -185,7 +185,7 @@ async function initializeScratchVolume(command, image, volume, label, identity, 
 
 async function runWorkspaceHelper(command, image, volume, label, identity, role, paths, source, spawn, options) {
   const name = `${HELPER_PREFIX}${role}-${label}`;
-  const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--label', `yoloharness.role=${role}`, '--init', '--network', 'none', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--user', `${identity.uid}:${identity.gid}`, '--mount', `type=volume,src=${volume},dst=/tmp,volume-nocopy`, '--mount', `type=bind,src=${source},dst=/source${role === 'workspace-seed' ? ',readonly' : ''}`, '--entrypoint', 'node', image, `/app/src/${role}.mjs`, ...paths];
+  const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--label', `yoloharness.role=${role}`, '--init', '--network', 'none', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--user', `${identity.uid}:${identity.gid}`, '--mount', `type=volume,src=${volume},dst=/tmp,volume-nocopy`, '--mount', `type=bind,src=${source},dst=/source${role === 'workspace-seed' ? ',readonly' : ''}`, '--entrypoint', 'node', image, `/app/src/${role}.mjs`, ...(role === 'workspace-seed' ? [String(identity.uid), String(identity.gid)] : []), ...paths];
   let id; let verified = false;
   try {
     id = (await operation(command, args, spawn, options).promise).trim();

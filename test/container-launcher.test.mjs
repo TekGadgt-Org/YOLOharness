@@ -372,7 +372,8 @@ test('old rootless-only behavior is a regression control on macOS Linux VM runti
 
 test('macOS Linux-daemon consumer create argv uses 0:0 without supplementary groups', async () => {
   const workspace = await mkdtemp('/tmp/yolo-macos-linux-daemon-argv-');
-  const id = 'abcdef0123456789'.repeat(4); let createArgs; let helperArgs; let helperCleaned = false;
+  const ids = { helper: 'abcdef0123456789'.repeat(4), runtime: 'fedcba9876543210'.repeat(4) };
+  let createArgs; let helperArgs; let helperCleaned = false;
   try {
     const spawn = (_command, args) => {
       if (args[0] === 'volume') return volumeMock(args);
@@ -380,14 +381,14 @@ test('macOS Linux-daemon consumer create argv uses 0:0 without supplementary gro
       const result = { stdout, stderr, stdin: { end() {} }, kill() { setImmediate(() => listeners.get('close')?.(137)); }, once(event, fn) { listeners.set(event, fn); } };
       const close = code => setImmediate(() => listeners.get('close')?.(code));
       if (args[0] === 'info') { setImmediate(() => stdout.emit('data', JSON.stringify({ OSType: 'linux', OperatingSystem: 'Colima', ClientInfo: { Context: 'colima' }, SecurityOptions: ['name=userns'] }))); close(0); }
-      else if (args[0] === 'create' && (args.includes('--cap-add=CHOWN') || args.includes('/app/src/scratch-verify.mjs') || args.includes('/app/src/workspace-seed.mjs') || args.includes('/app/src/workspace-publish.mjs'))) { helperArgs = args; helperCleaned = false; setImmediate(() => stdout.emit('data', id)); close(0); }
-      else if (args[0] === 'create') { createArgs = args; setImmediate(() => stdout.emit('data', id)); close(0); }
-      else if (args[0] === 'inspect' && helperArgs && !helperCleaned) { const role = helperArgs[helperArgs.indexOf('--label', helperArgs.indexOf('--label') + 1) + 1].split('=').slice(1).join('='); setImmediate(() => stdout.emit('data', JSON.stringify({ Id: id, Name: `/${helperArgs[helperArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': helperArgs[helperArgs.indexOf('--label') + 1].split('=').slice(1).join('='), 'yoloharness.role': role } } }))); close(0); }
-      else if (args[0] === 'inspect' && createArgs && !createArgs._cleaned) { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: id, Name: `/${createArgs[createArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': createArgs[createArgs.indexOf('--label') + 1].split('=').slice(1).join('=') } } }))); close(0); }
-      else if (args[0] === 'start') { setImmediate(() => stdout.emit('data', helperArgs?.includes('/app/src/workspace-seed.mjs') || helperArgs?.includes('/app/src/workspace-publish.mjs') ? JSON.stringify({ version: 1, seeded: true }) + '\n' : createArgs ? '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n' : helperArgs.includes('/app/src/scratch-init.mjs') ? JSON.stringify({ version: 1, uid: 0, gid: 0, mode: 493, ownership: true }) + '\n' : JSON.stringify({ version: 1, uid: 0, gid: 0, marker: 'write-read-remove', writable: true, mode: 384 }) + '\n')); close(0); }
+      else if (args[0] === 'create' && (args.includes('--cap-add=CHOWN') || args.includes('/app/src/scratch-verify.mjs') || args.includes('/app/src/workspace-seed.mjs') || args.includes('/app/src/workspace-publish.mjs'))) { helperArgs = args; helperCleaned = false; setImmediate(() => stdout.emit('data', ids.helper)); close(0); }
+      else if (args[0] === 'create') { createArgs = args; setImmediate(() => stdout.emit('data', ids.runtime)); close(0); }
+      else if (args[0] === 'inspect' && args.at(-1) === ids.helper && helperArgs && !helperCleaned) { const role = helperArgs[helperArgs.indexOf('--label', helperArgs.indexOf('--label') + 1) + 1].split('=').slice(1).join('='); setImmediate(() => stdout.emit('data', JSON.stringify({ Id: ids.helper, Name: `/${helperArgs[helperArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': helperArgs[helperArgs.indexOf('--label') + 1].split('=').slice(1).join('='), 'yoloharness.role': role } } }))); close(0); }
+      else if (args[0] === 'inspect' && args.at(-1) === ids.runtime && createArgs && !createArgs._cleaned) { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: ids.runtime, Name: `/${createArgs[createArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': createArgs[createArgs.indexOf('--label') + 1].split('=').slice(1).join('=') } } }))); close(0); }
+      else if (args[0] === 'start') { setImmediate(() => stdout.emit('data', helperArgs?.includes('/app/src/workspace-seed.mjs') && !args.includes('--interactive') ? JSON.stringify({ version: 1, seeded: true }) + '\n' : helperArgs?.includes('/app/src/workspace-publish.mjs') && !args.includes('--interactive') ? JSON.stringify({ version: 1, published: true }) + '\n' : createArgs ? '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n' : helperArgs.includes('/app/src/scratch-init.mjs') ? JSON.stringify({ version: 1, uid: 0, gid: 0, mode: 493, ownership: true }) + '\n' : JSON.stringify({ version: 1, uid: 0, gid: 0, marker: 'write-read-remove', writable: true, mode: 384 }) + '\n')); close(0); }
       else if (args[0] === 'stop' || args[0] === 'kill') close(0);
       else if (args[0] === 'rm') { if (helperArgs?.includes('/app/src/workspace-seed.mjs') || helperArgs?.includes('/app/src/workspace-publish.mjs')) helperCleaned = true; else if (createArgs) createArgs._cleaned = true; else helperCleaned = true; close(0); }
-      else if (args[0] === 'inspect') { setImmediate(() => stderr.emit('data', `Error: No such container: ${id}`)); close(1); }
+      else if (args[0] === 'inspect') { setImmediate(() => stderr.emit('data', `Error: No such container: ${ids.runtime}`)); close(1); }
       return result;
     };
     const launcher = new ContainerLauncher({ image: `sha256:${'d'.repeat(64)}`, workspace, spawn, hostPlatform: 'darwin' });
@@ -420,9 +421,10 @@ test('host root under standard Docker remains explicit numeric 0:0 identity', as
 
 test('rootful consumer create argv carries selected ownership without duplicate primary group', async () => {
   const workspace = await mkdtemp('/tmp/yolo-rootful-argv-');
-  const id = '0123456789abcdef'.repeat(4);
+  const ids = { helper: '0123456789abcdef'.repeat(4), runtime: 'fedcba9876543210'.repeat(4) };
   let createArgs;
   let helperArgs;
+  let lastScratchHelperArgs;
   let initHelperArgs;
   let helperCleaned = false;
   try {
@@ -432,14 +434,14 @@ test('rootful consumer create argv carries selected ownership without duplicate 
       const result = { stdout, stderr, stdin: { end() {} }, kill() { setImmediate(() => listeners.get('close')?.(137)); }, once(event, fn) { listeners.set(event, fn); } };
       const close = code => setImmediate(() => listeners.get('close')?.(code));
       if (args[0] === 'info') { setImmediate(() => stdout.emit('data', JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=seccomp,profile=builtin'] }))); close(0); }
-      else if (args[0] === 'create' && (args.includes('--cap-add=CHOWN') || args.includes('/app/src/scratch-verify.mjs') || args.includes('/app/src/workspace-seed.mjs') || args.includes('/app/src/workspace-publish.mjs'))) { helperArgs = args; if (args.includes('--cap-add=CHOWN')) initHelperArgs = args; helperCleaned = false; setImmediate(() => stdout.emit('data', id)); close(0); }
-      else if (args[0] === 'create') { createArgs = args; setImmediate(() => stdout.emit('data', id)); close(0); }
-      else if (args[0] === 'inspect' && !createArgs && !helperCleaned && args.at(-1) === id) { const roleLabel = helperArgs[helperArgs.indexOf('--label', helperArgs.indexOf('--label') + 1) + 1]; setImmediate(() => stdout.emit('data', JSON.stringify({ Id: id, Name: `/${helperArgs[helperArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': helperArgs[helperArgs.indexOf('--label') + 1].split('=').slice(1).join('='), 'yoloharness.role': roleLabel.split('=').slice(1).join('=') } } }))); close(0); }
-      else if (args[0] === 'inspect' && createArgs && !createArgs._cleaned) { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: id, Name: `/${createArgs[createArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': createArgs[createArgs.indexOf('--label') + 1].split('=').slice(1).join('=') } } }))); close(0); }
-      else if (args[0] === 'start') { setImmediate(() => stdout.emit('data', helperArgs?.includes('/app/src/workspace-seed.mjs') || helperArgs?.includes('/app/src/workspace-publish.mjs') ? JSON.stringify({ version: 1, seeded: true }) + '\n' : createArgs ? '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n' : helperArgs.includes('/app/src/scratch-init.mjs') ? JSON.stringify({ version: 1, uid: process.getuid(), gid: process.getgid(), mode: 493, ownership: true }) + '\n' : JSON.stringify({ version: 1, uid: process.getuid(), gid: process.getgid(), marker: 'write-read-remove', writable: true, mode: 384 }) + '\n')); close(0); }
+      else if (args[0] === 'create' && (args.includes('--cap-add=CHOWN') || args.includes('/app/src/scratch-verify.mjs') || args.includes('/app/src/workspace-seed.mjs') || args.includes('/app/src/workspace-publish.mjs'))) { helperArgs = args; if (!args.includes('/app/src/workspace-seed.mjs') && !args.includes('/app/src/workspace-publish.mjs')) lastScratchHelperArgs = args; if (args.includes('--cap-add=CHOWN')) initHelperArgs = args; helperCleaned = false; setImmediate(() => stdout.emit('data', ids.helper)); close(0); }
+      else if (args[0] === 'create') { createArgs = args; setImmediate(() => stdout.emit('data', ids.runtime)); close(0); }
+      else if (args[0] === 'inspect' && !helperCleaned && args.at(-1) === ids.helper) { const roleLabel = helperArgs[helperArgs.indexOf('--label', helperArgs.indexOf('--label') + 1) + 1]; setImmediate(() => stdout.emit('data', JSON.stringify({ Id: ids.helper, Name: `/${helperArgs[helperArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': helperArgs[helperArgs.indexOf('--label') + 1].split('=').slice(1).join('='), 'yoloharness.role': roleLabel.split('=').slice(1).join('=') } } }))); close(0); }
+      else if (args[0] === 'inspect' && args.at(-1) === ids.runtime && createArgs && !createArgs._cleaned) { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: ids.runtime, Name: `/${createArgs[createArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': createArgs[createArgs.indexOf('--label') + 1].split('=').slice(1).join('=') } } }))); close(0); }
+      else if (args[0] === 'start') { setImmediate(() => stdout.emit('data', helperArgs?.includes('/app/src/workspace-seed.mjs') && !args.includes('--interactive') ? JSON.stringify({ version: 1, seeded: true }) + '\n' : helperArgs?.includes('/app/src/workspace-publish.mjs') && !args.includes('--interactive') ? JSON.stringify({ version: 1, published: true }) + '\n' : createArgs ? '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n' : helperArgs.includes('/app/src/scratch-init.mjs') ? JSON.stringify({ version: 1, uid: process.getuid(), gid: process.getgid(), mode: 493, ownership: true }) + '\n' : JSON.stringify({ version: 1, uid: process.getuid(), gid: process.getgid(), marker: 'write-read-remove', writable: true, mode: 384 }) + '\n')); close(0); }
       else if (args[0] === 'stop' || args[0] === 'kill') close(0);
       else if (args[0] === 'rm') { if (helperArgs?.includes('/app/src/workspace-seed.mjs') || helperArgs?.includes('/app/src/workspace-publish.mjs')) helperCleaned = true; else if (createArgs) createArgs._cleaned = true; else helperCleaned = true; close(0); }
-      else if (args[0] === 'inspect') { setImmediate(() => stderr.emit('data', `Error: No such container: ${id}`)); close(1); }
+      else if (args[0] === 'inspect') { setImmediate(() => stderr.emit('data', `Error: No such container: ${ids.runtime}`)); close(1); }
       else throw new Error(`unexpected Docker operation: ${args[0]}`);
       return result;
     };
@@ -449,11 +451,11 @@ test('rootful consumer create argv carries selected ownership without duplicate 
     const groups = createArgs.filter((value, index) => value === '--group-add' ? createArgs[index + 1] : null).filter(Boolean);
     assert.equal(groups.includes(String(process.getgid())), false);
     if (process.getuid() !== 0) {
-      assert.equal(helperArgs[helperArgs.indexOf('--network') + 1], 'none');
-      assert.equal(helperArgs.includes('--cap-drop=ALL'), true);
+      assert.equal(lastScratchHelperArgs[lastScratchHelperArgs.indexOf('--network') + 1], 'none');
+      assert.equal(lastScratchHelperArgs.includes('--cap-drop=ALL'), true);
       assert.equal(initHelperArgs.includes('--cap-add=CHOWN'), true);
-      assert.equal(helperArgs.includes('--mount') && helperArgs.filter(value => value === '--mount').length, 1);
-      assert.equal(helperArgs.includes('/workspace'), false);
+      assert.equal(lastScratchHelperArgs.includes('--mount') && lastScratchHelperArgs.filter(value => value === '--mount').length, 1);
+      assert.equal(lastScratchHelperArgs.includes('/workspace'), false);
     }
     assert.match(createArgs[createArgs.indexOf('--mount') + 1], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-subpath=tmp,volume-nocopy$/);
     assert.match(createArgs[createArgs.indexOf('--tmpfs') + 1], new RegExp(`size=${RUNTIME_RESOURCE_POLICY.homeTmpfs}.*uid=${process.getuid()},gid=${process.getgid()},mode=700`));

@@ -3,6 +3,7 @@ import { chmod, copyFile, lstat, mkdir, readFile, readlink, readdir, rename, rm,
 import { dirname, join, relative } from 'node:path';
 
 const MANIFEST = '.yoloharness-workspace-manifest.json';
+function harnessOwned(key) { return key === '.yolo/last-receipt.json' || key === '.yolo/runs' || key.startsWith('.yolo/runs/'); }
 
 function excluded(name, excludedNames) { return excludedNames.has(name); }
 function normalizeExclusions(names) {
@@ -23,6 +24,7 @@ async function manifestFor(root, excludedNames, current = root) {
   for (const name of (await readdir(current)).sort()) {
     if (current === root && name === MANIFEST || excluded(name, excludedNames)) continue;
     const path = join(current, name); const info = await lstat(path); const key = relative(root, path);
+    if (harnessOwned(key)) continue;
     result[key] = await digest(path, info);
     if (info.isDirectory()) Object.assign(result, await manifestFor(root, excludedNames, path));
   }
@@ -44,6 +46,7 @@ async function entries(root, excludedNames, current = root) {
   for (const name of (await readdir(current)).sort()) {
     if (current === root && name === MANIFEST || excluded(name, excludedNames)) continue;
     const path = join(current, name); const info = await lstat(path); const key = relative(root, path);
+    if (harnessOwned(key)) continue;
     result.push([key, path, info]);
     if (info.isDirectory()) result.push(...await entries(root, excludedNames, path));
   }
@@ -58,6 +61,7 @@ async function copyTreeFiltered(source, target, excludedNames) {
     const info = await lstat(sourcePath);
     if (info.isDirectory()) await copyTreeFiltered(sourcePath, targetPath, excludedNames);
     else await copyEntry(sourcePath, targetPath);
+    if (info.isDirectory()) await chmod(targetPath, info.mode & 0o7777);
   }
 }
 
@@ -65,6 +69,7 @@ export async function seedWorkspace(source, staged, dependencyNames = []) {
   const excludedNames = normalizeExclusions(dependencyNames);
   await rm(staged, { recursive: true, force: true }); await mkdir(staged, { recursive: true });
   await copyTreeFiltered(source, staged, excludedNames);
+  const sourceInfo = await lstat(source); await chmod(staged, sourceInfo.mode & 0o7777);
   const manifest = await manifestFor(source, excludedNames);
   await writeFile(join(staged, MANIFEST), JSON.stringify({ version: 1, excluded: [...excludedNames], entries: manifest }) + '\n', { mode: 0o600 });
 }
@@ -82,7 +87,7 @@ export async function publishWorkspace(staged, source, dependencyNames = []) {
     const after = await digest(path);
     if (targetExists) {
       const now = currentHost[key];
-      if (before === undefined || (now !== before && after !== before)) throw new Error(`workspace publication conflict: ${key}`);
+      if (before === undefined ? now !== after : (now !== before && after !== before && now !== after)) throw new Error(`workspace publication conflict: ${key}`);
       if (after === before) continue;
       await rm(target, { recursive: true, force: true });
     }

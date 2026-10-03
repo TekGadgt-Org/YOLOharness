@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { runtimeSourceIdentity } from '../src/cli.mjs';
 import { RUNTIME_RESOURCE_POLICY } from '../src/resource-policy.mjs';
 
+
 const enabled = process.env.YOLO_REAL_DOCKER === '1';
 const skip = !enabled;
 const dockerPath = execFileSync('command', ['-v', 'docker'], { shell: '/bin/sh', encoding: 'utf8' }).trim();
@@ -441,9 +442,12 @@ test('same packed npm tool call is RED on 64 MiB tmpfs and GREEN on one measured
 
     await writeFile(fixture.log, '');
     const red = run({ ...commonEnv, YOLO_TMPFS_RED: '1' }, fixture.workspace);
-    await retainArtifact('npm-red-run.json', JSON.stringify({ status: red.status, error: red.error?.message ?? null, stdout: red.stdout, stderr: red.stderr }));
-    await retainArtifact('npm-red-docker.jsonl', await readFile(fixture.log));
-    assert.equal(red.error, undefined, red.error?.message); assert.equal(red.status, 1, `${red.stderr}\n${red.stdout}`); assert.match(red.stderr, /ENOSPC|no space left on device/i);
+    assert.equal(red.error, undefined, red.error?.message); assert.ok([0, 1].includes(red.status), `${red.stderr}\n${red.stdout}`);
+    const redLines = red.stdout.trim().split(/\r?\n/).filter(Boolean); const redReceipt = redLines.length ? JSON.parse(redLines.at(-1)) : null;
+    if (redReceipt) { assert.equal(redReceipt.status, 'completed'); const redEvidence = redReceipt.evidence.find(value => value?.call_id === 'npm-install-call'); assert.equal(redEvidence.ok, false); assert.match(redEvidence.error, /ENOSPC|no space left on device/i); assert.doesNotMatch(redEvidence.error, /(?:out of memory|oom|deadline|timed out|setup)/i); }
+    else { assert.equal(red.status, 1, `${red.stderr}\n${red.stdout}`); assert.match(red.stderr, /ENOSPC|no space left on device/i); }
+    const redRecords = await jsonl(fixture.log); const redCreate = redRecords.find(r => r.argv[0] === 'create' && r.argv.includes('/app/src/container-runtime.mjs'));
+    if (redCreate) { assert.match(redCreate.argv[redCreate.argv.indexOf('--label') + 1], /^yoloharness\.run=[0-9a-f-]+$/); assert.deepEqual(redCreate.translatedArgv.slice(redCreate.translatedArgv.indexOf('--tmpfs'), redCreate.translatedArgv.indexOf('--tmpfs') + 2), ['--tmpfs', '/tmp:rw,size=64m']); const redStart = redRecords.find(r => r.argv[0] === 'start' && r.argv.includes('--interactive')); assert.ok(redStart); assert.ok(redStart.maxTmpUsed > 0 && redStart.maxTmpUsed <= 64 * 1024 * 1024 + 32 * 1024, `live RED measurement must stay within 64 MiB tmpfs: ${JSON.stringify(redStart)}`); }
     const redCall = 'npm-install-call';
     // Reuse exactly the same packed CLI, tarball, prompt, command, item and
     // call identity. Only the /tmp mount is changed by the proxy for RED.
@@ -453,14 +457,15 @@ test('same packed npm tool call is RED on 64 MiB tmpfs and GREEN on one measured
     const greenReceipt = JSON.parse(green.stdout.trim().split(/\r?\n/).at(-1)); assert.equal(greenReceipt.status, 'completed');
     const greenEvidence = greenReceipt.evidence.find(value => value?.call_id === redCall); assert.ok(greenEvidence); assert.equal(greenEvidence.call_id, 'npm-install-call'); assert.equal(greenEvidence.ok, true); assert.equal(greenEvidence.code, 0);
     await assert.rejects(readFile(join(fixture.workspace, 'node_modules', 'installed-capacity-fixture', 'payload.bin')));
-    const records = await jsonl(fixture.log); const greenCreate = records.find(r => r.argv[0] === 'create' && r.argv.includes('/app/src/container-runtime.mjs')); assert.ok(greenCreate);
-    const greenLabel = greenCreate.argv[greenCreate.argv.indexOf('--label') + 1];
+    if (redReceipt) assert.deepEqual(greenReceipt.evidence.map(value => value?.call_id), redReceipt.evidence.map(value => value?.call_id));
+    const records = await jsonl(fixture.log); const greenCreate = records.find((r, index) => index > (redCreate ? redRecords.indexOf(redCreate) : -1) && r.argv[0] === 'create' && r.argv.includes('/app/src/container-runtime.mjs')); assert.ok(greenCreate);
+    const greenLabel = greenCreate.argv[greenCreate.argv.indexOf('--label') + 1]; if (redCreate) { const redLabel = redCreate.argv[redCreate.argv.indexOf('--label') + 1]; assert.notEqual(greenLabel, redLabel); }
     assert.match(greenLabel, /^yoloharness\.run=[0-9a-f-]+$/); assert.match(greenCreate.translatedArgv[greenCreate.translatedArgv.indexOf('--mount') + 1], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-subpath=tmp,volume-nocopy$/);
     assert.equal(values(greenCreate.translatedArgv, '--mount').length, 2);
     const greenVolume = greenCreate.translatedArgv[greenCreate.translatedArgv.indexOf('--mount') + 1].match(/src=([^,]+)/)[1];
     assert.match(values(greenCreate.translatedArgv, '--mount')[1], new RegExp(`^type=volume,src=${greenVolume},dst=/workspace,volume-subpath=workspace,volume-nocopy$`));
     assert.deepEqual(values(greenCreate.translatedArgv, '--env'), ['HOME=/home/worker', 'XDG_CONFIG_HOME=/home/worker/.config', 'XDG_DATA_HOME=/home/worker/.local/share', 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'LANG=C.UTF-8', 'XDG_CACHE_HOME=/tmp/cache/xdg', 'npm_config_cache=/tmp/cache/npm', 'PIP_CACHE_DIR=/tmp/cache/pip', 'UV_CACHE_DIR=/tmp/cache/uv', 'COMPOSER_CACHE_DIR=/tmp/cache/composer', 'NUGET_PACKAGES=/tmp/cache/nuget', 'CARGO_HOME=/tmp/cache/cargo', 'GOMODCACHE=/tmp/cache/go']);
-    const greenStart = records.find(r => r.argv[0] === 'start' && r.argv.includes('--interactive')); assert.ok(greenStart); assert.ok(greenStart.maxTmpUsed >= 0, `live GREEN measurement missing: ${JSON.stringify(greenStart)}`);
+    const greenStart = records.find((r, index) => index > redRecords.length - 1 && r.argv[0] === 'start' && r.argv.includes('--interactive')); assert.ok(greenStart); assert.ok(greenStart.maxTmpUsed > 64 * 1024 * 1024, `live GREEN measurement must exceed 64 MiB: ${JSON.stringify(greenStart)}`);
     const persisted = docker('run', '--rm', '--pull=never', '--user', '0:0', '--mount', `type=bind,src=${fixture.workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--entrypoint', 'sh', image, '-c', 'cat /workspace/.yolo/last-receipt.json');
     assert.deepEqual(JSON.parse(persisted), greenReceipt);
   } finally { if (foreignId) try { docker('rm', '--force', foreignId); } catch {} if (fixture) { try { resetWorkloadWorkspace(fixture); } catch {} await cleanupOwned(fixture); } await rm(root, { recursive: true, force: true }); }

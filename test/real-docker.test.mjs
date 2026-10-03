@@ -143,7 +143,7 @@ const writeMap=value=>fs.writeFileSync(mapPath,JSON.stringify(value));
 const valueAfter=(flag)=>{const i=a.indexOf(flag);return i<0?undefined:a[i+1]};
 const networkIndexes=a.reduce((out,value,i)=>value==='--network'?[...out,i]:out,[]);
 if(a[0]==='create'){
-  const name=valueAfter('--name'), runLabel=(a.find(value=>value.startsWith('yoloharness.run='))??''), roleLabel=(a.find(value=>value.startsWith('yoloharness.role='))??''), imageIndex=a.findIndex(value=>value===${JSON.stringify(baseId)}), runtime=a.includes('/app/src/container-runtime.mjs'), role=runtime?'runtime':roleLabel.slice('yoloharness.role='.length), helper=role==='scratch-init'||role==='scratch-verify';
+  const name=valueAfter('--name'), runLabel=(a.find(value=>value.startsWith('yoloharness.run='))??''), roleLabel=(a.find(value=>value.startsWith('yoloharness.role='))??''), imageIndex=a.findIndex(value=>value===${JSON.stringify(baseId)}), runtime=a.includes('/app/src/container-runtime.mjs'), role=runtime?'runtime':roleLabel.slice('yoloharness.role='.length), helper=['scratch-init','scratch-verify','workspace-seed','workspace-publish'].includes(role);
   if(!name||!name.startsWith('yoloharness-')||!runLabel.startsWith(${JSON.stringify(expectedLabel)})||networkIndexes.length!==1||imageIndex<0) fail('invalid create identity');
   if(!runtime&&!helper) fail('unknown create role');
   if(runtime && (roleLabel||a[networkIndexes[0]+1]!=='bridge')) fail('invalid runtime create');
@@ -340,10 +340,10 @@ const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio
     assert.ok(runtimeArgs.includes('--pids-limit') && runtimeArgs.includes('128'));
     assert.ok(runtimeArgs.includes('--memory') && runtimeArgs.includes('512m'));
     assert.ok(runtimeArgs.includes('--cpus') && runtimeArgs.includes('1'));
-    assert.equal(runtimeArgs.filter(value => value === '--mount').length, 7);
+    assert.equal(runtimeArgs.filter(value => value === '--mount').length, 2);
     const runtimeMounts = runtimeArgs.flatMap((value, index) => value === '--mount' ? [runtimeArgs[index + 1]] : []);
     assert.match(runtimeMounts[0], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-subpath=tmp,volume-nocopy$/);
-    assert.match(runtimeMounts[1], /^type=bind,src=.*\/workspace,dst=\/workspace,readonly=false,bind-propagation=rprivate$/s);
+    assert.match(runtimeMounts[1], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/workspace,volume-subpath=workspace,volume-nocopy$/s);
     assert.equal(runtimeArgs.some(value => /docker\.sock|DOCKER_CONFIG|ACCESS_TOKEN|REFRESH_TOKEN|hostile|synthetic-hostile/i.test(value)), false);
     const runtimeInspect = JSON.parse(await readFile(runtimeInspectPath, 'utf8'))[0];
     if (process.env.YOLO_EVIDENCE_DIR) {

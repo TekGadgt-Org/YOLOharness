@@ -42,6 +42,7 @@ export class ContainerLauncher {
       ? effectiveEphemeralPaths()
       : validateEphemeralPaths(bootstrap.ephemeralPaths);
     const source = await validateWorkspace(this.workspace, { signal, deadline: executionDeadline });
+
     if (signal?.aborted) throw signal.reason;
     if (Date.now() >= executionDeadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
     let outcome;
@@ -150,6 +151,7 @@ export class ContainerLauncher {
     }
     if (outcome) {
       outcome = { ...outcome, execution_deadline: executionDeadline, cleanup_deadline: cleanupDeadline, cleanup_grace_ms: CLEANUP_TOTAL_MS };
+      await mkdir(join(this.workspace, '.yolo', 'runs'), { recursive: true, mode: 0o700 }).catch(() => {});
       try { await mkdir(join(this.workspace, '.yolo'), { recursive: true, mode: 0o700 }); await writeFile(join(this.workspace, '.yolo', 'last-receipt.json'), `${JSON.stringify(outcome)}\n`, { mode: 0o600 }); }
       catch (error) { outcome = { ...outcome, status: 'cleanup_unknown', effect_state: 'uncertain', errors: [...(outcome.errors ?? []), `receipt persistence failed: ${error.message}`] }; }
     }
@@ -480,6 +482,11 @@ async function reconcileUnknownCreate(command, name, label, spawn, role = undefi
     } else {
       absentSince ??= Date.now();
     }
+    // A missing, filtered resource is safe to consider gone only after the
+    // same absence has remained observable for the stability window.  Do not
+    // continue polling until the execution deadline once that proof exists;
+    // cleanup must remain bounded by its own grace period.
+    if (absentSince !== null && Date.now() - absentSince >= CLEANUP_STABLE_ABSENCE_MS) return;
     const remaining = deadline - Date.now();
     if (remaining > 0) await new Promise(resolve => setTimeout(resolve, Math.min(CLEANUP_POLL_MS, remaining)));
   }

@@ -184,7 +184,7 @@ export class ContainerLauncher {
             const existing = await open(`/proc/self/fd/${yolo.fd}/last-receipt.json`, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
             try {
               const value = JSON.parse(await existing.readFile('utf8'));
-              if (value?.receipt_owner !== 'runtime' || value.run_id !== outcome.run_id) throw error;
+              if (value?.version !== 1 || value.run_id !== outcome.run_id) throw error;
             } finally { await existing.close(); }
             receipt = null;
           }

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { chmod, copyFile, lstat, mkdir, readFile, readlink, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readlink, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 
 const MANIFEST = '.yoloharness-workspace-manifest.json';
@@ -89,13 +89,28 @@ async function safeTarget(source, key) {
   }
 }
 
+async function recoverPublication(source) {
+  const journal = `${source}.yoloharness-publication.json`;
+  let state;
+  try { state = JSON.parse(await readFile(journal, 'utf8')); } catch { return; }
+  if (!state || state.version !== 1 || typeof state.backup !== 'string') throw new Error('workspace publication journal is malformed');
+  const sourceInfo = await lstat(source).catch(() => null);
+  const backupInfo = await lstat(state.backup).catch(() => null);
+  if (!sourceInfo && backupInfo) await rename(state.backup, source);
+  else if (sourceInfo && backupInfo) await rm(state.backup, { recursive: true, force: true });
+  else if (!sourceInfo) throw new Error('workspace publication recovery is incomplete');
+  await rm(journal, { force: true });
+}
+
 export async function publishWorkspace(staged, source, dependencyNames = [], baselinePath = join(staged, MANIFEST)) {
   const excludedNames = normalizeExclusions(dependencyNames);
+  await recoverPublication(source);
   let baseline;
   try { baseline = JSON.parse(await readFile(baselinePath, 'utf8')); } catch { baseline = { version: 1, entries: {} }; }
   if (baseline.version !== 1 || !baseline.entries || typeof baseline.entries !== 'object') throw new Error('workspace publication manifest is malformed');
   const currentHost = await manifestFor(source, excludedNames);
   const stagedEntries = await entries(staged, excludedNames);
+  // Complete validation happens before creating or mutating the publication tree.
   for (const [key, path, info] of stagedEntries) {
     if (info.isSymbolicLink()) {
       const unchanged = baseline.entries[key] === await digest(path) && currentHost[key] === baseline.entries[key];
@@ -106,29 +121,57 @@ export async function publishWorkspace(staged, source, dependencyNames = [], bas
     if (info.isFile() && info.nlink > 1) throw new Error(`unsupported hardlink workspace entry: ${key}`);
     await safeTarget(source, key);
   }
-  for (const [key, path] of stagedEntries) {
-    const stagedInfo = await lstat(path);
-    if (stagedInfo.isSymbolicLink()) continue;
-    if (stagedInfo.isDirectory()) continue;
-    const target = join(source, key); const before = baseline.entries[key]; const targetInfo = await lstat(target).catch(() => null); const targetExists = !!targetInfo;
- if (targetInfo?.isSymbolicLink()) throw new Error(`unsafe workspace publication target: ${key}`);
+  for (const [key, path, info] of stagedEntries) {
+    if (info.isSymbolicLink() || info.isDirectory()) continue;
     const after = await digest(path);
-    if (targetExists) {
-      const now = currentHost[key];
-      if (before === undefined ? now !== after : (now !== before && after !== before && now !== after)) throw new Error(`workspace publication conflict: ${key}`);
-      if (after === before) continue;
-      await rm(target, { recursive: true, force: true });
+    const before = baseline.entries[key];
+    const now = currentHost[key];
+    if (before === undefined ? now !== undefined && now !== after : now !== before && after !== before && now !== after) {
+      throw new Error(`workspace publication conflict: ${key}`);
     }
-    await copyEntry(path, target);
   }
+  const stagedKeys = new Set(stagedEntries.map(([key]) => key));
   for (const key of Object.keys(baseline.entries).sort((a, b) => b.length - a.length)) {
     if (Object.hasOwn(currentHost, key) && !stagedEntries.some(([name]) => name === key || name.startsWith(`${key}/`))) {
-      const target = join(source, key);
-      const targetInfo = await lstat(target).catch(() => null);
+      await safeTarget(source, key);
+      const targetInfo = await lstat(join(source, key)).catch(() => null);
       if (targetInfo?.isSymbolicLink()) throw new Error(`unsafe workspace publication target: ${key}`);
       if (targetInfo && currentHost[key] !== baseline.entries[key]) throw new Error(`workspace publication conflict: ${key}`);
-      await rm(target, { recursive: true, force: true });
     }
+  }
+
+  // Build an entire replacement tree off to the side. Host state is not touched
+  // until every conflict and staged type has passed validation.
+  const parent = dirname(source);
+  const candidate = await mkdtemp(join(parent, '.yoloharness-publication-'));
+  const backup = `${source}.yoloharness-backup-${process.pid}-${Math.random().toString(16).slice(2)}`;
+  try {
+    await copyTreeFiltered(source, candidate, new Set());
+    for (const [key, path] of stagedEntries) {
+      const stagedInfo = await lstat(path);
+      if (stagedInfo.isSymbolicLink() || stagedInfo.isDirectory()) continue;
+      if (baseline.entries[key] === await digest(path)) continue;
+      const target = join(candidate, key);
+      await safeTarget(candidate, key);
+      const targetInfo = await lstat(target).catch(() => null);
+      if (targetInfo) await rm(target, { recursive: true, force: true });
+      await copyEntry(path, target);
+    }
+    for (const key of Object.keys(baseline.entries).sort((a, b) => b.length - a.length)) {
+      if (Object.hasOwn(currentHost, key) && !stagedKeys.has(key) && !stagedEntries.some(([name]) => name.startsWith(`${key}/`))) {
+        await rm(join(candidate, key), { recursive: true, force: true });
+      }
+    }
+    const journal = `${source}.yoloharness-publication.json`;
+    await writeFile(journal, JSON.stringify({ version: 1, source, candidate, backup }) + '\n', { mode: 0o600 });
+    await rename(source, backup);
+    if (process.env.YOLO_PUBLICATION_FAULT === 'after-source-rename') throw new Error('publication interrupted after source rename');
+    await rename(candidate, source);
+    await rm(backup, { recursive: true, force: true });
+    await rm(journal, { force: true });
+  } catch (error) {
+    await rm(candidate, { recursive: true, force: true }).catch(() => {});
+    throw error;
   }
 }
 

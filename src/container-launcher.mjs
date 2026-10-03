@@ -136,12 +136,12 @@ export class ContainerLauncher {
     let cleanupError;
     let scaffoldHistory = [];
       cleanupDeadline ??= Date.now() + CLEANUP_TOTAL_MS;
-      const containerCleanup = id && owned
+      const startContainerCleanup = () => id && owned
         ? cleanup(this.command, id, name, label, this.spawn, undefined, { deadline: cleanupDeadline })
         : createAttempted
           ? reconcileUnknownCreate(this.command, name, label, this.spawn, undefined, { deadline: cleanupDeadline })
           : Promise.resolve();
-      const volumeCleanupPromise = volumeName && (volumeCreated || volumeCreateAttempted)
+      const startVolumeCleanup = () => volumeName && (volumeCreated || volumeCreateAttempted)
         ? reconcileVolume(this.command, volumeName, label, this.spawn, { deadline: cleanupDeadline })
         : Promise.resolve(undefined);
       // A lost attach close can leave container teardown and volume removal
@@ -149,13 +149,15 @@ export class ContainerLauncher {
       // the established sequential ordering for ordinary completed attaches
       // so scaffold cleanup history remains stable.
       if (clientCloseObserved === false) {
+        const containerCleanup = startContainerCleanup();
+        const volumeCleanupPromise = startVolumeCleanup();
         const [containerResult, volumeResult] = await Promise.allSettled([containerCleanup, volumeCleanupPromise]);
         if (containerResult.status === 'rejected') cleanupError = containerResult.reason;
         if (volumeResult.status === 'fulfilled') volumeHistory = volumeResult.value;
         else cleanupError ??= volumeResult.reason;
       } else {
-        try { await containerCleanup; } catch (error) { cleanupError = error; }
-        try { volumeHistory = await volumeCleanupPromise; } catch (error) { cleanupError ??= error; }
+        try { await startContainerCleanup(); } catch (error) { cleanupError = error; }
+        try { volumeHistory = await startVolumeCleanup(); } catch (error) { cleanupError ??= error; }
       }
       if (outcome && volumeHistory) outcome = { ...outcome, cleanup_history: volumeHistory };
       if (cleanupError?.cleanupHistory && outcome) outcome = { ...outcome, cleanup_history: cleanupError.cleanupHistory };

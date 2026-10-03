@@ -648,10 +648,11 @@ test('abort returns cleanup_unknown without daemon cleanup while an attach clien
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
-function publisherLifecycleSpawn({ exportBytes, exitCode = 0, ignoreTerm = false, neverClose = false, events = [] }) {
+function publisherLifecycleSpawn({ exportBytes, exitCode = 0, ignoreTerm = false, neverClose = false, failReapInspect = false, events = [] }) {
   const id = 'a'.repeat(64);
   let createArgs;
   let removed = false;
+  let inspectCount = 0;
   const operationChild = (output = '', code = 0, stderrOutput = '') => {
     const child = new EventEmitter();
     child.stdout = new EventEmitter();
@@ -667,6 +668,8 @@ function publisherLifecycleSpawn({ exportBytes, exitCode = 0, ignoreTerm = false
   return (_command, args) => {
     if (args[0] === 'create') { createArgs = args; return operationChild(id); }
     if (args[0] === 'inspect') {
+      inspectCount += 1;
+      if (failReapInspect && inspectCount === 2) return operationChild('', 1, 'synthetic reap ownership failure');
       if (removed) return operationChild('', 1, `Error: No such container: ${id}`);
       const label = createArgs[createArgs.indexOf('--label') + 1].split('=').slice(1).join('=');
       const role = createArgs[createArgs.indexOf('--label', createArgs.indexOf('--label') + 1) + 1].split('=').slice(1).join('=');
@@ -711,6 +714,63 @@ test('publisher retains exact publication evidence when exporter exits nonzero',
       return true;
     });
     assert.equal(await readFile(join(destination, 'created.txt'), 'utf8'), 'ok');
+  } finally { await rm(destination, { recursive: true, force: true }); }
+});
+
+test('publisher and authoritative receipt retain valid publication evidence when reap fails', async () => {
+  const destination = await mkdtemp('/tmp/yolo-publisher-reap-evidence-');
+  try {
+    const exportBytes = encodeExport([{ type: 'file', path: 'created.txt', mode: 0o600, data: Buffer.from('ok') }]);
+    const now = Date.now();
+    await assert.rejects(runWorkspaceExportPublisher('docker', 'image', 'volume', 'label', { uid: 0, gid: 0 }, [], destination, publisherLifecycleSpawn({ exportBytes, exitCode: 17, failReapInspect: true }), {
+      signal: new AbortController().signal,
+      deadline: now + 1000,
+      cleanupDeadline: () => now + 2000,
+    }), error => {
+      assert.equal(error.code, 'cleanup_unknown');
+      assert.equal(error.publicationError.code, 'publication_incomplete');
+      assert.equal(error.exitCode, 17);
+      assert.deepEqual(error.publicationResult.created_entries, ['created.txt']);
+      assert.deepEqual(error.partial_evidence, [{ path: 'created.txt', bytes: 2 }]);
+      assert.equal(error.cleanupError.code, 'cleanup_unknown');
+      assert.deepEqual(error.cleanupHistory.map(({ at: _at, ...entry }) => entry), [
+        { action: 'attempt', operation: 'inspect' },
+        { action: 'error', operation: 'inspect', code: 'cleanup_unknown', error: 'container ownership could not be verified' },
+      ]);
+      assert.equal(error.receipt.status, 'cleanup_unknown');
+      assert.deepEqual(error.receipt.publication_result.created_entries, ['created.txt']);
+      assert.deepEqual(error.receipt.created_entry_paths, ['created.txt']);
+      assert.deepEqual(error.receipt.evidence, [{ path: 'created.txt', bytes: 2 }]);
+      assert.deepEqual(error.receipt.cleanup_history, error.cleanupHistory);
+      return true;
+    });
+    assert.equal(await readFile(join(destination, 'created.txt'), 'utf8'), 'ok');
+  } finally { await rm(destination, { recursive: true, force: true }); }
+});
+
+test('publisher retains partial parse evidence when reap also fails', async () => {
+  const destination = await mkdtemp('/tmp/yolo-publisher-reap-partial-');
+  try {
+    const exportBytes = Buffer.concat([
+      Buffer.from('YHP2'),
+      Buffer.from([2, 0, 1, 128, 0, 0, 0, 11, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0]),
+      Buffer.from('partial.bin'),
+      Buffer.from('xy'),
+    ]);
+    const now = Date.now();
+    await assert.rejects(runWorkspaceExportPublisher('docker', 'image', 'volume', 'label', { uid: 0, gid: 0 }, [], destination, publisherLifecycleSpawn({ exportBytes, exitCode: 0, failReapInspect: true }), {
+      signal: new AbortController().signal,
+      deadline: now + 1000,
+      cleanupDeadline: () => now + 2000,
+    }), error => {
+      assert.equal(error.code, 'cleanup_unknown');
+      assert.equal(error.publicationError.code, 'publication_incomplete');
+      assert.deepEqual(error.created_entry_paths, ['partial.bin']);
+      assert.deepEqual(error.partial_evidence, [{ path: 'partial.bin', bytes: 2 }]);
+      assert.deepEqual(error.receipt.evidence, [{ path: 'partial.bin', bytes: 2 }]);
+      return true;
+    });
+    assert.equal(await readFile(join(destination, 'partial.bin'), 'utf8'), 'xy');
   } finally { await rm(destination, { recursive: true, force: true }); }
 });
 

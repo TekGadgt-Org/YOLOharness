@@ -150,7 +150,7 @@ export class ContainerLauncher {
       }
 
     } catch (error) {
-      if (error?.code === 'publication_incomplete') {
+      if (error?.code === 'publication_incomplete' || (error?.code === 'cleanup_unknown' && error?.receipt)) {
         outcome = error.receipt ?? { version: 1, run_id: null, status: 'publication_incomplete', effect_state: 'uncertain', result: null, evidence: error.partial_evidence ?? [], artifacts: [], created_entries: error.created_entries ?? 0, created_entry_paths: error.created_entry_paths ?? [], publication_result: error.publicationResult ?? null, errors: [error.message] };
         failure = null;
       } else {
@@ -187,11 +187,11 @@ export class ContainerLauncher {
         try { await startContainerCleanup(); } catch (error) { cleanupError = error; }
         try { volumeHistory = await startVolumeCleanup(); } catch (error) { cleanupError ??= error; }
       }
-      if (outcome && volumeHistory) outcome = { ...outcome, cleanup_history: volumeHistory };
-      if (cleanupError?.cleanupHistory && outcome) outcome = { ...outcome, cleanup_history: cleanupError.cleanupHistory };
+      if (outcome && volumeHistory) outcome = { ...outcome, cleanup_history: [...(outcome.cleanup_history ?? []), ...volumeHistory] };
+      if (cleanupError?.cleanupHistory && outcome) outcome = { ...outcome, cleanup_history: [...(outcome.cleanup_history ?? []), ...cleanupError.cleanupHistory] };
       if (cleanupError) {
         const message = cleanupError.code === 'cleanup_unknown' ? `cleanup_unknown: ${dockerErrorOutput(cleanupError) || cleanupError.cause?.message || cleanupError.message}` : cleanupError.message;
-        if (outcome) outcome = { ...outcome, status: 'cleanup_unknown', effect_state: 'uncertain', errors: [...(outcome.errors ?? []), message], cleanup_history: cleanupError.cleanupHistory ?? outcome.cleanup_history ?? [] }
+        if (outcome) outcome = { ...outcome, status: 'cleanup_unknown', effect_state: 'uncertain', errors: [...(outcome.errors ?? []), message], cleanup_history: outcome.cleanup_history ?? cleanupError.cleanupHistory ?? [] }
         else if (failure) { failure.cleanupError = cleanupError; failure.receipt = await workspaceReceipt(this.workspace); }
         else failure = cleanupError;
       }
@@ -271,6 +271,7 @@ export async function runWorkspaceExportPublisher(command, image, volume, label,
   const role = 'workspace-publish'; const name = `${HELPER_PREFIX}${role}-${label}`;
   const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--label', `yoloharness.role=${role}`, '--init', '--network', 'none', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--user', `${identity.uid}:${identity.gid}`, '--mount', `type=volume,src=${volume},dst=/tmp,volume-nocopy,readonly`, '--entrypoint', 'node', image, '/app/src/workspace-publish.mjs', ...paths];
   let id; let verified = false; let attached; let closeObserved = false;
+  let result; let primaryError; let cleanupError;
   const observe = (tag, promise) => promise.then(value => ({ tag, ok: true, value }), error => ({ tag, ok: false, error }));
   const until = async (promise, limit, tag) => {
     if (!Number.isFinite(limit)) return promise;
@@ -347,11 +348,57 @@ export async function runWorkspaceExportPublisher(command, image, volume, label,
       });
     }
     if (parse.value?.published !== true) throw new Error('workspace exporter returned malformed publication');
-    return parse.value;
+    result = parse.value;
+  } catch (error) {
+    primaryError = error;
   } finally {
-    if (verified && closeObserved) await reapHelper(command, id, name, label, role, spawn, { deadline: cleanupDeadline?.() ?? deadline });
-    else if (id && !verified) await reconcileUnknownCreate(command, name, label, spawn, role, { deadline: cleanupDeadline?.() ?? deadline });
+    try {
+      if (verified && closeObserved) await reapHelper(command, id, name, label, role, spawn, { deadline: cleanupDeadline?.() ?? deadline });
+      else if (id && !verified) await reconcileUnknownCreate(command, name, label, spawn, role, { deadline: cleanupDeadline?.() ?? deadline });
+    } catch (error) { cleanupError = error; }
   }
+  if (cleanupError) {
+    const publicationResult = primaryError?.publicationResult ?? result;
+    const source = primaryError ?? cleanupError;
+    const partialEvidence = publicationResult?.partial_evidence ?? source.partial_evidence ?? [];
+    const createdEntryPaths = publicationResult?.created_entries ?? source.created_entry_paths ?? [];
+    const createdEntries = publicationResult?.created ?? source.created_entries ?? createdEntryPaths.length;
+    const cleanupHistory = cleanupError.cleanupHistory ?? [];
+    const message = `cleanup_unknown: ${cleanupError.message}`;
+    const receipt = {
+      version: 1,
+      run_id: null,
+      status: 'cleanup_unknown',
+      effect_state: 'uncertain',
+      result: null,
+      evidence: partialEvidence,
+      artifacts: [],
+      created_entries: createdEntries,
+      created_entry_paths: createdEntryPaths,
+      publication_result: publicationResult ?? null,
+      exporter_exit: primaryError?.exitCode !== undefined || primaryError?.signal !== undefined ? { code: primaryError.exitCode ?? null, signal: primaryError.signal ?? null } : null,
+      errors: [...(primaryError ? [primaryError.message] : []), message],
+      cleanup_history: cleanupHistory,
+    };
+    throw Object.assign(new Error(message), {
+      code: 'cleanup_unknown',
+      cause: primaryError ?? cleanupError,
+      publicationError: primaryError,
+      cleanupError,
+      aggregateErrors: primaryError ? [primaryError, cleanupError] : [cleanupError],
+      publicationResult,
+      exitCode: primaryError?.exitCode,
+      signal: primaryError?.signal,
+      created_entries: createdEntries,
+      created_entry_paths: createdEntryPaths,
+      partial_evidence: partialEvidence,
+      clientCloseObserved: closeObserved,
+      cleanupHistory,
+      receipt,
+    });
+  }
+  if (primaryError) throw primaryError;
+  return result;
 }
 
 async function runScratchHelper(command, image, volume, label, identity, role, uid, addChown, spawn, { signal, deadline, cleanupDeadline } = {}, ephemeralPaths = []) {
@@ -378,10 +425,24 @@ async function runScratchHelper(command, image, volume, label, identity, role, u
 }
 
 async function reapHelper(command, id, name, label, role, spawn, { deadline } = {}) {
-  await verifyOwnedContainer(command, id, name, label, spawn, role, { deadline });
-  try { await operation(command, ['rm', '--force', id], spawn, { deadline }).promise; }
-  catch (error) { throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown', cause: error }); }
-  await waitForContainerAbsence(command, id, spawn, { deadline });
+  const history = [];
+  const run = async (operationName, operation) => {
+    history.push(Object.freeze({ at: Date.now(), action: 'attempt', operation: operationName }));
+    try {
+      const value = await operation();
+      history.push(Object.freeze({ at: Date.now(), action: 'success', operation: operationName }));
+      return value;
+    } catch (error) {
+      history.push(Object.freeze({ at: Date.now(), action: 'error', operation: operationName, code: error.code ?? 'unknown', error: error.message }));
+      throw withCleanupHistory(error, history);
+    }
+  };
+  await run('inspect', () => verifyOwnedContainer(command, id, name, label, spawn, role, { deadline }));
+  await run('remove', async () => {
+    try { await operation(command, ['rm', '--force', id], spawn, { deadline }).promise; }
+    catch (error) { throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown', cause: error }); }
+  });
+  await run('absence', () => waitForContainerAbsence(command, id, spawn, { deadline }));
 }
 
 export async function reconcileVolume(command, name, label, spawn, { deadline, now = Date.now, sleep } = {}) {

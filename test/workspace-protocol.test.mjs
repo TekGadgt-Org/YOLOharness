@@ -188,6 +188,33 @@ test('publication loops on bytesWritten, rejects zero progress, and closes deter
   });
 });
 
+test('publication retains simultaneous fsync and close failures with exact evidence', async () => {
+  const syncError = Object.assign(new Error('sync failed'), { code: 'SYNC_SENTINEL' });
+  const closeError = Object.assign(new Error('close failed'), { code: 'CLOSE_SENTINEL' });
+  let closeCalls = 0;
+  const io = {
+    readdir: async () => [],
+    mkdir: async () => {},
+    open: async () => ({
+      write: async (_buffer, _offset, length) => ({ bytesWritten: length }),
+      sync: async () => { throw syncError; },
+      close: async () => { closeCalls += 1; throw closeError; },
+    }),
+  };
+
+  await assert.rejects(() => publishExport(Readable.from([encodeExport([
+    { type: 'file', path: 'both.bin', mode: 0o600, data: Buffer.from('x') },
+  ])]), '/virtual', [], { io }), error => {
+    assert.equal(error.code, 'publication_incomplete');
+    assert.equal(error.cause, syncError);
+    assert.equal(error.cause.closeError, closeError);
+    assert.deepEqual(error.created_entry_paths, ['both.bin']);
+    assert.deepEqual(error.partial_evidence, [{ path: 'both.bin', bytes: 1 }]);
+    assert.equal(closeCalls, 1);
+    return true;
+  });
+});
+
 test('publication excludes .yolo defensively before creating any path', async () => {
   const root = await mkdtemp(join(tmpdir(), 'yolo-exclusion-'));
   try {

@@ -280,7 +280,10 @@ export async function publishExport(stream, destination, dependencyNames = [], o
         try { await current.fh.sync(); }
         catch (error) { failure = error; }
         try { await current.fh.close(); }
-        catch (error) { failure ??= error; }
+        catch (error) {
+          if (failure) failure.closeError = error;
+          else failure = error;
+        }
         current.fh = undefined;
         current = undefined;
         if (failure) throw failure;

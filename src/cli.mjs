@@ -11,6 +11,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { validateEmptyWorkspace } from './workspace-sync.mjs';
+import { persistReceipt } from './receipt-persistence.mjs';
 const execFileAsync = promisify(execFile);
 
 const VERSION = '0.1.1';
@@ -119,25 +120,7 @@ export async function buildCleanupUnknownReceipt(error, workspace = process.cwd(
     errors,
     cleanup_history: cleanup?.cleanupHistory ?? prior.cleanup_history ?? [],
   };
-  try {
-    const root = await open(workspace, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
-    try {
-      const directory = `/proc/self/fd/${root.fd}/.yolo`;
-      await mkdir(directory, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
-      // Bind the leaf operation to the directory descriptor, and reject an
-      // ancestor exchange observed between mkdir and open.  O_NOFOLLOW alone
-      // does not prevent replacement with a different real directory.
-      const before = await lstat(directory);
-      if (!before.isDirectory() || before.isSymbolicLink()) throw new Error('receipt directory is not a local directory');
-      const yolo = await open(directory, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
-      try {
-        const after = await yolo.stat();
-        if (before.dev !== after.dev || before.ino !== after.ino) throw new Error('receipt directory changed during persistence');
-        const fh = await open(`/proc/self/fd/${yolo.fd}/last-receipt.json`, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
-        try { await fh.writeFile(`${JSON.stringify(receipt)}\n`); await fh.sync(); } finally { await fh.close(); }
-      } finally { await yolo.close(); }
-    } finally { await root.close(); }
-  } catch {}
+  try { await persistReceipt(workspace, receipt); } catch {}
   return receipt;
 }
 

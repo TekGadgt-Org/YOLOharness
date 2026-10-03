@@ -1,12 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, link, symlink, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, stat, link, symlink, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { ContainerLauncher, validateWorkspace, decodeMountInfoTargets, containerIdentity } from '../src/container-launcher.mjs';
+import { persistReceipt } from '../src/receipt-persistence.mjs';
 import { configuredImage, runtimeSourceIdentity } from '../src/cli.mjs';
 import { RUNTIME_RESOURCE_POLICY } from '../src/resource-policy.mjs';
 import { DEFAULT_EPHEMERAL_PATHS } from '../src/config.mjs';
+
+test('receipt persistence never truncates a preexisting runtime marker sentinel', async () => {
+  const workspace = await mkdtemp('/tmp/yolo-receipt-marker-');
+  try {
+    await mkdir(join(workspace, '.yolo'));
+    const path = join(workspace, '.yolo', 'last-receipt.json');
+    const bytes = '{"receipt_owner":"runtime","operator":true}\n';
+    await writeFile(path, bytes, { mode: 0o640 });
+    const before = await stat(path);
+    await persistReceipt(workspace, { version: 1, status: 'completed' });
+    const after = await stat(path);
+    assert.equal(await readFile(path, 'utf8'), bytes);
+    assert.equal(after.mode & 0o777, before.mode & 0o777);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
 
 test('launcher rejects invalid ephemeral paths before workspace or Docker side effects', async () => {
   const invalid = [

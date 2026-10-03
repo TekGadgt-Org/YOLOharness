@@ -1,6 +1,6 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { realpath, readdir, lstat, readFile, readlink, writeFile, mkdir, rmdir, open } from 'node:fs/promises';
+import { realpath, readdir, lstat, readFile, readlink, writeFile, rmdir, open } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { join, relative } from 'node:path';
 import { encodeBootstrap } from './bootstrap.mjs';
@@ -8,6 +8,7 @@ import { snapshotSkills } from './skills.mjs';
 import { RUNTIME_RESOURCE_POLICY } from './resource-policy.mjs';
 import { volumeSubpath, scratchSubpaths } from './scratch-path.mjs';
 import { effectiveEphemeralPaths, validateEphemeralPaths } from './config.mjs';
+import { persistReceipt } from './receipt-persistence.mjs';
 
 const MAX_OUTPUT = 1024 * 1024;
 const OP_TIMEOUT = 10_000;
@@ -170,35 +171,7 @@ export class ContainerLauncher {
     }
     if (outcome) {
       outcome = { ...outcome, execution_deadline: executionDeadline, cleanup_deadline: cleanupDeadline, cleanup_grace_ms: CLEANUP_TOTAL_MS };
-      try {
-        const root = await open(this.workspace, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
-        try {
-          const yoloPath = `/proc/self/fd/${root.fd}/.yolo`;
-          await mkdir(yoloPath, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
-          const yolo = await open(yoloPath, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
-          try {
-          let receipt;
-          try { receipt = await open(`/proc/self/fd/${yolo.fd}/last-receipt.json`, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600); }
-          catch (error) {
-            if (error.code !== 'EEXIST') throw error;
-            const existing = await open(`/proc/self/fd/${yolo.fd}/last-receipt.json`, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-            let prior;
-            try { prior = JSON.parse(await existing.readFile('utf8')); }
-            finally { await existing.close(); }
-            // The runtime's private receipt is an ownership-bound handoff:
-            // publication may have materialized it before the launcher adds
-            // cleanup/deadline evidence.  Only this explicit runtime marker
-            // permits the launcher to complete that handoff; all other
-            // preexisting content remains create-only and untouched.
-            if (prior?.receipt_owner === 'runtime') {
-              receipt = await open(`/proc/self/fd/${yolo.fd}/last-receipt.json`, fsConstants.O_WRONLY | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW);
-            } else receipt = null;
-          }
-          if (receipt) { try { await receipt.writeFile(`${JSON.stringify(outcome)}\n`); await receipt.sync(); } finally { await receipt.close(); } }
-          }
-          finally { await yolo.close(); }
-        } finally { await root.close(); }
-      }
+      try { await persistReceipt(this.workspace, outcome); }
       catch (error) { outcome = { ...outcome, status: 'cleanup_unknown', effect_state: 'uncertain', errors: [...(outcome.errors ?? []), `receipt persistence failed: ${error.message}`] }; }
     }
     if (failure) throw failure;

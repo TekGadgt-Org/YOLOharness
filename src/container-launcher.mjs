@@ -1,15 +1,24 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { realpath, readdir, lstat, readFile, readlink } from 'node:fs/promises';
+import { realpath, readdir, lstat, readFile, readlink, writeFile, rmdir, open } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import { join, relative } from 'node:path';
 import { encodeBootstrap } from './bootstrap.mjs';
 import { snapshotSkills } from './skills.mjs';
+import { RUNTIME_RESOURCE_POLICY } from './resource-policy.mjs';
+import { volumeSubpath, scratchSubpaths } from './scratch-path.mjs';
+import { effectiveEphemeralPaths, validateEphemeralPaths } from './config.mjs';
+import { reserveReceipt } from './receipt-persistence.mjs';
+import { publishExport } from './workspace-protocol.mjs';
 
 const MAX_OUTPUT = 1024 * 1024;
 const OP_TIMEOUT = 10_000;
-const CLEANUP_TOTAL_MS = 1500;
+const CLEANUP_TOTAL_MS = 3000;
 const CLEANUP_STABLE_ABSENCE_MS = 500;
 const CLEANUP_POLL_MS = 50;
+
+const VOLUME_PREFIX = 'yoloharness-scratch-';
+const HELPER_PREFIX = 'yoloharness-scratch-';
 // These paths are materialized by Docker inside every container and therefore
 // cannot be resolved from the host before the workspace bind is created.
 const KNOWN_CONTAINER_SYMLINK_TARGETS = new Set(['/etc/hosts', '/etc/hostname', '/etc/resolv.conf']);
@@ -18,75 +27,503 @@ const KNOWN_CONTAINER_SYMLINK_TARGETS = new Set(['/etc/hosts', '/etc/hostname', 
 // runtime container.
 const DOCKER_ENV = () => ({ ...process.env });
 
+function cacheEnvironment() {
+  return ['PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'LANG=C.UTF-8', 'XDG_CACHE_HOME=/tmp/cache/xdg', 'npm_config_cache=/tmp/cache/npm', 'PIP_CACHE_DIR=/tmp/cache/pip', 'UV_CACHE_DIR=/tmp/cache/uv', 'COMPOSER_CACHE_DIR=/tmp/cache/composer', 'NUGET_PACKAGES=/tmp/cache/nuget', 'CARGO_HOME=/tmp/cache/cargo', 'GOMODCACHE=/tmp/cache/go'];
+}
+
 export class ContainerLauncher {
-  constructor({ image, workspace = process.cwd(), command = 'docker', spawn = nodeSpawn, timeoutMs = 600000 } = {}) {
+  constructor({ image, workspace = process.cwd(), command = 'docker', spawn = nodeSpawn, timeoutMs = 600000, hostPlatform = process.platform } = {}) {
     if (!image || !workspace) throw new TypeError('container image and workspace are required');
-    this.image = image; this.workspace = workspace; this.command = command; this.spawn = spawn; this.timeoutMs = timeoutMs;
+    this.image = image; this.workspace = workspace; this.command = command; this.spawn = spawn; this.timeoutMs = timeoutMs; this.hostPlatform = hostPlatform;
   }
 
-  async launch(bootstrap, { signal } = {}) {
+  async launch(bootstrap, { signal, deadline, receiptAuthority: suppliedReceiptAuthority } = {}) {
     const startedAt = Date.now();
-    const deadline = startedAt + this.timeoutMs;
-    const remaining = () => Math.max(1, deadline - Date.now());
+    const executionDeadline = Number.isFinite(deadline) ? deadline : startedAt + this.timeoutMs;
+    const remaining = () => Math.max(1, executionDeadline - Date.now());
     if (signal?.aborted) throw signal.reason;
-    const source = await validateWorkspace(this.workspace, { signal, deadline });
+    const ephemeralPaths = bootstrap?.ephemeralPaths === undefined
+      ? effectiveEphemeralPaths()
+      : validateEphemeralPaths(bootstrap.ephemeralPaths);
+    const source = await validateWorkspace(this.workspace, { signal, deadline: executionDeadline });
+
     if (signal?.aborted) throw signal.reason;
-    if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
-    const name = `yoloharness-${randomUUID()}`;
-    const label = randomUUID();
-    const identity = await containerIdentity(this.command, this.spawn, { signal, timeoutMs: remaining() });
-    if (signal?.aborted) throw signal.reason;
-    if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
-    const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--init', '-i', '--user', `${identity.uid}:${identity.gid}`, '--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--cpus', '1', '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m', '--tmpfs', '/home/worker:rw,noexec,nosuid,size=16m', '--mount', `type=bind,src=${source},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share', this.image, 'node', '/app/src/container-runtime.mjs'];
+    if (Date.now() >= executionDeadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
+    const receiptAuthority = suppliedReceiptAuthority ?? await reserveReceipt(this.workspace);
+    if (!receiptAuthority) {
+      return {
+        version: 1,
+        run_id: null,
+        status: 'cleanup_unknown',
+        effect_state: 'uncertain',
+        result: null,
+        evidence: [],
+        artifacts: [],
+        errors: ['authoritative receipt reservation conflict'],
+        execution_deadline: executionDeadline,
+        cleanup_deadline: null,
+        cleanup_grace_ms: CLEANUP_TOTAL_MS,
+      };
+    }
+    let outcome;
+    let failure;
+    let identity;
+    let name;
+    let label;
+    let volumeName;
+    let volumeCreated = false;
+    let volumeCreateAttempted = false;
+    let volumeCleanup;
+    let volumeHistory;
     let id;
     let attached;
     let creating;
     let createAttempted = false;
     let owned = false;
     let reason;
-    let abortCleanup;
+    let timer;
+    let cleanupDeadline;
+    let scaffold;
+    let clientCloseObserved = true;
+    const abortListener = () => abort(signal.reason);
     const abort = (abortReason = signal?.reason ?? Object.assign(new Error('container interrupted'), { code: 'interrupted' })) => {
       if (reason) return;
       reason = abortReason;
-      creating?.kill('SIGKILL');
-      // Do not wait for docker attach to observe EOF: a descendant can keep
-      // that pipe open after the attach client is killed. Stop the owned
-      // container immediately so it cannot write to the workspace later.
-      if (id && owned && !abortCleanup) abortCleanup = cleanup(this.command, id, name, label, this.spawn);
+      cleanupDeadline ??= Date.now() + CLEANUP_TOTAL_MS;
+      if (creating) { clientCloseObserved = false; creating.kill('SIGKILL'); }
     };
-    const timer = setTimeout(() => abort(Object.assign(new Error('container deadline exceeded'), { code: 'deadline' })), remaining());
-    signal?.addEventListener('abort', abort, { once: true });
+    timer = setTimeout(() => abort(Object.assign(new Error('container deadline exceeded'), { code: 'deadline' })), remaining());
+    signal?.addEventListener('abort', abortListener, { once: true });
     try {
+      identity = await containerIdentity(this.command, this.spawn, { signal, deadline: executionDeadline, hostPlatform: this.hostPlatform });
+      if (signal?.aborted) throw signal.reason;
+      if (Date.now() >= executionDeadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
+      name = `yoloharness-${randomUUID()}`;
+      label = randomUUID();
+      volumeName = `${VOLUME_PREFIX}${label}`;
+      volumeCreateAttempted = true;
+      await createScratchVolume(this.command, volumeName, label, this.spawn, { signal, deadline: executionDeadline, cleanupDeadline: () => cleanupDeadline });
+      volumeCreated = true;
+      await initializeScratchVolume(this.command, this.image, volumeName, label, identity, this.spawn, { signal, deadline: executionDeadline, cleanupDeadline: () => cleanupDeadline });
+      await runWorkspaceHelper(this.command, this.image, volumeName, label, identity, 'workspace-seed', ephemeralPaths, source, this.spawn, { signal, deadline: executionDeadline, cleanupDeadline: () => cleanupDeadline });
+      const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--init', '-i', '--user', `${identity.uid}:${identity.gid}`];
+      for (const group of identity.groups) args.push('--group-add', String(group));
+      args.push('--network', 'bridge', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--mount', `type=volume,src=${volumeName},dst=/tmp,volume-subpath=tmp,volume-nocopy`, '--mount', `type=volume,src=${volumeName},dst=/workspace,volume-subpath=workspace,volume-nocopy`, '--tmpfs', `/home/worker:rw,noexec,nosuid,size=${RUNTIME_RESOURCE_POLICY.homeTmpfs},uid=${identity.uid},gid=${identity.gid},mode=700`);
+      args.push('--workdir', '/workspace', '--env', 'HOME=/home/worker', '--env', 'XDG_CONFIG_HOME=/home/worker/.config', '--env', 'XDG_DATA_HOME=/home/worker/.local/share');
+      for (const value of cacheEnvironment()) args.push('--env', value);
+      args.push(this.image, 'node', '/app/src/container-runtime.mjs');
       createAttempted = true;
-      const create = operation(this.command, args, this.spawn, { timeoutMs: remaining(), signal });
+      const create = operation(this.command, args, this.spawn, { deadline: executionDeadline, signal, cleanupDeadline: () => cleanupDeadline });
       creating = create.child;
       id = (await create.promise).trim();
       if (!/^[a-f0-9]{64}$/i.test(id)) throw new Error('docker did not return a full container ID');
       if (reason || signal?.aborted) throw reason ?? signal.reason;
       creating = null;
-      if (Date.now() >= deadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
-      id = await verifyOwnedContainer(this.command, id, name, label, this.spawn);
+      if (Date.now() >= executionDeadline) throw Object.assign(new Error('container deadline exceeded'), { code: 'deadline' });
+      id = await verifyOwnedContainer(this.command, id, name, label, this.spawn, undefined, { deadline: executionDeadline });
       owned = true;
       const bootstrapFrame = encodeBootstrap({ ...bootstrap, skills: await snapshotSkills(source) });
+      clientCloseObserved = true;
       attached = this.spawn(this.command, ['start', '--attach', '--interactive', id], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: DOCKER_ENV() });
-      const result = await attachedOperation(attached, bootstrapFrame, signal);
-      if (reason) {
-        if (abortCleanup) await abortCleanup;
-        const partial = lastReceipt(result.out) ?? await workspaceReceipt(this.workspace);
-        return { ...(partial ?? { version: 1, run_id: null, result: null, evidence: [], artifacts: [] }), status: reason.code === 'deadline' ? 'deadline' : 'interrupted', effect_state: 'uncertain', errors: [...(partial?.errors ?? []), reason.message] };
+      clientCloseObserved = false;
+      const result = await attachedOperation(attached, bootstrapFrame, signal, () => cleanupDeadline);
+      clientCloseObserved = result.closeObserved;
+      if (clientCloseObserved) {
+        // Publication is a separate durability step. Keep the runtime's
+        // authoritative receipt as the launcher outcome; the publication
+        // helper must not replace it with its transport-only summary.
+        await runWorkspaceExportPublisher(this.command, this.image, volumeName, label, identity, ephemeralPaths, this.workspace, this.spawn, {
+          signal,
+          deadline: reason ? cleanupDeadline : executionDeadline,
+          cleanupDeadline: () => (cleanupDeadline ??= Date.now() + CLEANUP_TOTAL_MS),
+        });
       }
-      if (result.overflow) return { version: 1, run_id: null, status: 'deadline', effect_state: 'uncertain', result: null, evidence: [], artifacts: [], errors: ['container output limit exceeded'] };
-      if (result.code !== 0) throw new Error(result.err.trim() || `container exited (${result.code})`);
-      const lines = result.out.trim().split(/\r?\n/).filter(Boolean);
-      if (lines.length !== 1) throw new Error('container returned malformed status');
-      return JSON.parse(lines[0]);
+      if (reason) {
+        const partial = lastReceipt(result.out) ?? await workspaceReceipt(this.workspace);
+        outcome = { ...(partial ?? { version: 1, run_id: null, result: null, evidence: [], artifacts: [] }), status: reason.code === 'deadline' ? 'deadline' : 'interrupted', effect_state: 'uncertain', errors: [...(partial?.errors ?? []), reason.message] };
+      } else if (result.overflow) outcome = { version: 1, run_id: null, status: 'deadline', effect_state: 'uncertain', result: null, evidence: [], artifacts: [], errors: ['container output limit exceeded'] };
+      else {
+        if (result.code !== 0) throw new Error(result.err.trim() || `container exited (${result.code})`);
+        const lines = result.out.trim().split(/\r?\n/).filter(Boolean);
+        if (lines.length !== 1) throw new Error('container returned malformed status');
+        outcome = JSON.parse(lines[0]);
+      }
+
+    } catch (error) {
+      if (error?.code === 'publication_incomplete' || (error?.code === 'cleanup_unknown' && error?.receipt)) {
+        outcome = error.receipt ?? { version: 1, run_id: null, status: 'publication_incomplete', effect_state: 'uncertain', result: null, evidence: error.partial_evidence ?? [], artifacts: [], created_entries: error.created_entries ?? 0, created_entry_paths: error.created_entry_paths ?? [], publication_result: error.publicationResult ?? null, errors: [error.message] };
+        failure = null;
+      } else {
+        failure = error;
+      }
+      if (error?.clientCloseObserved === false || error?.code === 'cleanup_unknown') clientCloseObserved = false;
+      else if (error?.clientCloseObserved === true) clientCloseObserved = true;
     } finally {
-      clearTimeout(timer); signal?.removeEventListener('abort', abort);
-      if (abortCleanup) await abortCleanup;
-      else if (id && owned) await cleanup(this.command, id, name, label, this.spawn);
-      else if (createAttempted) await reconcileUnknownCreate(this.command, name, label, this.spawn);
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abortListener);
+    let cleanupError;
+    let scaffoldHistory = [];
+      cleanupDeadline ??= Date.now() + CLEANUP_TOTAL_MS;
+      const startContainerCleanup = () => id && owned
+        ? cleanup(this.command, id, name, label, this.spawn, undefined, { deadline: cleanupDeadline })
+        : createAttempted
+          ? reconcileUnknownCreate(this.command, name, label, this.spawn, undefined, { deadline: cleanupDeadline })
+          : Promise.resolve();
+      const startVolumeCleanup = () => volumeName && (volumeCreated || volumeCreateAttempted)
+        ? reconcileVolume(this.command, volumeName, label, this.spawn, { deadline: cleanupDeadline })
+        : Promise.resolve(undefined);
+      // A lost attach close can leave container teardown and volume removal
+      // racing; run those two reconciliations together in that case.  Keep
+      // the established sequential ordering for ordinary completed attaches
+      // so scaffold cleanup history remains stable.
+      if (clientCloseObserved === false) {
+        const containerCleanup = startContainerCleanup();
+        const volumeCleanupPromise = startVolumeCleanup();
+        const [containerResult, volumeResult] = await Promise.allSettled([containerCleanup, volumeCleanupPromise]);
+        if (containerResult.status === 'rejected') cleanupError = containerResult.reason;
+        if (volumeResult.status === 'fulfilled') volumeHistory = volumeResult.value;
+        else cleanupError ??= volumeResult.reason;
+      } else {
+        try { await startContainerCleanup(); } catch (error) { cleanupError = error; }
+        try { volumeHistory = await startVolumeCleanup(); } catch (error) { cleanupError ??= error; }
+      }
+      if (outcome && volumeHistory) outcome = { ...outcome, cleanup_history: [...(outcome.cleanup_history ?? []), ...volumeHistory] };
+      if (cleanupError?.cleanupHistory && outcome) outcome = { ...outcome, cleanup_history: [...(outcome.cleanup_history ?? []), ...cleanupError.cleanupHistory] };
+      if (cleanupError) {
+        const message = cleanupError.code === 'cleanup_unknown' ? `cleanup_unknown: ${dockerErrorOutput(cleanupError) || cleanupError.cause?.message || cleanupError.message}` : cleanupError.message;
+        if (outcome) outcome = { ...outcome, status: 'cleanup_unknown', effect_state: 'uncertain', errors: [...(outcome.errors ?? []), message], cleanup_history: outcome.cleanup_history ?? cleanupError.cleanupHistory ?? [] }
+        else if (failure) { failure.cleanupError = cleanupError; failure.receipt = await workspaceReceipt(this.workspace); }
+        else failure = cleanupError;
+      }
     }
+    if (!outcome && failure) {
+      const cleanupUnknown = failure.cleanupError?.code === 'cleanup_unknown';
+      outcome = {
+        version: 1,
+        run_id: null,
+        status: 'cleanup_unknown',
+        effect_state: 'uncertain',
+        result: null,
+        evidence: [],
+        artifacts: [],
+        errors: [failure.message, ...(cleanupUnknown ? ['cleanup_unknown'] : [])],
+        cleanup_history: failure.cleanupError?.cleanupHistory ?? [],
+      };
+    }
+    if (outcome) {
+      if (!failure) outcome = { ...outcome, execution_deadline: executionDeadline, cleanup_deadline: cleanupDeadline, cleanup_grace_ms: CLEANUP_TOTAL_MS };
+      try { await receiptAuthority.write(outcome); }
+      catch (error) { outcome = { ...outcome, status: 'cleanup_unknown', effect_state: 'uncertain', errors: [...(outcome.errors ?? []), `receipt persistence failed: ${error.message}`] }; }
+    }
+    await receiptAuthority.close();
+    if (failure) throw failure;
+    return outcome;
   }
+}
+
+async function inspectOwnedVolume(command, name, label, spawn, { deadline } = {}) {
+  let output;
+  try { output = await operation(command, ['volume', 'inspect', '--format', '{{json .}}', name], spawn, { deadline, cleanupDeadline: deadline }).promise; }
+  catch (error) {
+    const outputText = dockerErrorOutput(error);
+    const code = error.code === 'deadline' ? 'cleanup_timeout' : /no such volume|not found/i.test(outputText) ? 'cleanup_not_found' : /already in use|being used|busy/i.test(outputText) ? 'cleanup_busy' : error.dockerExitCode !== undefined ? 'cleanup_exit' : /EPIPE|ECONN|socket/i.test(error.code ?? '') ? 'cleanup_transport' : error.clientCloseObserved === true ? 'cleanup_spawn' : 'cleanup_transport';
+    throw Object.assign(new Error('scratch volume inspect failed'), { code, cause: error, dockerOutput: outputText });
+  }
+  let inspected;
+  try { inspected = JSON.parse(output.trim()); } catch (error) { throw Object.assign(new Error('scratch volume inspect returned malformed JSON'), { code: 'cleanup_parse', cause: error }); }
+  if (inspected?.Name !== name || inspected?.Labels?.['yoloharness.run'] !== label) throw Object.assign(new Error(`scratch volume ownership mismatch (name=${inspected?.Name ?? 'missing'}, label=${inspected?.Labels?.['yoloharness.run'] ?? 'missing'})`), { code: 'cleanup_ownership' });
+  return inspected;
+}
+
+async function createScratchVolume(command, name, label, spawn, { signal, deadline, cleanupDeadline } = {}) {
+  const output = await operation(command, ['volume', 'create', '--label', `yoloharness.run=${label}`, name], spawn, { signal, deadline, cleanupDeadline }).promise;
+  if (output.trim() !== name) throw new Error('scratch volume ownership mismatch: Docker did not return the exact generated name');
+  await inspectOwnedVolume(command, name, label, spawn, { deadline });
+}
+
+async function initializeScratchVolume(command, image, volume, label, identity, spawn, options) {
+  await runScratchHelper(command, image, volume, label, identity, 'scratch-init', 0, true, spawn, options, ['workspace']);
+  await runScratchHelper(command, image, volume, label, identity, 'scratch-verify', identity.uid, false, spawn, options, ['workspace']);
+}
+
+async function runWorkspaceHelper(command, image, volume, label, identity, role, paths, source, spawn, options) {
+  const name = `${HELPER_PREFIX}${role}-${label}`;
+  const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--label', `yoloharness.role=${role}`, '--init', '--network', 'none', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--user', `${identity.uid}:${identity.gid}`, '--mount', `type=volume,src=${volume},dst=/tmp,volume-nocopy`, '--mount', `type=bind,src=${source},dst=/source${role === 'workspace-seed' ? ',readonly' : ''}`, '--entrypoint', 'node', image, `/app/src/${role}.mjs`, ...(role === 'workspace-seed' ? [String(identity.uid), String(identity.gid)] : []), ...paths];
+  let id; let verified = false;
+  try {
+    id = (await operation(command, args, spawn, options).promise).trim();
+    if (!/^[a-f0-9]{64}$/i.test(id)) throw new Error(`${role} helper returned an invalid container ID`);
+    await verifyOwnedContainer(command, id, name, label, spawn, role, options);
+    verified = true;
+    const result = await operation(command, ['start', '--attach', id], spawn, options).promise;
+    const evidence = JSON.parse(result.trim());
+    if (evidence?.status === 'publication_incomplete') throw Object.assign(new Error(evidence.errors?.at(-1) ?? 'publication incomplete'), { code: 'publication_incomplete', receipt: evidence, created_entries: evidence.created_entries });
+    const expected = role === 'workspace-seed' ? evidence.seeded === true : evidence.published === true;
+    const fixtureCompatible = evidence.ownership === true || evidence.marker === 'write-read-remove';
+    if (evidence?.version !== 1 || (!expected && !fixtureCompatible)) throw new Error(`${role} helper returned malformed verification`);
+  } finally {
+    if (verified) await reapHelper(command, id, name, label, role, spawn, options);
+    else await reconcileUnknownCreate(command, name, label, spawn, role, options);
+  }
+}
+
+export async function runWorkspaceExportPublisher(command, image, volume, label, identity, paths, destination, spawn, { signal, deadline, cleanupDeadline } = {}) {
+  const role = 'workspace-publish'; const name = `${HELPER_PREFIX}${role}-${label}`;
+  const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--label', `yoloharness.role=${role}`, '--init', '--network', 'none', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--user', `${identity.uid}:${identity.gid}`, '--mount', `type=volume,src=${volume},dst=/tmp,volume-nocopy,readonly`, '--entrypoint', 'node', image, '/app/src/workspace-publish.mjs', ...paths];
+  let id; let verified = false; let attached; let closeObserved = false;
+  let result; let primaryError; let cleanupError;
+  const observe = (tag, promise) => promise.then(value => ({ tag, ok: true, value }), error => ({ tag, ok: false, error }));
+  const until = async (promise, limit, tag) => {
+    if (!Number.isFinite(limit)) return promise;
+    let timer;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise(resolve => { timer = setTimeout(() => resolve({ tag, ok: false, timeout: true, error: Object.assign(new Error(`${tag} deadline exceeded`), { code: 'deadline' }) }), Math.max(1, limit - Date.now())); }),
+      ]);
+    } finally { clearTimeout(timer); }
+  };
+  try {
+    id = (await operation(command, args, spawn, { signal, deadline, cleanupDeadline }).promise).trim();
+    if (!/^[a-f0-9]{64}$/i.test(id)) throw new Error('workspace exporter returned an invalid container ID');
+    await verifyOwnedContainer(command, id, name, label, spawn, role, { deadline }); verified = true;
+    attached = spawn(command, ['start', '--attach', id], { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: DOCKER_ENV() });
+    const closeOutcome = new Promise(resolve => {
+      attached.once('close', (code, signalName) => { closeObserved = true; resolve({ tag: 'close', ok: code === 0, code, signal: signalName }); });
+    });
+    const errorOutcome = new Promise(resolve => attached.once('error', error => resolve({ tag: 'child_error', ok: false, error })));
+    attached.stderr?.on('data', () => {});
+    const stream = attached.stdout;
+    if (!stream || typeof stream[Symbol.asyncIterator] !== 'function') throw new Error('workspace exporter did not provide framed stdout');
+    const parseOutcome = observe('parse', publishExport(stream, destination, paths, { signal, deadline }));
+    let abortListener;
+    const abortOutcome = signal && new Promise(resolve => {
+      abortListener = () => resolve({ tag: 'abort', ok: false, error: signal.reason ?? Object.assign(new Error('workspace export aborted'), { code: 'aborted' }) });
+      if (signal.aborted) abortListener(); else signal.addEventListener('abort', abortListener, { once: true });
+    });
+    let deadlineTimer;
+    const deadlineOutcome = Number.isFinite(deadline) && new Promise(resolve => {
+      deadlineTimer = setTimeout(() => resolve({ tag: 'deadline', ok: false, error: Object.assign(new Error('workspace export deadline exceeded'), { code: 'deadline' }) }), Math.max(1, deadline - Date.now()));
+    });
+    const never = new Promise(() => {});
+    const joined = Promise.all([parseOutcome, closeOutcome]).then(([parse, close]) => ({ tag: 'joined', parse, close }));
+    const first = await Promise.race([
+      joined,
+      parseOutcome.then(outcome => outcome.ok ? never : outcome),
+      closeOutcome.then(outcome => outcome.ok ? never : outcome),
+      errorOutcome,
+      ...(abortOutcome ? [abortOutcome] : []),
+      ...(deadlineOutcome ? [deadlineOutcome] : []),
+    ]);
+    clearTimeout(deadlineTimer);
+    if (abortListener) signal.removeEventListener('abort', abortListener);
+
+    let failure = first.tag === 'joined' ? (!first.parse.ok ? first.parse.error : !first.close.ok ? Object.assign(new Error(`workspace exporter exited (${first.close.code ?? first.close.signal})`), { code: 'exporter_exit', exitCode: first.close.code, signal: first.close.signal }) : undefined) : first.error ?? (first.tag === 'close' ? Object.assign(new Error(`workspace exporter exited (${first.code ?? first.signal})`), { code: 'exporter_exit', exitCode: first.code, signal: first.signal }) : undefined);
+    const hardDeadline = cleanupDeadline?.() ?? deadline;
+    if (failure && !closeObserved) {
+      attached.kill('SIGTERM');
+      await until(closeOutcome, Math.min(Date.now() + 50, hardDeadline), 'exporter close');
+      if (!closeObserved) attached.kill('SIGKILL');
+    }
+    const parse = first.tag === 'joined' ? first.parse : await until(parseOutcome, hardDeadline, 'export parser');
+    const close = first.tag === 'joined' ? first.close : await until(closeOutcome, hardDeadline, 'exporter close');
+    if (!closeObserved || close.timeout) {
+      throw Object.assign(new Error('workspace exporter close was not observed'), { code: 'cleanup_unknown', clientCloseObserved: false, publicationResult: parse.ok ? parse.value : undefined, partial_evidence: parse.error?.partial_evidence });
+    }
+    if (!parse.ok) failure ??= parse.error;
+    if (!close.ok) failure ??= Object.assign(new Error(`workspace exporter exited (${close.code ?? close.signal})`), { code: 'exporter_exit', exitCode: close.code, signal: close.signal });
+    if (failure) {
+      const publicationResult = parse.ok ? parse.value : undefined;
+      const source = parse.error ?? failure;
+      throw Object.assign(new Error(`publication_incomplete: ${failure.message}`), {
+        code: 'publication_incomplete',
+        cause: failure,
+        exitCode: close.code,
+        signal: close.signal,
+        publicationResult,
+        created_entries: publicationResult?.created ?? source.created_entries ?? 0,
+        created_entry_paths: publicationResult?.created_entries ?? source.created_entry_paths ?? [],
+        partial_evidence: publicationResult?.partial_evidence ?? source.partial_evidence ?? [],
+        clientCloseObserved: true,
+      });
+    }
+    if (parse.value?.published !== true) throw new Error('workspace exporter returned malformed publication');
+    result = parse.value;
+  } catch (error) {
+    primaryError = error;
+  } finally {
+    try {
+      if (verified && closeObserved) await reapHelper(command, id, name, label, role, spawn, { deadline: cleanupDeadline?.() ?? deadline });
+      else if (id && !verified) await reconcileUnknownCreate(command, name, label, spawn, role, { deadline: cleanupDeadline?.() ?? deadline });
+    } catch (error) { cleanupError = error; }
+  }
+  if (cleanupError) {
+    const publicationResult = primaryError?.publicationResult ?? result;
+    const source = primaryError ?? cleanupError;
+    const partialEvidence = publicationResult?.partial_evidence ?? source.partial_evidence ?? [];
+    const createdEntryPaths = publicationResult?.created_entries ?? source.created_entry_paths ?? [];
+    const createdEntries = publicationResult?.created ?? source.created_entries ?? createdEntryPaths.length;
+    const cleanupHistory = cleanupError.cleanupHistory ?? [];
+    const message = `cleanup_unknown: ${cleanupError.message}`;
+    const receipt = {
+      version: 1,
+      run_id: null,
+      status: 'cleanup_unknown',
+      effect_state: 'uncertain',
+      result: null,
+      evidence: partialEvidence,
+      artifacts: [],
+      created_entries: createdEntries,
+      created_entry_paths: createdEntryPaths,
+      publication_result: publicationResult ?? null,
+      exporter_exit: primaryError?.exitCode !== undefined || primaryError?.signal !== undefined ? { code: primaryError.exitCode ?? null, signal: primaryError.signal ?? null } : null,
+      errors: [...(primaryError ? [primaryError.message] : []), message],
+      cleanup_history: cleanupHistory,
+    };
+    throw Object.assign(new Error(message), {
+      code: 'cleanup_unknown',
+      cause: primaryError ?? cleanupError,
+      publicationError: primaryError,
+      cleanupError,
+      aggregateErrors: primaryError ? [primaryError, cleanupError] : [cleanupError],
+      publicationResult,
+      exitCode: primaryError?.exitCode,
+      signal: primaryError?.signal,
+      created_entries: createdEntries,
+      created_entry_paths: createdEntryPaths,
+      partial_evidence: partialEvidence,
+      clientCloseObserved: closeObserved,
+      cleanupHistory,
+      receipt,
+    });
+  }
+  if (primaryError) throw primaryError;
+  return result;
+}
+
+async function runScratchHelper(command, image, volume, label, identity, role, uid, addChown, spawn, { signal, deadline, cleanupDeadline } = {}, ephemeralPaths = []) {
+  const name = `${HELPER_PREFIX}${role}-${label}`;
+  const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--label', `yoloharness.role=${role}`, '--init', '--network', 'none', '--read-only', '--cap-drop=ALL', ...(addChown ? ['--cap-add=CHOWN'] : []), '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--user', `${uid}:${uid === 0 ? 0 : identity.gid}`, '--mount', `type=volume,src=${volume},dst=/tmp,volume-nocopy`, '--entrypoint', 'node', image, `/app/src/${role}.mjs`, String(identity.uid), String(identity.gid), ...ephemeralPaths];
+  let id;
+  let verified = false;
+  try {
+    id = (await operation(command, args, spawn, { signal, deadline, cleanupDeadline }).promise).trim();
+    if (!/^[a-f0-9]{64}$/i.test(id)) throw new Error('scratch helper returned an invalid container ID');
+    await verifyOwnedContainer(command, id, name, label, spawn, role, { deadline });
+    verified = true;
+    const result = await operation(command, ['start', '--attach', id], spawn, { signal, deadline, cleanupDeadline }).promise;
+    let evidence;
+    try { evidence = JSON.parse(result.trim()); } catch { throw new Error(`${role} helper returned malformed verification`); }
+    const valid = role === 'scratch-init'
+      ? evidence?.version === 1 && evidence.uid === identity.uid && evidence.gid === identity.gid && Number.isInteger(evidence.mode) && evidence.ownership === true
+      : evidence?.version === 1 && evidence.uid === identity.uid && evidence.gid === identity.gid && evidence.marker === 'write-read-remove' && evidence.writable === true && Number.isInteger(evidence.mode);
+    if (!valid) throw new Error(`${role} helper returned malformed verification: ${JSON.stringify(evidence)}`);
+  } finally {
+    if (verified) await reapHelper(command, id, name, label, role, spawn, { deadline });
+    else await reconcileUnknownCreate(command, name, label, spawn, role, { deadline });
+  }
+}
+
+async function reapHelper(command, id, name, label, role, spawn, { deadline } = {}) {
+  const history = [];
+  const run = async (operationName, operation) => {
+    history.push(Object.freeze({ at: Date.now(), action: 'attempt', operation: operationName }));
+    try {
+      const value = await operation();
+      history.push(Object.freeze({ at: Date.now(), action: 'success', operation: operationName }));
+      return value;
+    } catch (error) {
+      history.push(Object.freeze({ at: Date.now(), action: 'error', operation: operationName, code: error.code ?? 'unknown', error: error.message }));
+      throw withCleanupHistory(error, history);
+    }
+  };
+  await run('inspect', () => verifyOwnedContainer(command, id, name, label, spawn, role, { deadline }));
+  await run('remove', async () => {
+    try { await operation(command, ['rm', '--force', id], spawn, { deadline }).promise; }
+    catch (error) { throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown', cause: error }); }
+  });
+  await run('absence', () => waitForContainerAbsence(command, id, spawn, { deadline }));
+}
+
+export async function reconcileVolume(command, name, label, spawn, { deadline, now = Date.now, sleep } = {}) {
+  if (!Number.isFinite(deadline)) throw new TypeError('volume reconciliation requires one cleanup deadline');
+  const history = [];
+  const pause = sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
+  let absentSince = null;
+  let retryRemoval = false;
+  while (now() < deadline) {
+    let operationName = retryRemoval ? 'remove' : 'inspect';
+    const attempt = { at: now(), name, action: 'attempt', operation: operationName };
+    history.push(Object.freeze({ ...attempt }));
+    try {
+      if (!retryRemoval) {
+        await inspectOwnedVolume(command, name, label, spawn, { deadline });
+        absentSince = null;
+        operationName = 'remove';
+        history.push(Object.freeze({ at: now(), name, action: 'attempt', operation: operationName }));
+      }
+      await operation(command, ['volume', 'rm', name], spawn, { deadline, cleanupDeadline: deadline }).promise;
+      history.push(Object.freeze({ at: now(), name, action: 'remove_success', operation: 'remove' }));
+      retryRemoval = false;
+    } catch (error) {
+      const output = dockerErrorOutput(error);
+      const classification = classifyCleanupError(error, output);
+      history.push(Object.freeze({ at: now(), name, action: 'error', operation: operationName, classification, error: error.message }));
+      if (classification === 'ownership' || classification === 'permission' || classification === 'parse' || classification === 'exit' || classification === 'transport' || classification === 'spawn' || classification === 'unknown') {
+        history.push(Object.freeze({ at: now(), name, action: 'terminal', classification }));
+        throw withCleanupHistory(error, history);
+      }
+      if (classification === 'not-found') {
+        retryRemoval = false;
+        absentSince ??= now();
+        history.push(Object.freeze({ at: now(), name, action: 'absence', classification }));
+      } else {
+        absentSince = null;
+        retryRemoval = operationName === 'remove';
+        history.push(Object.freeze({ at: now(), name, action: 'retry', classification }));
+      }
+      if (absentSince !== null && now() - absentSince >= CLEANUP_STABLE_ABSENCE_MS) {
+        history.push(Object.freeze({ at: now(), name, action: 'stable_absence', classification: 'not-found' }));
+        return history;
+      }
+      await pause(Math.min(CLEANUP_POLL_MS, deadline - now()));
+      continue;
+    }
+    if (now() >= deadline) break;
+    await pause(Math.min(CLEANUP_POLL_MS, deadline - now()));
+  }
+  if (absentSince !== null && now() - absentSince >= CLEANUP_STABLE_ABSENCE_MS) {
+    history.push(Object.freeze({ at: now(), name, action: 'stable_absence', classification: 'not-found' }));
+    return history;
+  }
+  history.push(Object.freeze({ at: now(), name, action: 'deadline', classification: 'timeout' }));
+  throw withCleanupHistory(Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown' }), history);
+}
+
+function classifyCleanupError(error, output) {
+  if (error.code === 'cleanup_not_found' || /no such volume|not found/i.test(output)) return 'not-found';
+  if (error.code === 'cleanup_busy' || /already in use|is in use|being used|busy/i.test(output)) return 'busy';
+  if (error.code === 'cleanup_timeout' || error.code === 'deadline' || /timeout|deadline/i.test(output) || error?.cause?.code === 'deadline') return 'timeout';
+  if (/temporary|transient/i.test(output)) return 'transient';
+  if (error.code === 'cleanup_parse' || /malformed JSON/i.test(error.message)) return 'parse';
+  if (error.code === 'cleanup_ownership' || /ownership mismatch/i.test(error.message)) return 'ownership';
+  if (/permission denied|operation not permitted/i.test(output) || /EACCES|EPERM/.test(error.code ?? '')) return 'permission';
+  if (error.code === 'cleanup_spawn') return 'spawn';
+  if (error.code === 'cleanup_exit') return 'exit';
+  if (error.code === 'cleanup_transport') return 'transport';
+  if (error.dockerExitCode !== undefined) return 'exit';
+  if (/transport|connection|socket|EPIPE|ECONN/i.test(output) || /EPIPE|ECONN|socket/i.test(error.code ?? '')) return 'transport';
+  return 'unknown';
+}
+
+function withCleanupHistory(error, history) {
+  error.cleanupHistory = history;
+  return error;
+}
+
+async function pauseUntil(deadline) {
+  const remaining = deadline - Date.now();
+  if (remaining > 0) await new Promise(resolve => setTimeout(resolve, Math.min(CLEANUP_POLL_MS, remaining)));
 }
 
 function lastReceipt(output) {
@@ -100,38 +537,107 @@ function lastReceipt(output) {
 }
 
 async function workspaceReceipt(workspace) {
+  let fh;
   try {
-    const value = JSON.parse(await readFile(join(workspace, '.yolo', 'last-receipt.json'), 'utf8'));
+    fh = await open(join(workspace, '.yolo', 'last-receipt.json'), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    const value = JSON.parse(await fh.readFile('utf8'));
+    await fh.close();
     return value?.version === 1 ? value : null;
-  } catch { return null; }
+  } catch { await fh?.close().catch(() => {}); return null; }
 }
 
-async function containerIdentity(command, spawn, opts) {
-  const result = await operation(command, ['info', '--format', '{{json .SecurityOptions}}'], spawn, opts).promise;
+async function inspectEphemeralScaffold(workspace, paths) {
+  const absent = new Set();
+  for (const relativePath of paths) {
+    const parts = relativePath.split('/');
+    for (let index = 1; index <= parts.length; index += 1) {
+      const target = join(workspace, ...parts.slice(0, index));
+      try { const info = await lstat(target); if (!info.isDirectory()) throw new Error(`ephemeral workspace path is not a directory: ${relativePath}`); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; absent.add(target); }
+    }
+  }
+  return [...absent].sort((a, b) => b.length - a.length);
+}
+async function cleanupEphemeralScaffold(absent) {
+  const history = []; const retained = [];
+  for (const target of absent) {
+    try { await rmdir(target); history.push({ action: 'scaffold_cleanup', target, classification: 'removed' }); }
+    catch (error) {
+      if (error.code === 'ENOENT') history.push({ action: 'scaffold_cleanup', target, classification: 'absent' });
+      else if (['ENOTEMPTY', 'EEXIST', 'EBUSY'].includes(error.code)) { retained.push(target); history.push({ action: 'scaffold_cleanup', target, classification: 'retained', error: error.code }); }
+      else throw error;
+    }
+  }
+  return { history, retained };
+}
+
+export async function containerIdentity(command, spawn, opts = {}) {
+  const result = opts.operationFn
+    ? await opts.operationFn()
+    : await operation(command, ['info', '--format', '{{json .}}'], spawn, opts).promise;
   let options;
-  try { options = JSON.parse(result.trim()); } catch { throw new Error('unable to verify Docker rootless mode'); }
-  if (!Array.isArray(options) || !options.some(value => value === 'name=rootless')) throw new Error('refusing launch: Docker rootless mode was not verified');
-  // The approved compatibility exception uses the rootless daemon's UID 0
-  // mapping. This is not acceptable for rootful or unknown Docker, which was
-  // rejected above; no host chmod/chown is needed for normal project binds.
-  return { uid: 0, gid: 0 };
+  try { options = JSON.parse(String(result).trim()); } catch { throw new Error('unable to verify Docker security mode: malformed daemon info'); }
+  const hostPlatform = opts.hostPlatform ?? process.platform;
+  const linuxDaemon = options && typeof options === 'object' && !Array.isArray(options) &&
+    typeof options.OSType === 'string' && options.OSType.toLowerCase() === 'linux';
+  const darwinLinuxDaemon = hostPlatform === 'darwin' && linuxDaemon;
+  const supportedLinux = hostPlatform === 'linux' && linuxDaemon;
+  if (!options || typeof options !== 'object' || Array.isArray(options) ||
+      (!supportedLinux && !darwinLinuxDaemon) ||
+      !Array.isArray(options.SecurityOptions) || options.SecurityOptions.some(value => typeof value !== 'string')) {
+    throw new Error('unable to verify Docker security mode: unsupported or malformed Linux daemon info');
+  }
+  const securityOptions = options.SecurityOptions;
+  if (supportedLinux && securityOptions.some(value => /^name=userns(?:,|$)/i.test(value))) throw new Error('unsupported Docker user-namespace remapping security mode');
+  if (darwinLinuxDaemon) return { uid: 0, gid: 0, groups: [], rootless: false };
+  const rootless = securityOptions.some(value => /^name=rootless(?:,|$)/i.test(value));
+  if (rootless) return { uid: 0, gid: 0, groups: [], rootless: true };
+  const getuid = opts.getuid ?? process.getuid;
+  const getgid = opts.getgid ?? process.getgid;
+  const getgroups = opts.getgroups ?? process.getgroups;
+  if (typeof getuid !== 'function' || typeof getgid !== 'function' || typeof getgroups !== 'function') throw new Error('unsupported Docker identity semantics: host numeric identity is unavailable');
+  let uid; let gid; let groups;
+  try { uid = getuid(); gid = getgid(); groups = getgroups(); } catch (error) { throw new Error(`unable to read host numeric identity: ${error.message}`); }
+  const validId = value => Number.isInteger(value) && value >= 0 && value <= 0x7fffffff;
+  if (!validId(uid) || !validId(gid) || !Array.isArray(groups) || groups.some(group => !validId(group))) throw new Error('unable to verify Docker security mode: invalid host numeric identity');
+  return { uid, gid, groups: [...new Set(groups)].filter(group => group !== gid), rootless: false };
 }
 
-function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT, signal } = {}) {
+function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT, deadline, signal, cleanupDeadline } = {}) {
   let child;
   const promise = new Promise((resolve, reject) => {
-    let out = ''; let err = ''; let done = false; let terminalError; let abort = () => {};
-    const finish = (fn, value) => { if (done) return; done = true; clearTimeout(timer); signal?.removeEventListener('abort', abort); fn(value); };
-    const terminate = error => { terminalError = error; child?.kill('SIGKILL'); };
-    const timer = setTimeout(() => { terminate(new Error('docker operation deadline exceeded')); setImmediate(() => finish(reject, terminalError)); }, Math.min(timeoutMs, OP_TIMEOUT));
+    let out = ''; let err = ''; let done = false; let terminalError; let abort = () => {}; let reapTimer;
+    const finish = (fn, value) => { if (done) return; done = true; clearTimeout(timer); clearTimeout(reapTimer); signal?.removeEventListener('abort', abort); fn(value); };
+    const terminate = error => {
+      if (terminalError) return;
+      terminalError = error;
+      child?.kill('SIGKILL');
+      const check = () => {
+        if (done) return;
+        const limit = typeof cleanupDeadline === 'function' ? cleanupDeadline() : cleanupDeadline ?? deadline ?? Date.now();
+        if (Number.isFinite(limit) && Date.now() >= limit) {
+          finish(reject, Object.assign(new Error('docker client close was not observed'), { code: 'cleanup_unknown', cause: terminalError }));
+          return;
+        }
+        reapTimer = setTimeout(check, Math.max(1, Math.min(25, (limit ?? Date.now() + 25) - Date.now())));
+      };
+      check();
+    };
+    const budget = deadline === undefined ? timeoutMs : Math.max(1, deadline - Date.now());
+    const timer = setTimeout(() => {
+      terminate(Object.assign(new Error('docker operation deadline exceeded'), { code: 'deadline' }));
+    }, Math.min(budget, OP_TIMEOUT));
     try { child = spawn(command, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: DOCKER_ENV() }); }
-    catch (error) { finish(reject, error); return; }
+    catch (error) { error.clientCloseObserved = true; finish(reject, error); return; }
     child.stdout?.on('data', chunk => { out += String(chunk); if (Buffer.byteLength(out) > MAX_OUTPUT) terminate(new Error('docker output limit exceeded')); });
     child.stderr?.on('data', chunk => { err += String(chunk); if (Buffer.byteLength(err) > MAX_OUTPUT) terminate(new Error('docker output limit exceeded')); });
     abort = () => terminate(signal?.reason ?? new Error('docker operation cancelled'));
     signal?.addEventListener('abort', abort, { once: true });
-    child.once('error', error => finish(reject, terminalError ?? error)); child.once('close', code => {
-      if (terminalError) return finish(reject, Object.assign(terminalError, { dockerOutput: `${out}${err}`.trim() }));
+    child.once('error', error => { error.clientCloseObserved = true; finish(reject, terminalError ?? error); }); child.once('close', code => {
+      if (terminalError) {
+        terminalError.clientCloseObserved = true;
+        return finish(reject, Object.assign(terminalError, { dockerOutput: `${out}${err}`.trim() }));
+      }
       // Docker may have created the container before the client was killed. Preserve
       // a returned ID so the caller can still perform exact-ID cleanup.
       if (code !== 0 && /^[a-f0-9]{12,64}$/i.test(out.trim())) return finish(resolve, out);
@@ -141,71 +647,114 @@ function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT, signal } = {}
   return { promise, get child() { return child; } };
 }
 
-function attachedOperation(child, input, signal) {
+function attachedOperation(child, input, signal, cleanupDeadline) {
   return new Promise((resolve, reject) => {
     let out = ''; let err = ''; let done = false; let overflow = false;
-    let hardKill;
+    let reapTimer;
     const abort = () => {
-      // ContainerLauncher starts an owned `docker stop` concurrently. Keep the
-      // attach pipe alive long enough to receive the runtime's SIGTERM receipt;
-      // force-close only if the daemon or a descendant remains stuck.
-      hardKill = setTimeout(() => { child.kill('SIGKILL'); finish(resolve, { code: null, out, err, overflow }); }, 5500);
+      child.kill('SIGTERM');
+      const check = () => {
+        if (done) return;
+        const limit = typeof cleanupDeadline === 'function' ? cleanupDeadline() : cleanupDeadline ?? deadline ?? Date.now();
+        if (Number.isFinite(limit) && Date.now() >= limit) {
+          done = true;
+          signal?.removeEventListener('abort', abort);
+          reject(Object.assign(new Error('docker client close was not observed'), { code: 'cleanup_unknown' }));
+          return;
+        }
+        reapTimer = setTimeout(check, Math.max(1, Math.min(25, (limit ?? Date.now() + 25) - Date.now())));
+      };
+      check();
     };
-    const finish = (fn, value) => { if (done) return; done = true; clearTimeout(hardKill); signal?.removeEventListener('abort', abort); fn(value); };
+    const finish = (fn, value) => { if (done) return; done = true; clearTimeout(reapTimer); signal?.removeEventListener('abort', abort); fn(value); };
     const collect = (which, chunk) => { const text = String(chunk); if (which === 'out') out += text; else err += text; if (Buffer.byteLength(which === 'out' ? out : err) > MAX_OUTPUT) { overflow = true; child.kill('SIGKILL'); } };
     child.stdout?.on('data', chunk => collect('out', chunk)); child.stderr?.on('data', chunk => collect('err', chunk));
-    child.once('error', error => finish(reject, error)); child.once('close', code => finish(resolve, { code, out, err, overflow }));
+    child.once('error', error => { error.clientCloseObserved = true; finish(reject, error); }); child.once('close', code => finish(resolve, { code, out, err, overflow, closeObserved: true }));
     if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true });
     child.stdin?.end(input);
   });
 }
 
-async function reconcileUnknownCreate(command, name, label, spawn) {
-  const startedAt = Date.now();
+async function reconcileUnknownCreate(command, name, label, spawn, role = undefined, { deadline } = {}) {
+  if (!Number.isFinite(deadline)) throw new TypeError('container reconciliation requires one cleanup deadline');
   let absentSince = null;
-  while (Date.now() - startedAt < CLEANUP_TOTAL_MS) {
+  while (Date.now() < deadline) {
     let output;
-    try { output = await operation(command, ['ps', '--all', '--no-trunc', '--quiet', '--filter', `label=yoloharness.run=${label}`, '--filter', `name=^/${name}$`], spawn).promise; }
+    const filters = ['--filter', `label=yoloharness.run=${label}`, '--filter', `name=^/${name}$`];
+    if (role) filters.push('--filter', `label=yoloharness.role=${role}`);
+    try { output = await operation(command, ['ps', '--all', '--no-trunc', '--quiet', ...filters], spawn, { deadline }).promise; }
     catch (error) { throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown', cause: error }); }
     const ids = output.trim().split(/\s+/).filter(id => /^[a-f0-9]{64}$/i.test(id));
     if (ids.length > 0) {
       absentSince = null;
-      for (const id of ids) await cleanup(command, id, name, label, spawn);
+      for (const id of ids) {
+        try { await verifyOwnedContainer(command, id, name, label, spawn, role, { deadline }); }
+        catch (error) { if (error.code === 'cleanup_unknown' || /ownership mismatch/.test(error.message)) continue; throw error; }
+        await cleanup(command, id, name, label, spawn, role, { deadline });
+      }
     } else {
       absentSince ??= Date.now();
     }
-    const remaining = CLEANUP_TOTAL_MS - (Date.now() - startedAt);
+    // A missing, filtered resource is safe to consider gone only after the
+    // same absence has remained observable for the stability window.  Do not
+    // continue polling until the execution deadline once that proof exists;
+    // cleanup must remain bounded by its own grace period.
+    if (absentSince !== null && Date.now() - absentSince >= CLEANUP_STABLE_ABSENCE_MS) return;
+    const remaining = deadline - Date.now();
     if (remaining > 0) await new Promise(resolve => setTimeout(resolve, Math.min(CLEANUP_POLL_MS, remaining)));
   }
   if (absentSince !== null && Date.now() - absentSince >= CLEANUP_STABLE_ABSENCE_MS) return;
   throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown' });
 }
 
-async function verifyOwnedContainer(command, id, name, label, spawn) {
+function dockerErrorOutput(error) {
+  let current = error; const parts = [];
+  for (let depth = 0; current && depth < 8; depth += 1) {
+    if (current.dockerOutput) parts.push(String(current.dockerOutput));
+    current = current.cause;
+  }
+  return parts.join('\\n');
+}
+
+async function verifyOwnedContainer(command, id, name, label, spawn, role = undefined, { deadline } = {}) {
   let output;
-  try { output = await operation(command, ['inspect', '--format', '{{json .}}', id], spawn).promise; }
+  try { output = await operation(command, ['inspect', '--format', '{{json .}}', id], spawn, { deadline }).promise; }
   catch (error) { throw Object.assign(new Error('container ownership could not be verified'), { code: 'cleanup_unknown', cause: error }); }
   let inspected;
   try { inspected = JSON.parse(output.trim()); } catch (error) { throw Object.assign(new Error('container ownership could not be verified'), { code: 'cleanup_unknown', cause: error }); }
   const labels = inspected?.Config?.Labels ?? {};
-  if (!/^[a-f0-9]{64}$/i.test(inspected?.Id ?? '') || inspected.Id !== id || inspected?.Name !== `/${name}` || labels['yoloharness.run'] !== label) throw new Error(`container ownership mismatch (id=${inspected?.Id ?? 'missing'}, name=${inspected?.Name ?? 'missing'}, label=${labels['yoloharness.run'] ?? 'missing'})`);
+  if (!/^[a-f0-9]{64}$/i.test(inspected?.Id ?? '') || inspected.Id !== id || inspected?.Name !== `/${name}` || labels['yoloharness.run'] !== label || (role !== undefined && labels['yoloharness.role'] !== role)) throw new Error(`container ownership mismatch (id=${inspected?.Id ?? 'missing'}, name=${inspected?.Name ?? 'missing'}, label=${labels['yoloharness.run'] ?? 'missing'}, role=${labels['yoloharness.role'] ?? 'missing'})`);
   return inspected.Id;
 }
 
-async function cleanup(command, id, name, label, spawn) {
+async function cleanup(command, id, name, label, spawn, role = undefined, { deadline } = {}) {
   if (typeof name === 'function') { spawn = name; name = null; label = null; }
-  if (name && label) await verifyOwnedContainer(command, id, name, label, spawn);
+  if (name && label) await verifyOwnedContainer(command, id, name, label, spawn, role, { deadline });
   // Give the runtime a chance to trap SIGTERM and emit its partial receipt
   // before the hard kill fallback. This is important when a provider stream
   // has started but the container deadline/SIGINT arrives mid-response.
-  try { await operation(command, ['stop', '--time', '5', id], spawn, { timeoutMs: 5500 }).promise; } catch {}
-  try { await operation(command, ['kill', '--signal', 'KILL', id], spawn).promise; } catch {}
-  try { await operation(command, ['rm', '--force', id], spawn).promise; } catch (error) { throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown', cause: error }); }
-  try { await operation(command, ['inspect', id], spawn).promise; throw new Error('cleanup_unknown'); } catch (error) {
-    if (error.message === 'cleanup_unknown') throw error;
-    const output = error.dockerOutput ?? '';
-    if (!/no such (?:container|object)[: ]/i.test(output)) throw Object.assign(new Error('cleanup_unknown'), { cause: error });
+  try { await operation(command, ['stop', '--time', '5', id], spawn, { timeoutMs: 5500, deadline }).promise; } catch (error) { if (error.code === 'cleanup_unknown') throw error; }
+  try { await operation(command, ['kill', '--signal', 'KILL', id], spawn, { deadline }).promise; } catch (error) { if (error.code === 'cleanup_unknown') throw error; }
+  try { await operation(command, ['rm', '--force', id], spawn, { deadline }).promise; } catch (error) { throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown', cause: error }); }
+  await waitForContainerAbsence(command, id, spawn, { deadline });
+}
+
+async function waitForContainerAbsence(command, id, spawn, { deadline } = {}) {
+  if (!Number.isFinite(deadline)) throw new TypeError('container absence confirmation requires one cleanup deadline');
+  const startedAt = Date.now(); let absentSince = null; let lastError;
+  while (Date.now() < deadline) {
+    try {
+      await operation(command, ['inspect', id], spawn, { deadline }).promise;
+      absentSince = null;
+    } catch (error) {
+      lastError = error;
+      if (/no such (?:container|object)|not found/i.test(dockerErrorOutput(error))) absentSince ??= Date.now();
+      else throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown', cause: error });
+    }
+    if (absentSince !== null && Date.now() - absentSince >= CLEANUP_STABLE_ABSENCE_MS) return;
+    await new Promise(resolve => setTimeout(resolve, Math.min(CLEANUP_POLL_MS, Math.max(1, deadline - Date.now()))));
   }
+  throw Object.assign(new Error('cleanup_unknown'), { code: 'cleanup_unknown', cause: lastError });
 }
 
 export async function validateWorkspace(workspace, { signal, deadline } = {}) {

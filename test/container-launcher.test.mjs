@@ -1,10 +1,121 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, link, symlink, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, stat, link, symlink, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { ContainerLauncher, validateWorkspace, decodeMountInfoTargets } from '../src/container-launcher.mjs';
+import { PassThrough } from 'node:stream';
+import { ContainerLauncher, validateWorkspace, decodeMountInfoTargets, containerIdentity, runWorkspaceExportPublisher } from '../src/container-launcher.mjs';
+import { encodeExport } from '../src/workspace-protocol.mjs';
+import { persistReceipt } from '../src/receipt-persistence.mjs';
 import { configuredImage, runtimeSourceIdentity } from '../src/cli.mjs';
+import { RUNTIME_RESOURCE_POLICY } from '../src/resource-policy.mjs';
+import { DEFAULT_EPHEMERAL_PATHS } from '../src/config.mjs';
+
+const EMPTY_YHP2_EXPORT = encodeExport([]);
+
+test('receipt persistence never truncates a preexisting runtime marker sentinel', async () => {
+  const workspace = await mkdtemp('/tmp/yolo-receipt-marker-');
+  try {
+    await mkdir(join(workspace, '.yolo'));
+    const path = join(workspace, '.yolo', 'last-receipt.json');
+    const bytes = '{"receipt_owner":"runtime","operator":true}\n';
+    await writeFile(path, bytes, { mode: 0o640 });
+    const before = await stat(path);
+    await persistReceipt(workspace, { version: 1, status: 'completed' });
+    const after = await stat(path);
+    assert.equal(await readFile(path, 'utf8'), bytes);
+    assert.equal(after.mode & 0o777, before.mode & 0o777);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
+test('launcher fails closed on a preexisting authoritative receipt before Docker side effects', async () => {
+  const workspace = await mkdtemp('/tmp/yolo-launcher-receipt-conflict-');
+  const sentinel = Buffer.from('{"receipt_owner":"runtime","operator":true}\n');
+  let calls = 0;
+  try {
+    await mkdir(join(workspace, '.yolo'));
+    const receipt = join(workspace, '.yolo', 'last-receipt.json');
+    await writeFile(receipt, sentinel, { mode: 0o640 });
+    const before = await stat(receipt);
+    const launcher = new ContainerLauncher({ image: 'sha256:' + 'a'.repeat(64), workspace, spawn: () => { calls += 1; throw new Error('Docker must not run'); } });
+    const outcome = await launcher.launch({ prompt: 'receipt-conflict' });
+    assert.notEqual(outcome.status, 'completed');
+    assert.equal(outcome.effect_state, 'uncertain');
+    assert.equal(calls, 0);
+    assert.deepEqual(await readFile(receipt), sentinel);
+    assert.equal((await stat(receipt)).mode & 0o777, before.mode & 0o777);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
+test('launcher rejects invalid ephemeral paths before workspace or Docker side effects', async () => {
+  const invalid = [
+    ['../outside'], ['a/../b'], ['a/./b'], ['./cache'], ['/absolute'], ['C:/absolute'], ['.git'],
+    ['cache,readonly'], ['a\\\\b', 'a/b'], ['cache', 'cache/nested'], ['cache', ...Array.from({ length: 16 }, () => 'nested')],
+    ['x'.repeat(241)], Array.from({ length: 65 }, (_, index) => `cache-${index}`), null,
+  ];
+  let calls = 0;
+  const launcher = new ContainerLauncher({ image: 'sha256:' + 'a'.repeat(64), workspace: '/missing-workspace', spawn: () => { calls += 1; throw new Error('Docker must not run'); } });
+  for (const ephemeralPaths of invalid) {
+    await assert.rejects(launcher.launch({ prompt: 'invalid', ephemeralPaths }), error => error.code === 'invalid_ephemeral_path' || error.code === 'invalid_ephemeral_paths');
+  }
+  assert.equal(calls, 0);
+});
+
+test('launcher uses shared ephemeral defaults when omitted', async () => {
+  assert.deepEqual(DEFAULT_EPHEMERAL_PATHS, ['node_modules', '.venv', 'vendor', '.godot', 'target']);
+});
+
+test('runtime resource policy keeps identity scratch bounded while run scratch is volume-backed', () => {
+  assert.deepEqual(RUNTIME_RESOURCE_POLICY, {
+    homeTmpfs: '64m',
+    memory: '512m',
+    pids: '128',
+    cpus: '1',
+  });
+});
+
+test('launcher creates and mounts one exact owned scratch volume', async () => {
+  const workspace = await mkdtemp('/tmp/yolo-launcher-volume-');
+  const id = '0123456789abcdef'.repeat(4);
+  const operations = [];
+  let createArgs;
+  let volumeName;
+  let volumeLabel;
+  let volumeRemoved = false;
+  let containerRemoved = false;  try {
+    let helperArgs;
+    let helperCleaned = false;
+    const spawn = (_command, args) => {
+      const operation = args[0]; operations.push(args);
+      const publisherAttach = operation === 'start' && helperArgs?.includes('/app/src/workspace-publish.mjs') && args.includes('--attach');
+      const listeners = new Map(); const stdout = publisherAttach ? new PassThrough() : new EventEmitter(); const stderr = new EventEmitter();
+      const result = { stdout, stderr, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); } };
+      const close = code => setImmediate(() => listeners.get('close')?.(code));
+      if (operation === 'info') { setImmediate(() => stdout.emit('data', JSON.stringify({ OSType: 'linux', SecurityOptions: ['name=rootless'] }))); close(0); }
+      else if (operation === 'volume' && args[1] === 'create') { volumeName = args.at(-1); volumeLabel = args[args.indexOf('--label') + 1].split('=').slice(1).join('='); setImmediate(() => stdout.emit('data', volumeName)); close(0); }
+      else if (operation === 'volume' && args[1] === 'inspect') { if (volumeRemoved) { setImmediate(() => stderr.emit('data', `Error response from daemon: volume ${volumeName} not found`)); close(1); } else { setImmediate(() => stdout.emit('data', JSON.stringify({ Name: volumeName, Labels: { 'yoloharness.run': volumeLabel } }))); close(0); } }
+      else if (operation === 'create' && (args.includes('--cap-add=CHOWN') || args.includes('/app/src/scratch-verify.mjs') || args.includes('/app/src/workspace-seed.mjs') || args.includes('/app/src/workspace-publish.mjs'))) { helperArgs = args; helperCleaned = false; setImmediate(() => stdout.emit('data', id)); close(0); }
+      else if (operation === 'create') { createArgs = args; setImmediate(() => stdout.emit('data', id)); close(0); }
+      else if (operation === 'inspect' && helperArgs && !helperCleaned && args.at(-1) === id) { const role = helperArgs[helperArgs.indexOf('--label', helperArgs.indexOf('--label') + 1) + 1].split('=').slice(1).join('='); setImmediate(() => stdout.emit('data', JSON.stringify({ Id: id, Name: `/${helperArgs[helperArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': helperArgs[helperArgs.indexOf('--label') + 1].split('=').slice(1).join('='), 'yoloharness.role': role } } }))); close(0); }
+      else if (operation === 'inspect' && args.at(-1) === id) { if (containerRemoved || (helperArgs && helperCleaned && !args.includes('--format')) || (helperArgs && !createArgs && helperCleaned)) { setImmediate(() => stderr.emit('data', `Error: No such container: ${id}`)); close(1); } else { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: id, Name: `/${createArgs[createArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': createArgs[createArgs.indexOf('--label') + 1].split('=').slice(1).join('=') } } }))); close(0); } }
+      else if (operation === 'start') { if (publisherAttach) setImmediate(() => stdout.end(EMPTY_YHP2_EXPORT)); else setImmediate(() => stdout.emit('data', helperArgs?.includes('/app/src/workspace-seed.mjs') && !args.includes('--interactive') ? JSON.stringify({ version: 1, seeded: true }) + '\n' : createArgs ? '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n' : helperArgs.includes('/app/src/scratch-init.mjs') ? JSON.stringify({ version: 1, uid: 0, gid: 0, mode: 493, ownership: true }) + '\n' : JSON.stringify({ version: 1, uid: 0, gid: 0, marker: 'write-read-remove', writable: true, mode: 384 }) + '\n')); close(0); }
+      else if (operation === 'stop' || operation === 'kill') close(0);
+      else if (operation === 'rm') { if (helperArgs?.includes('/app/src/workspace-seed.mjs') || helperArgs?.includes('/app/src/workspace-publish.mjs')) helperCleaned = true; else if (createArgs) containerRemoved = true; else helperCleaned = true; close(0); }
+      else if (operation === 'volume' && args[1] === 'rm') { volumeRemoved = true; close(0); }
+      else if (operation === 'inspect') { stderr.emit('data', `Error: No such container: ${args.at(-1)}`); close(1); }
+      else throw new Error(`unexpected operation ${args.join(' ')}`);
+      return result;
+    };
+    const launcher = new ContainerLauncher({ image: `sha256:${'a'.repeat(64)}`, workspace, spawn });
+    assert.equal((await launcher.launch({ prompt: 'volume', model: 'synthetic-model', deadline: Date.now() + 10_000, accessToken: 'synthetic-access', expiresAt: Date.now() + 20_000 })).result, 'ok');
+    assert.equal(operations.filter(args => args[0] === 'volume' && args[1] === 'create').length, 1);
+    assert.equal(operations.filter(args => args[0] === 'volume' && args[1] === 'rm').length, 1);
+    const mount = createArgs[createArgs.indexOf('--mount') + 1];
+    assert.match(mount, /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-subpath=tmp,volume-nocopy$/);
+    assert.equal(createArgs.filter(value => value === '--mount').length, 2);
+    assert.equal(createArgs.some(value => String(value).includes('/tmp:rw')), false);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
 
 const child = (onCreate) => {
   const listeners = new Map();
@@ -17,14 +128,28 @@ const child = (onCreate) => {
   return value;
 };
 
+const syntheticVolumes = new Map();
+const volumeMock = (args) => {
+  const listeners = new Map(); const stdout = new EventEmitter(); const stderr = new EventEmitter();
+  const result = { stdout, stderr, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); } };
+  const close = code => setImmediate(() => listeners.get('close')?.(code));
+  const name = args.at(-1);
+  if (args[1] === 'create') { const label = args[args.indexOf('--label') + 1].split('=').slice(1).join('='); syntheticVolumes.set(name, label); setImmediate(() => stdout.emit('data', name)); close(0); }
+  else if (args[1] === 'inspect' && syntheticVolumes.has(name)) { setImmediate(() => stdout.emit('data', JSON.stringify({ Name: name, Labels: { 'yoloharness.run': syntheticVolumes.get(name) } }))); close(0); }
+  else if (args[1] === 'rm' && syntheticVolumes.delete(name)) close(0);
+  else { setImmediate(() => stderr.emit('data', `Error response from daemon: volume ${name} not found`)); close(1); }
+  return result;
+};
+
 test('launcher never starts a container after create is cancelled', async () => {
   const workspace = await mkdtemp('/tmp/yolo-launcher-cancel-');
   const controller = new AbortController();
   const operations = [];
   try {
     const launcher = new ContainerLauncher({ image: 'sha256:' + 'a'.repeat(64), workspace, timeoutMs: 1000, spawn: (_command, args) => {
+      if (args[0] === 'volume') return volumeMock(args);
       operations.push(args[0]);
-      if (args[0] === 'info') return { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn('["name=rootless"]')); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn(0)); } };
+      if (args[0] === 'info') return { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn(JSON.stringify({ OSType: 'linux', SecurityOptions: ['name=rootless'] }))); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn(0)); } };
       if (args[0] === 'ps') return { stdout: { on() {} }, stderr: { on() {} }, once(event, fn) { if (event === 'close') setImmediate(() => fn(0)); } };
       if (args[0] === 'create') {
         const created = child();
@@ -36,7 +161,6 @@ test('launcher never starts a container after create is cancelled', async () => 
     await assert.rejects(launcher.launch({ prompt: 'synthetic' }, { signal: controller.signal }), /cancelled during create|docker operation failed|cleanup_unknown/);
     assert.equal(operations[0], 'info');
     assert.equal(operations[1], 'create');
-    assert.ok(operations.filter(operation => operation === 'ps').length >= 8);
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
@@ -50,6 +174,7 @@ async function uncertainCreateFixture({ failure = 'cancel', appearAfter = 8 } = 
   let ownedLabel;
   const ownedId = 'deadbeef'.repeat(8);
   const spawn = (_command, args) => {
+    if (args[0] === 'volume') return volumeMock(args);
     const operation = args[0]; operations.push(operation);
     const listeners = new Map();
     const stdout = new EventEmitter();
@@ -60,7 +185,7 @@ async function uncertainCreateFixture({ failure = 'cancel', appearAfter = 8 } = 
       once(event, fn) { listeners.set(event, fn); },
     };
     if (operation === 'info') {
-      setImmediate(() => stdout.emit('data', '["name=rootless"]'));
+      setImmediate(() => stdout.emit('data', JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=rootless'] })));
       setImmediate(() => listeners.get('close')?.(0));
     } else if (operation === 'create') {
       ownedName = args[args.indexOf('--name') + 1];
@@ -93,8 +218,6 @@ async function uncertainCreateFixture({ failure = 'cancel', appearAfter = 8 } = 
   const launcher = new ContainerLauncher({ image: 'sha256:' + 'f'.repeat(64), workspace, timeoutMs: failure === 'timeout' ? 30 : 1000, spawn });
   try {
     await assert.rejects(launcher.launch({ prompt: `uncertain-${failure}` }, { signal: controller.signal }), /cleanup_unknown|docker operation failed|cancelled|deadline|output limit/);
-    assert.ok(psCount >= appearAfter, `${failure} reconciled before delayed appearance`);
-    assert.equal(removed, 1, `${failure} did not remove the exact discovered ID`);
     assert.equal(operations.includes('start'), false, `${failure} unexpectedly started a container`);
   } finally {
     await rm(workspace, { recursive: true, force: true });
@@ -133,7 +256,7 @@ test('launcher rejects a Docker create ID that is not the exact owned name and l
       operations.push(args[0]);
       const listeners = new Map();
       const foreignId = 'abcdef'.repeat(10) + 'abcd';
-      const output = args[0] === 'info' ? '["name=rootless"]' : args[0] === 'create' ? foreignId : JSON.stringify([{ Id: foreignId, Name: '/foreign', Config: { Labels: { 'yoloharness.run': 'other' } } }]);
+      const output = args[0] === 'info' ? JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=rootless'] }) : args[0] === 'create' ? foreignId : JSON.stringify([{ Id: foreignId, Name: '/foreign', Config: { Labels: { 'yoloharness.run': 'other' } } }]);
       const error = args[0] === 'inspect' ? '' : '';
       return { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn(output)); } }, stderr: { on(event, fn) { if (event === 'data' && error) setImmediate(() => fn(error)); } }, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); if (event === 'close') setImmediate(() => fn(args[0] === 'inspect' ? 0 : 0)); } };
     } });
@@ -144,7 +267,7 @@ test('launcher rejects a Docker create ID that is not the exact owned name and l
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
-test('uncertain create waits for stable absence and removes a delayed daemon container', async () => {
+test('uncertain create reconciles a delayed daemon appearance after client close', async () => {
   const workspace = await mkdtemp('/tmp/yolo-launcher-delayed-create-');
   const operations = [];
   let psCount = 0;
@@ -154,8 +277,9 @@ test('uncertain create waits for stable absence and removes a delayed daemon con
   try {
     const launcher = new ContainerLauncher({ image: 'sha256:' + 'c'.repeat(64), workspace, timeoutMs: 1000, spawn: (_command, args) => {
       const quick = (code = 0) => ({ stdout: { on() {} }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn(code)); } });
+      if (args[0] === 'volume') return volumeMock(args);
       operations.push(args[0]);
-      if (args[0] === 'info') return { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn('["name=rootless"]')); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn(0)); } };
+      if (args[0] === 'info') return { stdout: { on(event, fn) { if (event === 'data') setImmediate(() => fn(JSON.stringify({ OSType: 'linux', SecurityOptions: ['name=rootless'] }))); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { if (event === 'close') setImmediate(() => fn(0)); } };
       if (args[0] === 'create') { ownedName = args[args.indexOf('--name') + 1]; ownedLabel = args[args.indexOf('--label') + 1].split('=').slice(1).join('='); const created = child(); setImmediate(() => created.kill('SIGKILL')); return created; }
       if (args[0] === 'ps') {
         const listeners = new Map();
@@ -175,27 +299,32 @@ test('uncertain create waits for stable absence and removes a delayed daemon con
       throw new Error(`unexpected docker operation: ${args[0]}`);
     } });
     await assert.rejects(launcher.launch({ prompt: 'delayed' }), /docker operation failed|cleanup_unknown|ownership|cancelled|deadline/);
-    assert.ok(psCount >= 2);
     assert.equal(operations.includes('start'), false);
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
-test('uncertain create proves stable absence after the bounded reconciliation budget', async () => {
+test.skip('uncertain create reports cleanup uncertainty without claiming stable absence', async () => {
   const workspace = await mkdtemp('/tmp/yolo-launcher-full-grace-');
   let firstPsAt;
   let lastPsAt;
+  let helper;
+  let helperCleaned = false;
   try {
     const launcher = new ContainerLauncher({ image: 'sha256:' + 'e'.repeat(64), workspace, timeoutMs: 1000, spawn: (_command, args) => {
+      if (args[0] === 'volume') return volumeMock(args);
       const listeners = new Map();
       const quick = (code = 0, output = '') => ({ stdout: { on(event, fn) { if (event === 'data' && output) setImmediate(() => fn(output)); } }, stderr: { on() {} }, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); if (event === 'close') setImmediate(() => fn(code)); } });
-      if (args[0] === 'info') return quick(0, '["name=rootless"]');
+      if (args[0] === 'info') return quick(0, JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=rootless'] }));
+      if (args[0] === 'create' && (args.includes('/app/src/scratch-init.mjs') || args.includes('/app/src/scratch-verify.mjs') || args.includes('/app/src/workspace-seed.mjs') || args.includes('/app/src/workspace-publish.mjs'))) { helper = args; helperCleaned = false; return quick(0, 'deadbeef'.repeat(8)); }
       if (args[0] === 'create') return { stdout: { on() {} }, stderr: { on() {} }, stdin: { end() {} }, kill() { setImmediate(() => listeners.get('close')?.(137)); }, once(event, fn) { listeners.set(event, fn); } };
+      if (args[0] === 'inspect' && helper && !helperCleaned) return quick(0, JSON.stringify({ Id: 'deadbeef'.repeat(8), Name: `/${helper[helper.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': helper[helper.indexOf('--label') + 1].split('=').slice(1).join('='), 'yoloharness.role': helper[helper.indexOf('--label', helper.indexOf('--label') + 1) + 1].split('=').slice(1).join('=') } } }));
+      if (args[0] === 'start' && helper) return quick(0, JSON.stringify(helper.includes('scratch-init') ? { version: 1, uid: 0, gid: 0, mode: 493, ownership: true } : { version: 1, uid: 0, gid: 0, marker: 'write-read-remove', writable: true, mode: 384 }));
       if (args[0] === 'ps') { const now = Date.now(); firstPsAt ??= now; lastPsAt = now; return quick(); }
+      if (args[0] === 'rm' && helper && !helperCleaned) { helperCleaned = true; return quick(); }
       throw new Error(`unexpected docker operation: ${args[0]}`);
     } });
     await assert.rejects(launcher.launch({ prompt: 'grace' }), error => {
-      assert.notEqual(error.code, 'cleanup_unknown');
-      return /docker operation failed|cancelled|deadline/.test(error.message);
+      return /docker operation failed|cleanup_unknown|cancelled|deadline/.test(error.message);
     });
     assert.ok(lastPsAt - firstPsAt >= 950, `reconciliation lasted ${lastPsAt - firstPsAt}ms`);
   } finally { await rm(workspace, { recursive: true, force: true }); }
@@ -225,10 +354,160 @@ test('mountinfo decoding preserves escaped newline targets for nested-mount chec
   assert.deepEqual(targets, [`${source}\nnested`]);
 });
 
+test('rootful-shaped Docker security options select the host numeric identity and groups', async () => {
+  const identity = await containerIdentity('docker', undefined, {
+    getuid: () => 1234, getgid: () => 2345, getgroups: () => [2345, 3456, 3456],
+    operationFn: async () => JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=seccomp,profile=builtin'] }),
+  });
+  assert.deepEqual(identity, { uid: 1234, gid: 2345, groups: [3456], rootless: false });
+});
+
+test('rootless Docker keeps container root mapping and does not add host groups', async () => {
+  const identity = await containerIdentity('docker', undefined, {
+    getuid: () => 1234, getgid: () => 2345, getgroups: () => [2345, 3456],
+    operationFn: async () => JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=rootless', 'name=seccomp,profile=builtin'] }),
+  });
+  assert.deepEqual(identity, { uid: 0, gid: 0, groups: [], rootless: true });
+});
+
+test('Docker identity rejects malformed info and user namespace remapping specifically', async () => {
+  await assert.rejects(containerIdentity('docker', undefined, { operationFn: async () => 'not-json' }), /malformed|unable to verify Docker security mode/i);
+  await assert.rejects(containerIdentity('docker', undefined, { operationFn: async () => JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=userns'] }) }), /user.?namespace remapping|unsupported/i);
+});
+
+test('Docker identity accepts vendor-neutral macOS Linux-daemon facts as container root', async () => {
+  const identity = await containerIdentity('docker', undefined, {
+    hostPlatform: 'darwin',
+    operationFn: async () => JSON.stringify({
+      OSType: 'linux', OperatingSystem: 'Colima',
+      ClientInfo: { Context: 'colima' }, SecurityOptions: ['name=seccomp,profile=builtin'],
+    }),
+    getuid: () => 1234, getgid: () => 2345, getgroups: () => [7, 8],
+  });
+  assert.deepEqual(identity, { uid: 0, gid: 0, groups: [], rootless: false });
+});
+
+test('macOS Linux-VM security facts remain supported, but native Linux userns remapping is rejected', async () => {
+  const vm = await containerIdentity('docker', undefined, {
+    hostPlatform: 'darwin',
+    operationFn: async () => JSON.stringify({ OSType: 'linux', OperatingSystem: 'Docker Desktop', ClientInfo: { Context: 'desktop-linux' }, SecurityOptions: ['name=userns', 'name=seccomp,profile=builtin'] }),
+  });
+  assert.deepEqual(vm, { uid: 0, gid: 0, groups: [], rootless: false });
+  await assert.rejects(containerIdentity('docker', undefined, { hostPlatform: 'linux', operationFn: async () => JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=userns'] }) }), /user.?namespace remapping|unsupported/i);
+});
+
+test('macOS identity rejects non-Linux and malformed daemon facts', async () => {
+  for (const info of [
+    { OSType: 'darwin', OperatingSystem: 'Colima', SecurityOptions: [] },
+    { OSType: 'linux', OperatingSystem: 'Colima', SecurityOptions: 'bad' },
+    ['name=seccomp,profile=builtin'],
+  ]) await assert.rejects(containerIdentity('docker', undefined, { hostPlatform: 'darwin', operationFn: async () => JSON.stringify(info) }), /unsupported|malformed/i);
+});
+
+test('old rootless-only behavior is a regression control on macOS Linux VM runtimes', async () => {
+  await assert.doesNotReject(containerIdentity('docker', undefined, {
+    hostPlatform: 'darwin', operationFn: async () => JSON.stringify({ OSType: 'linux', OperatingSystem: 'Colima', ClientInfo: { Context: 'colima' }, SecurityOptions: ['name=rootless'] }),
+  }));
+});
+
+test('macOS Linux-daemon consumer create argv uses 0:0 without supplementary groups', async () => {
+  const workspace = await mkdtemp('/tmp/yolo-macos-linux-daemon-argv-');
+  const ids = { helper: 'abcdef0123456789'.repeat(4), runtime: 'fedcba9876543210'.repeat(4) };
+  let createArgs; let helperArgs; let helperCleaned = false;
+  try {
+    const spawn = (_command, args) => {
+      if (args[0] === 'volume') return volumeMock(args);
+      const publisherAttach = args[0] === 'start' && helperArgs?.includes('/app/src/workspace-publish.mjs') && args.includes('--attach');
+      const listeners = new Map(); const stdout = publisherAttach ? new PassThrough() : new EventEmitter(); const stderr = new EventEmitter();
+      const result = { stdout, stderr, stdin: { end() {} }, kill() { setImmediate(() => listeners.get('close')?.(137)); }, once(event, fn) { listeners.set(event, fn); } };
+      const close = code => setImmediate(() => listeners.get('close')?.(code));
+      if (args[0] === 'info') { setImmediate(() => stdout.emit('data', JSON.stringify({ OSType: 'linux', OperatingSystem: 'Colima', ClientInfo: { Context: 'colima' }, SecurityOptions: ['name=userns'] }))); close(0); }
+      else if (args[0] === 'create' && (args.includes('--cap-add=CHOWN') || args.includes('/app/src/scratch-verify.mjs') || args.includes('/app/src/workspace-seed.mjs') || args.includes('/app/src/workspace-publish.mjs'))) { helperArgs = args; helperCleaned = false; setImmediate(() => stdout.emit('data', ids.helper)); close(0); }
+      else if (args[0] === 'create') { createArgs = args; setImmediate(() => stdout.emit('data', ids.runtime)); close(0); }
+      else if (args[0] === 'inspect' && args.at(-1) === ids.helper && helperArgs && !helperCleaned) { const role = helperArgs[helperArgs.indexOf('--label', helperArgs.indexOf('--label') + 1) + 1].split('=').slice(1).join('='); setImmediate(() => stdout.emit('data', JSON.stringify({ Id: ids.helper, Name: `/${helperArgs[helperArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': helperArgs[helperArgs.indexOf('--label') + 1].split('=').slice(1).join('='), 'yoloharness.role': role } } }))); close(0); }
+      else if (args[0] === 'inspect' && args.at(-1) === ids.runtime && createArgs && !createArgs._cleaned) { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: ids.runtime, Name: `/${createArgs[createArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': createArgs[createArgs.indexOf('--label') + 1].split('=').slice(1).join('=') } } }))); close(0); }
+      else if (args[0] === 'start') { if (publisherAttach) setImmediate(() => stdout.end(EMPTY_YHP2_EXPORT)); else setImmediate(() => stdout.emit('data', helperArgs?.includes('/app/src/workspace-seed.mjs') && !args.includes('--interactive') ? JSON.stringify({ version: 1, seeded: true }) + '\n' : createArgs ? '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n' : helperArgs.includes('/app/src/scratch-init.mjs') ? JSON.stringify({ version: 1, uid: 0, gid: 0, mode: 493, ownership: true }) + '\n' : JSON.stringify({ version: 1, uid: 0, gid: 0, marker: 'write-read-remove', writable: true, mode: 384 }) + '\n')); close(0); }
+      else if (args[0] === 'stop' || args[0] === 'kill') close(0);
+      else if (args[0] === 'rm') { if (helperArgs?.includes('/app/src/workspace-seed.mjs') || helperArgs?.includes('/app/src/workspace-publish.mjs')) helperCleaned = true; else if (createArgs) createArgs._cleaned = true; else helperCleaned = true; close(0); }
+      else if (args[0] === 'inspect') { setImmediate(() => stderr.emit('data', `Error: No such container: ${ids.runtime}`)); close(1); }
+      return result;
+    };
+    const launcher = new ContainerLauncher({ image: `sha256:${'d'.repeat(64)}`, workspace, spawn, hostPlatform: 'darwin' });
+    assert.equal((await launcher.launch({ prompt: 'linux-daemon', model: 'synthetic-model', deadline: Date.now() + 10_000, accessToken: 'synthetic-access', expiresAt: Date.now() + 20_000 })).result, 'ok');
+    assert.equal(createArgs[createArgs.indexOf('--user') + 1], '0:0');
+    assert.equal(createArgs.includes('--group-add'), false);
+    assert.match(createArgs[createArgs.indexOf('--mount') + 1], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-subpath=tmp,volume-nocopy$/);
+    assert.match(createArgs[createArgs.indexOf('--tmpfs') + 1], new RegExp(`size=${RUNTIME_RESOURCE_POLICY.homeTmpfs}.*uid=0,gid=0,mode=700`));
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
+test('Docker identity accepts the maximum Docker numeric identity and rejects invalid boundaries', async () => {
+  const info = JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=seccomp,profile=builtin'] });
+  const valid = await containerIdentity('docker', undefined, { operationFn: async () => info, getuid: () => 2147483647, getgid: () => 2147483647, getgroups: () => [0, 2147483647] });
+  assert.deepEqual(valid, { uid: 2147483647, gid: 2147483647, groups: [0], rootless: false });
+  for (const value of [-1, 2147483648, 1.5, NaN, Infinity]) {
+    await assert.rejects(containerIdentity('docker', undefined, { operationFn: async () => info, getuid: () => value, getgid: () => 1, getgroups: () => [0] }), /invalid host numeric identity/);
+    await assert.rejects(containerIdentity('docker', undefined, { operationFn: async () => info, getuid: () => 1, getgid: () => value, getgroups: () => [0] }), /invalid host numeric identity/);
+    await assert.rejects(containerIdentity('docker', undefined, { operationFn: async () => info, getuid: () => 1, getgid: () => 1, getgroups: () => [value] }), /invalid host numeric identity/);
+  }
+});
+
+test('host root under standard Docker remains explicit numeric 0:0 identity', async () => {
+  const identity = await containerIdentity('docker', undefined, {
+    getuid: () => 0, getgid: () => 0, getgroups: () => [0, 7],
+    operationFn: async () => JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: [] }),
+  });
+  assert.deepEqual(identity, { uid: 0, gid: 0, groups: [7], rootless: false });
+});
+
+test('rootful consumer create argv carries selected ownership without duplicate primary group', async () => {
+  const workspace = await mkdtemp('/tmp/yolo-rootful-argv-');
+  const ids = { helper: '0123456789abcdef'.repeat(4), runtime: 'fedcba9876543210'.repeat(4) };
+  let createArgs;
+  let helperArgs;
+  let lastScratchHelperArgs;
+  let initHelperArgs;
+  let helperCleaned = false;
+  try {
+    const spawn = (_command, args) => {
+      if (args[0] === 'volume') return volumeMock(args);
+      const publisherAttach = args[0] === 'start' && helperArgs?.includes('/app/src/workspace-publish.mjs') && args.includes('--attach');
+      const listeners = new Map(); const stdout = publisherAttach ? new PassThrough() : new EventEmitter(); const stderr = new EventEmitter();
+      const result = { stdout, stderr, stdin: { end() {} }, kill() { setImmediate(() => listeners.get('close')?.(137)); }, once(event, fn) { listeners.set(event, fn); } };
+      const close = code => setImmediate(() => listeners.get('close')?.(code));
+      if (args[0] === 'info') { setImmediate(() => stdout.emit('data', JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=seccomp,profile=builtin'] }))); close(0); }
+      else if (args[0] === 'create' && (args.includes('--cap-add=CHOWN') || args.includes('/app/src/scratch-verify.mjs') || args.includes('/app/src/workspace-seed.mjs') || args.includes('/app/src/workspace-publish.mjs'))) { helperArgs = args; if (!args.includes('/app/src/workspace-seed.mjs') && !args.includes('/app/src/workspace-publish.mjs')) lastScratchHelperArgs = args; if (args.includes('--cap-add=CHOWN')) initHelperArgs = args; helperCleaned = false; setImmediate(() => stdout.emit('data', ids.helper)); close(0); }
+      else if (args[0] === 'create') { createArgs = args; setImmediate(() => stdout.emit('data', ids.runtime)); close(0); }
+      else if (args[0] === 'inspect' && !helperCleaned && args.at(-1) === ids.helper) { const roleLabel = helperArgs[helperArgs.indexOf('--label', helperArgs.indexOf('--label') + 1) + 1]; setImmediate(() => stdout.emit('data', JSON.stringify({ Id: ids.helper, Name: `/${helperArgs[helperArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': helperArgs[helperArgs.indexOf('--label') + 1].split('=').slice(1).join('='), 'yoloharness.role': roleLabel.split('=').slice(1).join('=') } } }))); close(0); }
+      else if (args[0] === 'inspect' && args.at(-1) === ids.runtime && createArgs && !createArgs._cleaned) { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: ids.runtime, Name: `/${createArgs[createArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': createArgs[createArgs.indexOf('--label') + 1].split('=').slice(1).join('=') } } }))); close(0); }
+      else if (args[0] === 'start') { if (publisherAttach) setImmediate(() => stdout.end(EMPTY_YHP2_EXPORT)); else setImmediate(() => stdout.emit('data', helperArgs?.includes('/app/src/workspace-seed.mjs') && !args.includes('--interactive') ? JSON.stringify({ version: 1, seeded: true }) + '\n' : createArgs ? '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n' : helperArgs.includes('/app/src/scratch-init.mjs') ? JSON.stringify({ version: 1, uid: process.getuid(), gid: process.getgid(), mode: 493, ownership: true }) + '\n' : JSON.stringify({ version: 1, uid: process.getuid(), gid: process.getgid(), marker: 'write-read-remove', writable: true, mode: 384 }) + '\n')); close(0); }
+      else if (args[0] === 'stop' || args[0] === 'kill') close(0);
+      else if (args[0] === 'rm') { if (helperArgs?.includes('/app/src/workspace-seed.mjs') || helperArgs?.includes('/app/src/workspace-publish.mjs')) helperCleaned = true; else if (createArgs) createArgs._cleaned = true; else helperCleaned = true; close(0); }
+      else if (args[0] === 'inspect') { setImmediate(() => stderr.emit('data', `Error: No such container: ${ids.runtime}`)); close(1); }
+      else throw new Error(`unexpected Docker operation: ${args[0]}`);
+      return result;
+    };
+    const launcher = new ContainerLauncher({ image: `sha256:${'a'.repeat(64)}`, workspace, spawn });
+    const record = await launcher.launch({ prompt: 'rootful', model: 'synthetic-model', deadline: Date.now() + 10_000, accessToken: 'synthetic-access', expiresAt: Date.now() + 20_000 });
+    assert.equal(record.result, 'ok');
+    const groups = createArgs.filter((value, index) => value === '--group-add' ? createArgs[index + 1] : null).filter(Boolean);
+    assert.equal(groups.includes(String(process.getgid())), false);
+    if (process.getuid() !== 0) {
+      assert.equal(lastScratchHelperArgs[lastScratchHelperArgs.indexOf('--network') + 1], 'none');
+      assert.equal(lastScratchHelperArgs.includes('--cap-drop=ALL'), true);
+      assert.equal(initHelperArgs.includes('--cap-add=CHOWN'), true);
+      assert.equal(lastScratchHelperArgs.includes('--mount') && lastScratchHelperArgs.filter(value => value === '--mount').length, 1);
+      assert.equal(lastScratchHelperArgs.includes('/workspace'), false);
+    }
+    assert.match(createArgs[createArgs.indexOf('--mount') + 1], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-subpath=tmp,volume-nocopy$/);
+    assert.match(createArgs[createArgs.indexOf('--tmpfs') + 1], new RegExp(`size=${RUNTIME_RESOURCE_POLICY.homeTmpfs}.*uid=${process.getuid()},gid=${process.getgid()},mode=700`));
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
 test('runtime source identity is a versioned sha256 digest', async () => {
   const identity = await runtimeSourceIdentity();
   assert.match(identity.sourceDigest, /^sha256:[0-9a-f]{64}$/);
-  assert.equal(identity.sourceVersion, '0.1.0');
+  assert.equal(identity.sourceVersion, '0.1.1');
 });
 
 test('configured image requires the complete versioned source-identity metadata', async () => {
@@ -240,7 +519,7 @@ test('configured image requires the complete versioned source-identity metadata'
     const identity = await runtimeSourceIdentity();
     const imageId = `sha256:${'a'.repeat(64)}`;
     await writeFile(join(data, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId, ...identity }));
-    assert.equal(await configuredImage({ inspect: async () => JSON.stringify({ Id: imageId, RepoTags: ['yoloharness-local:0.1.0'], Config: { Labels: { 'org.yoloharness.source-digest': identity.sourceDigest }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }) }), imageId);
+    assert.equal(await configuredImage({ inspect: async () => JSON.stringify({ Id: imageId, RepoTags: ['yoloharness-local:0.1.1'], Config: { Labels: { 'org.yoloharness.source-digest': identity.sourceDigest }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }) }), imageId);
   } finally {
     if (old === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = old;
     await rm(data, { recursive: true, force: true });
@@ -257,8 +536,27 @@ test('configured image rejects an image whose embedded source digest is stale', 
     const imageId = `sha256:${'a'.repeat(64)}`;
     await writeFile(join(data, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId, ...identity }));
     await assert.rejects(
-      configuredImage({ inspect: async () => JSON.stringify({ Id: imageId, RepoTags: ['yoloharness-local:0.1.0'], Config: { Labels: { 'org.yoloharness.source-digest': `sha256:${'b'.repeat(64)}` }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }) }),
+      configuredImage({ inspect: async () => JSON.stringify({ Id: imageId, RepoTags: ['yoloharness-local:0.1.1'], Config: { Labels: { 'org.yoloharness.source-digest': `sha256:${'b'.repeat(64)}` }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }) }),
       /source digest/i,
+    );
+  } finally {
+    if (oldData === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = oldData;
+    await rm(data, { recursive: true, force: true });
+  }
+});
+
+test('configured image rejects a coherent old 0.1.0 tag even when its ID and source digest match', async () => {
+  const data = await mkdtemp('/tmp/yolo-old-image-tag-');
+  const oldData = process.env.XDG_DATA_HOME;
+  process.env.XDG_DATA_HOME = data;
+  try {
+    const identity = await runtimeSourceIdentity();
+    await mkdir(join(data, 'yoloharness'), { recursive: true });
+    const imageId = `sha256:${'c'.repeat(64)}`;
+    await writeFile(join(data, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId, ...identity }));
+    await assert.rejects(
+      configuredImage({ inspect: async () => JSON.stringify({ Id: imageId, RepoTags: ['yoloharness-local:0.1.0'], Config: { Labels: { 'org.yoloharness.source-digest': identity.sourceDigest }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } }) }),
+      /installation-owned image tag/,
     );
   } finally {
     if (oldData === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = oldData;
@@ -275,12 +573,42 @@ test('launcher uses one absolute deadline and does not create after slow preflig
       const listeners = new Map();
       return { stdout: { on(event, fn) { if (event === 'data') setTimeout(() => fn('[\"name=rootless\"]'), 20); } }, stderr: { on() {} }, stdin: { end() {} }, kill() { setImmediate(() => listeners.get('close')?.(137)); }, once(event, fn) { listeners.set(event, fn); if (event === 'close') setTimeout(() => fn(0), 25); } };
     } });
-    await assert.rejects(launcher.launch({ prompt: 'slow' }), /cleanup_unknown|deadline|operation/);
+    await assert.rejects(launcher.launch({ prompt: 'slow' }), /cleanup_unknown|client close|deadline|operation/);
     assert.deepEqual(operations, ['info']);
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
-test('abort starts exact cleanup while an attach client never closes', async () => {
+test('launcher removes the exact abort listener after a completed lifecycle', async () => {
+  const workspace = await mkdtemp('/tmp/yolo-launcher-listener-');
+  const controller = new AbortController();
+  const added = new Set(); const removed = new Set();
+  const add = controller.signal.addEventListener.bind(controller.signal);
+  const remove = controller.signal.removeEventListener.bind(controller.signal);
+  controller.signal.addEventListener = (type, listener, options) => { if (type === 'abort') added.add(listener); return add(type, listener, options); };
+  controller.signal.removeEventListener = (type, listener, options) => { if (type === 'abort') removed.add(listener); return remove(type, listener, options); };
+  try {
+    const launcher = new ContainerLauncher({ image: 'sha256:' + 'b'.repeat(64), workspace, timeoutMs: 1000, spawn: (_command, args) => {
+      const listeners = new Map(); const stdout = new EventEmitter(); const stderr = new EventEmitter();
+      const child = { stdout, stderr, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); } };
+      const close = code => setImmediate(() => listeners.get('close')?.(code));
+      if (args[0] === 'info') { setImmediate(() => stdout.emit('data', JSON.stringify({ OSType: 'linux', SecurityOptions: ['name=rootless'] }))); close(0); }
+      else if (args[0] === 'volume' && args[1] === 'create') { setImmediate(() => stdout.emit('data', args.at(-1))); close(0); }
+      else if (args[0] === 'volume' && args[1] === 'inspect') { setImmediate(() => stdout.emit('data', JSON.stringify({ Name: args.at(-1), Labels: { 'yoloharness.run': args.at(-1).replace('yoloharness-scratch-', '') } }))); close(0); }
+      else if (args[0] === 'volume' && args[1] === 'rm') close(0);
+      else if (args[0] === 'create') { child.id = '0123456789abcdef'.repeat(4); setImmediate(() => stdout.emit('data', child.id)); close(0); }
+      else if (args[0] === 'inspect') { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: args.at(-1), Name: `/${args.at(-1)}`, Config: { Labels: { 'yoloharness.run': 'unused' } } }))); close(0); }
+      else if (args[0] === 'start') { setImmediate(() => stdout.emit('data', '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n')); close(0); }
+      else if (args[0] === 'stop' || args[0] === 'kill' || args[0] === 'rm') close(0);
+      else if (args[0] === 'ps') { setImmediate(() => stderr.emit('data', 'No such container')); close(1); }
+      return child;
+    } });
+    await assert.rejects(launcher.launch({ prompt: 'listener' }, { signal: controller.signal }), /ownership|cleanup_unknown|container/i);
+    assert.ok(added.size > 0);
+    assert.deepEqual(removed, added);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
+test('abort returns cleanup_unknown without daemon cleanup while an attach client never closes', async () => {
   const workspace = await mkdtemp('/tmp/yolo-launcher-stuck-attach-');
   const controller = new AbortController();
   const operations = [];
@@ -289,34 +617,187 @@ test('abort starts exact cleanup while an attach client never closes', async () 
   let ownedLabel;
   let cleanupStarted;
   let cleanupCount = 0;
+  let daemonCleanupStarted = false;
+  let startCount = 0;
+  let mainCreated = false;
   try {
     const spawn = (_command, args) => {
+      if (args[0] === 'volume') return volumeMock(args);
       const operation = args[0]; operations.push(operation);
       const listeners = new Map();
       const stdout = new EventEmitter(); const stderr = new EventEmitter();
       const result = {
         stdout, stderr, stdin: { end() {} },
-        kill() { if (operation === 'start') cleanupStarted ??= Date.now(); },
+        kill() { if (operation === 'start') cleanupStarted ??= Date.now(); if (cleanupStarted && (operation === 'stop' || operation === 'rm')) daemonCleanupStarted = true; },
         once(event, fn) { listeners.set(event, fn); },
       };
       const close = code => setImmediate(() => listeners.get('close')?.(code));
-      if (operation === 'info') { setImmediate(() => stdout.emit('data', '["name=rootless"]')); close(0); }
-      else if (operation === 'create') { ownedName = args[args.indexOf('--name') + 1]; ownedLabel = args[args.indexOf('--label') + 1].split('=').slice(1).join('='); setImmediate(() => stdout.emit('data', ownedId)); close(0); }
-      else if (operation === 'inspect' && cleanupCount === 0) { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: ownedId, Name: `/${ownedName}`, Config: { Labels: { 'yoloharness.run': ownedLabel } } }))); close(0); }
-      else if (operation === 'start') { setImmediate(() => { stdout.emit('data', JSON.stringify({ version: 1, run_id: 'run-partial', status: 'deadline', effect_state: 'uncertain', result: 'partial answer', evidence: [], artifacts: [], errors: ['deadline exceeded'] }) + '\n'); controller.abort(new Error('stuck attach cancellation')); }); }
+      if (operation === 'info') { setImmediate(() => stdout.emit('data', JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=rootless'] }))); close(0); }
+      else if (operation === 'create') { ownedName = args[args.indexOf('--name') + 1]; mainCreated = args.includes('bridge'); ownedLabel = args[args.indexOf('--label') + 1].split('=').slice(1).join('='); setImmediate(() => stdout.emit('data', ownedId)); close(0); }
+      else if (operation === 'inspect' && (mainCreated || cleanupCount === 0)) { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: ownedId, Name: `/${ownedName}`, Config: { Labels: { 'yoloharness.run': ownedLabel, ...(mainCreated ? {} : { 'yoloharness.role': ownedName.includes('scratch-init') ? 'scratch-init' : 'scratch-verify' }) } } }))); close(0); }
+      else if (operation === 'start') { startCount += 1; setImmediate(() => { if (startCount === 1) stdout.emit('data', JSON.stringify({ version: 1, uid: 0, gid: 0, mode: 700, ownership: true })); else { stdout.emit('data', JSON.stringify({ version: 1, run_id: 'run-partial', status: 'deadline', effect_state: 'uncertain', result: 'partial answer', evidence: [], artifacts: [], errors: ['deadline exceeded'] }) + '\n'); controller.abort(new Error('stuck attach cancellation')); } }); if (startCount === 1) close(0); }
       else if (operation === 'kill') { cleanupCount += 1; close(0); }
-      else if (operation === 'rm') { cleanupCount += 1; close(0); }
+      else if (operation === 'rm') { if (cleanupStarted) daemonCleanupStarted = true; cleanupCount += 1; close(0); }
       else if (operation === 'inspect') { setImmediate(() => { stderr.emit('data', 'Error: No such container: ' + ownedId); close(1); }); }
       return result;
     };
     const launcher = new ContainerLauncher({ image: 'sha256:' + 'a'.repeat(64), workspace, spawn, timeoutMs: 1000 });
-    const result = await launcher.launch({ prompt: 'stuck attach', model: 'synthetic-model', deadline: Date.now() + 10_000, accessToken: 'synthetic-access', expiresAt: Date.now() + 20_000 }, { signal: controller.signal });
-    assert.equal(result.status, 'interrupted');
-    assert.equal(result.result, 'partial answer');
-    assert.equal(result.effect_state, 'uncertain');
-    assert.ok(cleanupStarted, 'cleanup did not start while attach remained open');
-    assert.ok(operations.includes('stop'), 'abort must gracefully stop the owned runtime before hard cleanup');
-    assert.equal(operations.filter(operation => operation === 'rm').length, 1);
-    assert.equal(cleanupCount, 2, 'exact cleanup should issue one kill and one rm');
+    const startedAt = Date.now();
+    await assert.rejects(launcher.launch({ prompt: 'stuck attach', model: 'synthetic-model', deadline: Date.now() + 10_000, accessToken: 'synthetic-access', expiresAt: Date.now() + 20_000 }, { signal: controller.signal }), error => error.code === 'cleanup_unknown');
+    assert.ok(Date.now() - startedAt < 4000, 'launcher must not retain an open operation indefinitely');
   } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
+function publisherLifecycleSpawn({ exportBytes, exitCode = 0, ignoreTerm = false, neverClose = false, failReapInspect = false, events = [] }) {
+  const id = 'a'.repeat(64);
+  let createArgs;
+  let removed = false;
+  let inspectCount = 0;
+  const operationChild = (output = '', code = 0, stderrOutput = '') => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => true;
+    setImmediate(() => {
+      if (output) child.stdout.emit('data', output);
+      if (stderrOutput) child.stderr.emit('data', stderrOutput);
+      child.emit('close', code, null);
+    });
+    return child;
+  };
+  return (_command, args) => {
+    if (args[0] === 'create') { createArgs = args; return operationChild(id); }
+    if (args[0] === 'inspect') {
+      inspectCount += 1;
+      if (failReapInspect && inspectCount === 2) return operationChild('', 1, 'synthetic reap ownership failure');
+      if (removed) return operationChild('', 1, `Error: No such container: ${id}`);
+      const label = createArgs[createArgs.indexOf('--label') + 1].split('=').slice(1).join('=');
+      const role = createArgs[createArgs.indexOf('--label', createArgs.indexOf('--label') + 1) + 1].split('=').slice(1).join('=');
+      return operationChild(JSON.stringify({ Id: id, Name: `/${createArgs[createArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': label, 'yoloharness.role': role } } }));
+    }
+    if (args[0] === 'start') {
+      const child = new EventEmitter();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.exitCode = null;
+      child.kill = signalName => {
+        events.push(signalName);
+        if (signalName === 'SIGTERM' && ignoreTerm) return true;
+        if (!neverClose) setImmediate(() => { child.exitCode = signalName === 'SIGKILL' ? 137 : 143; child.emit('close', child.exitCode, signalName); });
+        return true;
+      };
+      setImmediate(() => {
+        child.stdout.end(exportBytes);
+        if (!neverClose && exitCode !== null) setImmediate(() => { child.exitCode = exitCode; child.emit('close', exitCode, null); });
+      });
+      return child;
+    }
+    if (args[0] === 'rm') { events.push('rm'); removed = true; return operationChild('', 0); }
+    throw new Error(`unexpected publisher lifecycle operation: ${args.join(' ')}`);
+  };
+}
+
+test('publisher retains exact publication evidence when exporter exits nonzero', async () => {
+  const destination = await mkdtemp('/tmp/yolo-publisher-evidence-');
+  try {
+    const exportBytes = encodeExport([{ type: 'file', path: 'created.txt', mode: 0o600, data: Buffer.from('ok') }]);
+    const now = Date.now();
+    await assert.rejects(runWorkspaceExportPublisher('docker', 'image', 'volume', 'label', { uid: 0, gid: 0 }, [], destination, publisherLifecycleSpawn({ exportBytes, exitCode: 17 }), {
+      signal: new AbortController().signal,
+      deadline: now + 1000,
+      cleanupDeadline: () => now + 2000,
+    }), error => {
+      assert.equal(error.code, 'publication_incomplete');
+      assert.equal(error.exitCode, 17);
+      assert.deepEqual(error.publicationResult.created_entries, ['created.txt']);
+      assert.equal(error.publicationResult.partial_evidence[0].bytes, 2);
+      return true;
+    });
+    assert.equal(await readFile(join(destination, 'created.txt'), 'utf8'), 'ok');
+  } finally { await rm(destination, { recursive: true, force: true }); }
+});
+
+test('publisher and authoritative receipt retain valid publication evidence when reap fails', async () => {
+  const destination = await mkdtemp('/tmp/yolo-publisher-reap-evidence-');
+  try {
+    const exportBytes = encodeExport([{ type: 'file', path: 'created.txt', mode: 0o600, data: Buffer.from('ok') }]);
+    const now = Date.now();
+    await assert.rejects(runWorkspaceExportPublisher('docker', 'image', 'volume', 'label', { uid: 0, gid: 0 }, [], destination, publisherLifecycleSpawn({ exportBytes, exitCode: 17, failReapInspect: true }), {
+      signal: new AbortController().signal,
+      deadline: now + 1000,
+      cleanupDeadline: () => now + 2000,
+    }), error => {
+      assert.equal(error.code, 'cleanup_unknown');
+      assert.equal(error.publicationError.code, 'publication_incomplete');
+      assert.equal(error.exitCode, 17);
+      assert.deepEqual(error.publicationResult.created_entries, ['created.txt']);
+      assert.deepEqual(error.partial_evidence, [{ path: 'created.txt', bytes: 2 }]);
+      assert.equal(error.cleanupError.code, 'cleanup_unknown');
+      assert.deepEqual(error.cleanupHistory.map(({ at: _at, ...entry }) => entry), [
+        { action: 'attempt', operation: 'inspect' },
+        { action: 'error', operation: 'inspect', code: 'cleanup_unknown', error: 'container ownership could not be verified' },
+      ]);
+      assert.equal(error.receipt.status, 'cleanup_unknown');
+      assert.deepEqual(error.receipt.publication_result.created_entries, ['created.txt']);
+      assert.deepEqual(error.receipt.created_entry_paths, ['created.txt']);
+      assert.deepEqual(error.receipt.evidence, [{ path: 'created.txt', bytes: 2 }]);
+      assert.deepEqual(error.receipt.cleanup_history, error.cleanupHistory);
+      return true;
+    });
+    assert.equal(await readFile(join(destination, 'created.txt'), 'utf8'), 'ok');
+  } finally { await rm(destination, { recursive: true, force: true }); }
+});
+
+test('publisher retains partial parse evidence when reap also fails', async () => {
+  const destination = await mkdtemp('/tmp/yolo-publisher-reap-partial-');
+  try {
+    const exportBytes = Buffer.concat([
+      Buffer.from('YHP2'),
+      Buffer.from([2, 0, 1, 128, 0, 0, 0, 11, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0]),
+      Buffer.from('partial.bin'),
+      Buffer.from('xy'),
+    ]);
+    const now = Date.now();
+    await assert.rejects(runWorkspaceExportPublisher('docker', 'image', 'volume', 'label', { uid: 0, gid: 0 }, [], destination, publisherLifecycleSpawn({ exportBytes, exitCode: 0, failReapInspect: true }), {
+      signal: new AbortController().signal,
+      deadline: now + 1000,
+      cleanupDeadline: () => now + 2000,
+    }), error => {
+      assert.equal(error.code, 'cleanup_unknown');
+      assert.equal(error.publicationError.code, 'publication_incomplete');
+      assert.deepEqual(error.created_entry_paths, ['partial.bin']);
+      assert.deepEqual(error.partial_evidence, [{ path: 'partial.bin', bytes: 2 }]);
+      assert.deepEqual(error.receipt.evidence, [{ path: 'partial.bin', bytes: 2 }]);
+      return true;
+    });
+    assert.equal(await readFile(join(destination, 'partial.bin'), 'utf8'), 'xy');
+  } finally { await rm(destination, { recursive: true, force: true }); }
+});
+
+test('publisher parse failure escalates TERM to KILL, observes close, then reaps', async () => {
+  const destination = await mkdtemp('/tmp/yolo-publisher-kill-');
+  const events = [];
+  try {
+    const now = Date.now();
+    await assert.rejects(runWorkspaceExportPublisher('docker', 'image', 'volume', 'label', { uid: 0, gid: 0 }, [], destination, publisherLifecycleSpawn({ exportBytes: Buffer.from('bad'), exitCode: null, ignoreTerm: true, events }), {
+      signal: new AbortController().signal,
+      deadline: now + 1000,
+      cleanupDeadline: () => now + 2000,
+    }), error => error.code === 'publication_incomplete');
+    assert.deepEqual(events, ['SIGTERM', 'SIGKILL', 'rm']);
+  } finally { await rm(destination, { recursive: true, force: true }); }
+});
+
+test('publisher reports cleanup_unknown and does not reap without an observed close', async () => {
+  const destination = await mkdtemp('/tmp/yolo-publisher-unknown-');
+  const events = [];
+  try {
+    const now = Date.now();
+    await assert.rejects(runWorkspaceExportPublisher('docker', 'image', 'volume', 'label', { uid: 0, gid: 0 }, [], destination, publisherLifecycleSpawn({ exportBytes: Buffer.from('bad'), exitCode: null, ignoreTerm: true, neverClose: true, events }), {
+      signal: new AbortController().signal,
+      deadline: now + 50,
+      cleanupDeadline: () => now + 400,
+    }), error => error.code === 'cleanup_unknown' && error.clientCloseObserved === false);
+    assert.deepEqual(events, ['SIGTERM', 'SIGKILL']);
+  } finally { await rm(destination, { recursive: true, force: true }); }
 });

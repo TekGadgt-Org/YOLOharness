@@ -46,7 +46,7 @@ if (args[0] === 'info' && ${JSON.stringify(mode)} === 'unavailable-daemon') {
   process.stderr.write('Cannot connect to the Docker daemon\\n'); process.exit(1);
 }
 if (args[0] === 'image' && args[1] === 'inspect') {
-  process.stdout.write(JSON.stringify({ Id: ${JSON.stringify(imageId)}, RepoTags: ['yoloharness-local:0.1.0'], Config: { Labels: { 'org.yoloharness.source-digest': ${JSON.stringify(sourceIdentity.sourceDigest)} }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } })); process.exit(0);
+  process.stdout.write(JSON.stringify({ Id: ${JSON.stringify(imageId)}, RepoTags: ['yoloharness-local:0.1.1'], Config: { Labels: { 'org.yoloharness.source-digest': ${JSON.stringify(sourceIdentity.sourceDigest)} }, Entrypoint: ['node', '/app/src/container-runtime.mjs'] } })); process.exit(0);
 }
 if (args[0] === 'info') { process.stdout.write(JSON.stringify(['name=rootless'])); process.exit(0); }
 process.stderr.write('unexpected Docker operation: ' + args.join(' ') + '\\n'); process.exit(91);

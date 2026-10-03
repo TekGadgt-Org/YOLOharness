@@ -18,6 +18,17 @@ test('event log writes ordered bounded redacted JSONL and reopens', async () => 
   assert.deepEqual(lines.map(e => e.seq), [1, 2]); assert.equal(lines[0].payload.token, '[REDACTED]');
 });
 
+test('event log reopens each run at its own sequence after interleaved events', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'yolo-'));
+  const path = join(workspace, 'events.jsonl');
+  const initial = new EventLog(path);
+  await initial.append('first-run', 'run_started');
+  await initial.append('first-run', 'step', { step: 1 });
+  await initial.append('second-run', 'run_started');
+  assert.equal((await new EventLog(path).append('first-run', 'step', { step: 2 })).seq, 3);
+  assert.equal((await new EventLog(path).append('second-run', 'step', { step: 1 })).seq, 2);
+});
+
 test('fixture completes with a final version 1 record', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'yolo-'));
   const record = await runOnce({ prompt: 'hello', minutes: 1, workspace, provider: new FixtureProvider() });
@@ -50,6 +61,21 @@ test('deadline returns from a non-cooperative provider', async () => {
   assert.equal(record.status, 'deadline'); assert.ok(Date.now() - started < 1000);
 });
 
+test('generic failures and interruptions explain retained output cleanup', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'yolo-'));
+  const failed = await runOnce({ prompt: 'fail', workspace, provider: { async next() { throw new Error('provider failed'); } } });
+  assert.equal(failed.status, 'failed');
+  assert.match(failed.errors[0], /generated output may be retained or partial/);
+  assert.match(failed.errors[0], /delete the generated directory before retrying/);
+  const controller = new AbortController();
+  const interruptedPromise = runOnce({ prompt: 'interrupt', workspace, minutes: 1, provider: { async next({ signal }) { if (signal.aborted) throw signal.reason; await new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })); } }, signal: controller.signal });
+  controller.abort(new Error('SIGINT'));
+  const interrupted = await interruptedPromise;
+  assert.equal(interrupted.status, 'interrupted');
+  assert.match(interrupted.errors[0], /inspect it and delete the generated directory before retrying/);
+  await rm(workspace, { recursive: true, force: true });
+});
+
 test('deadline awaits executor cleanup before returning', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'yolo-'));
   let cleaned = false;
@@ -76,9 +102,6 @@ test('invalid inputs are rejected', async () => {
   await assert.rejects(runOnce({ prompt: '', workspace, minutes: 1 }), /prompt/);
   await assert.rejects(runOnce({ prompt: 'x', workspace, minutes: 0 }), /minutes/);
 });
-
-// Historical prototype tests are run by the root command through this import smoke check.
-test('prototype remains present', async () => { assert.ok((await import('../prototype/kernel.mjs')).FixtureAdapter); });
 
 test('recoverEvents ignores no events and returns ordered records', async () => { assert.deepEqual(await recoverEvents('/nonexistent/yolo-events.jsonl', 'none'), []); });
 

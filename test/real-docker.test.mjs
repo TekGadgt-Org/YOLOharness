@@ -6,12 +6,16 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { runtimeSourceIdentity } from '../src/cli.mjs';
+import { RUNTIME_RESOURCE_POLICY } from '../src/resource-policy.mjs';
 
 const enabled = process.env.YOLO_REAL_DOCKER === '1';
-const configuredImage = process.env.YOLO_DOCKER_IMAGE ?? 'yoloharness-local:0.1.0';
+const configuredImage = process.env.YOLO_DOCKER_IMAGE ?? 'yoloharness-local:0.1.1';
 const skip = !enabled;
 const dockerPath = execFileSync('command', ['-v', 'docker'], { shell: '/bin/sh', encoding: 'utf8' }).trim();
 const docker = (...args) => execFileSync(dockerPath, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+const daemonSecurityOptions = enabled ? JSON.parse(docker('info', '--format', '{{json .SecurityOptions}}').trim()) : [];
+const daemonIsRootless = daemonSecurityOptions.includes('name=rootless');
+const rootfulProxySkip = daemonIsRootless ? 'native rootful validation is external; this rootless daemon cannot represent selected-UID named-volume ownership' : false;
 const bestEffortDocker = (...args) => { try { execFileSync(dockerPath, args, { stdio: 'ignore' }); } catch {} };
 const waitFor = async (path, timeout = 10_000) => {
   const until = Date.now() + timeout;
@@ -21,11 +25,45 @@ const waitFor = async (path, timeout = 10_000) => {
   }
   throw new Error(`timed out waiting for ${path}`);
 };
+const waitForDockerAbsent = async (name, timeout = 10_000) => {
+  const until = Date.now() + timeout;
+  while (Date.now() < until) {
+    if (docker('ps', '-aq', '--filter', `name=^/${name}$`).trim() === '') return;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw new Error(`timed out waiting for Docker container ${name} to be absent`);
+};
+const waitForVolumeAbsent = async (name, timeout = 10_000) => {
+  const until = Date.now() + timeout;
+  while (Date.now() < until) {
+    if (docker('volume', 'ls', '-q', '--filter', `name=^${name}$`).trim() === '') return;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw new Error(`timed out waiting for Docker volume ${name} to be absent`);
+};
 const restoreEnv = (old) => { for (const [key, value] of Object.entries(old)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } };
 const fileEvidence = async (path) => {
   const bytes = await readFile(path);
   const metadata = await stat(path);
   return { path, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), nlink: metadata.nlink };
+};
+
+const fixtureChildren = new Set();
+const spawnFixtureChild = (...args) => {
+  const child = spawn(...args);
+  const done = new Promise(resolve => child.once('close', resolve));
+  const record = { child, done };
+  fixtureChildren.add(record);
+  done.finally(() => fixtureChildren.delete(record));
+  return child;
+};
+const closeFixtureChildren = async () => {
+  const records = [...fixtureChildren];
+  for (const { child } of records) if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+  await Promise.all(records.map(async ({ child, done }) => {
+    await Promise.race([done, new Promise(resolve => setTimeout(resolve, 2_000))]);
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  }));
 };
 
 // Generated only inside the disposable fixture. This observes the shipped CLI
@@ -62,6 +100,8 @@ async function fixture(t) {
   const ownedRuntimes = new Map();
   let derivativeTag;
   let foreignId;
+  let delayedForeignVolume;
+  let delayedScratchInventoryBefore;
   // Use a test-owned, credential-free Docker client configuration. Resolve the
   // already-selected daemon endpoint before redirecting HOME/XDG so the
   // shipped subprocess exercises the same verified rootless daemon without
@@ -72,6 +112,7 @@ async function fixture(t) {
   assert.match(daemonEndpoint, /^unix:\/\//, 'real-Docker evidence requires an explicit local daemon endpoint');
   await writeFile(join(dockerConfig, 'config.json'), '{}\n');
   const oldEnv = Object.fromEntries(['HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'YOLO_AUTH_FILE', 'PATH', 'DOCKER_CONFIG', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_HOSTNAME', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH'].map(key => [key, process.env[key]]));
+  let fixtureFailure;
   try {
     const caDir = join(root, 'tls'); await mkdir(caDir);
     execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', join(caDir, 'ca.key'), '-out', join(caDir, 'ca.crt'), '-subj', '/CN=yoloharness-test-ca', '-days', '1'], { stdio: 'ignore' });
@@ -106,7 +147,7 @@ async function fixture(t) {
     assert.equal(derivativeConfig.Env.some(value => /synthetic-(?:layer|nested|git|yolo|credential)-secret/i.test(value)), false);
     assert.ok(derivativeConfig.Env.includes('NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/yoloharness-test-ca.crt'));
     const providerHostilePayload = 'provider-only-$(touch /host/provider-output-canary) ; /etc/shadow';
-    const providerScript = `const https=require('https'),fs=require('fs');let n=0;const s=https.createServer({key:fs.readFileSync('/tls/server.key'),cert:fs.readFileSync('/tls/server.crt')},(q,r)=>{if(q.url==='/health'){r.writeHead(200);return r.end('ok')}let b='';q.on('data',c=>b+=c);q.on('end',()=>{n++;fs.writeFileSync('/capture/request-'+n+'.json',JSON.stringify({body:b,remote:q.socket.remoteAddress,pid:process.pid,authorization:q.headers.authorization ?? null}));if(b.includes('reauth-probe')){r.writeHead(401);return r.end('unauthorized')}r.writeHead(200,{'content-type':'text/event-stream'});if(b.includes('deadline-probe')||b.includes('sigint-probe'))r.write('data: {"type":"response.output_text.delta","delta":"partial-stream-before-interrupt"}\\n\\n');const mode=b.includes('sigint-probe')?'sigint':b.includes('stdout-overflow-probe')?'stdout-overflow':b.includes('stderr-overflow-probe')?'stderr-overflow':b.includes('stdout-control-probe')?'stdout-control':b.includes('stderr-control-probe')?'stderr-control':b.includes('boundary-probe')?'boundary':b.includes('pid-pressure-probe')?'pid-pressure':b.includes('memory-pressure-probe')?'memory-pressure':b.includes('resource-probe')?'resource':b.includes('nested-docker-probe')?'nested-docker':b.includes('python-baseline-probe')?'python-baseline':b.includes('missing-command-recovery-probe')?'missing-command-recovery':b.includes('deadline-probe')?'deadline':'whole';const followup=b.includes('function_call_output');const commands={sigint:['sh','-c','printf started > /workspace/sigint-started; sleep 5; printf late > /workspace/sigint-late'],deadline:['sh','-c','printf started > /workspace/deadline-started; sleep 5; printf late > /workspace/deadline-late'],'stdout-overflow':['sh','-c','head -c 1048577 /dev/zero'],'stderr-overflow':['sh','-c','head -c 1048577 /dev/zero >&2'],'stdout-control':['sh','-c','sleep 0.1; printf control > /workspace/stdout-control'],'stderr-control':['sh','-c','sleep 0.1; printf control > /workspace/stderr-control'],boundary:['sh','-c','set -eu; test -L /workspace/container-known-target; test -r /workspace/container-known-target; test ! -w /workspace/container-known-target; test ! -e /host-root; test ! -e /var/run/docker.sock; test ! -e /run/podman/podman.sock; test ! -e /workspace/../outside-sentinel.txt; test ! -e /host-proc; test ! -e /host-home; test ! -e /dev/kvm; test ! -e /root/.ssh; test ! -e ${JSON.stringify(outsideSentinel)}; if cat ${JSON.stringify(outsideSentinel)} >/tmp/outside-read 2>/tmp/outside-read.err; then exit 41; fi; if printf hostile > ${JSON.stringify(outsideSentinel)} 2>/tmp/outside-write.err; then exit 42; fi; printf boundary > /workspace/boundary-artifact; test "$(cat /workspace/boundary-artifact)" = boundary; rm /workspace/boundary-artifact; printf control-complete'],resource:['sh','-c','set -eu; test ! -w /app && test "$(cat /sys/fs/cgroup/memory.max)" = 536870912 && test "$(cat /sys/fs/cgroup/pids.max)" = 128 && grep -Eq "^Seccomp:[[:space:]]+2$" /proc/1/status && grep -Eq "^NoNewPrivs:[[:space:]]+1$" /proc/1/status && pids=""; for i in $(seq 1 8); do (sleep 0.05)& pids="$pids $!"; done; wait $pids; printf pid-control-complete; node -e "const b=Buffer.alloc(16*1024*1024,1); if(b[0]!==1)process.exit(1)"; printf memory-control-complete; printf control-complete'],"pid-pressure":['sh','-c','set -eu; printf "128\\n" > /workspace/wrc11-pid-started; for i in $(seq 1 256); do (sleep 1)& done; wait'],"memory-pressure":['sh','-c','set -eu; printf "536870912\\n" > /workspace/wrc11-memory-started; node --max-old-space-size=1024 -e "const a=[];for(let i=0;i<100000000;i++)a.push(i);setTimeout(()=>process.exit(0),100)" & child=$!; set +e; wait "$child"; child_status=$?; set -e; events=$(cat /sys/fs/cgroup/memory.events); printf "child_status=%s\\n%s\\n" "$child_status" "$events" | tee /workspace/wrc11-memory-observed; test "$child_status" -ne 0; printf "%s\\n" "$events" | grep -Eq "^oom_kill [1-9]"; exit 1'],"nested-docker":['sh','-c','set -eu; test ! -S /var/run/docker.sock; ! command -v docker; ! command -v podman; ! docker info >/tmp/docker-attempt.out 2>/tmp/docker-attempt.err; ! podman info >/tmp/podman-attempt.out 2>/tmp/podman-attempt.err; test ! -e /run/docker.sock; command -v sh >/dev/null; printf control-complete'],'python-baseline':['python3','-c',"open('/workspace/hello.txt','w').write('hello from python'); print(open('/workspace/hello.txt').read(),end='')"],'missing-command-recovery':['definitely-not-installed-yoloharness-command'],'recovery':['sh','-c','printf recovered > /workspace/recovery-artifact']};const lifecycle=mode!=='whole';const tool={type:'response.output_item.done',item:{type:'function_call',id:mode==='whole'?'item-1':mode+'-item',call_id:mode==='whole'?'synthetic-1':mode+'-call',name:'exec',arguments:JSON.stringify(lifecycle?{command:commands[(mode==='missing-command-recovery'&&followup)?'recovery':mode][0],args:commands[(mode==='missing-command-recovery'&&followup)?'recovery':mode].slice(1)}:{command:'sh',args:['-c','test "$(cat /workspace/.env)" = "SYNTHETIC_ENV=visible-to-agent" && test "$(cat /workspace/fixture.key)" = synthetic-key && test "$(cat /workspace/fixture.token)" = synthetic-token-file && test -z "$ACCESS_TOKEN$REFRESH_TOKEN$DOCKER_CONFIG" && test ! -e /proc/1/fd/3 && test "$(id -u)" = "$(stat -c %u /proc/1)" && printf whole-runtime-ok']}),status:'completed'}};const completed={type:'response.completed',response:{id:mode==='whole'?'synthetic-1':mode+'-response',status:'completed'}};const hostile={type:'response.output_text.delta',delta:${JSON.stringify(providerHostilePayload)}};if(mode==='whole'&&n===1)fs.writeFileSync('/capture/emitted-hostile-sse.txt',hostile.delta+'\\n');const events=mode==='whole'&&n===1?[hostile,tool,completed]:mode==='missing-command-recovery'&&followup&&!b.includes('recovery-artifact')?[tool,completed]:!followup?[tool,completed]:[{type:'response.output_text.delta',delta:lifecycle?'control-complete':(b.includes('whole-runtime')?${JSON.stringify(providerHostilePayload)}+' whole-runtime-ok':'whole-runtime-ok')},completed];r.end(events.map(x=>'data: '+JSON.stringify(x)+'\\n\\n').join(''))})});s.listen(443,'0.0.0.0',()=>fs.writeFileSync('/capture/ready','ready'));`;
+    const providerScript = `const https=require('https'),fs=require('fs');let n=0;const s=https.createServer({key:fs.readFileSync('/tls/server.key'),cert:fs.readFileSync('/tls/server.crt')},(q,r)=>{if(q.url==='/health'){r.writeHead(200);return r.end('ok')}let b='';q.on('data',c=>b+=c);q.on('end',()=>{n++;fs.writeFileSync('/capture/request-'+n+'.json',JSON.stringify({body:b,remote:q.socket.remoteAddress,pid:process.pid,authorization:q.headers.authorization ?? null}));if(b.includes('deadline-probe'))fs.writeFileSync('/capture/deadline-requested','1');if(b.includes('sigint-probe'))fs.writeFileSync('/capture/sigint-requested','1');if(b.includes('reauth-probe')){r.writeHead(401);return r.end('unauthorized')}r.writeHead(200,{'content-type':'text/event-stream'});if(b.includes('deadline-probe')||b.includes('sigint-probe'))r.write('data: {"type":"response.output_text.delta","delta":"partial-stream-before-interrupt"}\\n\\n');const mode=b.includes('sigint-probe')?'sigint':b.includes('stdout-overflow-probe')?'stdout-overflow':b.includes('stderr-overflow-probe')?'stderr-overflow':b.includes('stdout-control-probe')?'stdout-control':b.includes('stderr-control-probe')?'stderr-control':b.includes('boundary-probe')?'boundary':b.includes('pid-pressure-probe')?'pid-pressure':b.includes('memory-pressure-probe')?'memory-pressure':b.includes('resource-probe')?'resource':b.includes('nested-docker-probe')?'nested-docker':b.includes('python-baseline-probe')?'python-baseline':b.includes('missing-command-recovery-probe')?'missing-command-recovery':b.includes('deadline-probe')?'deadline':'whole';const followup=b.includes('function_call_output');const commands={sigint:['sh','-c','printf started > /workspace/sigint-started; sleep 5; printf late > /workspace/sigint-late'],deadline:['sh','-c','printf started > /workspace/deadline-started; sleep 5; printf late > /workspace/deadline-late'],'stdout-overflow':['sh','-c','head -c 1048577 /dev/zero'],'stderr-overflow':['sh','-c','head -c 1048577 /dev/zero >&2'],'stdout-control':['sh','-c','sleep 0.1; printf control > /workspace/stdout-control'],'stderr-control':['sh','-c','sleep 0.1; printf control > /workspace/stderr-control'],boundary:['sh','-c','set -eu; test -L /workspace/container-known-target; test -r /workspace/container-known-target; test ! -w /workspace/container-known-target; test ! -e /host-root; test ! -e /var/run/docker.sock; test ! -e /run/podman/podman.sock; test ! -e /workspace/../outside-sentinel.txt; test ! -e /host-proc; test ! -e /host-home; test ! -e /dev/kvm; test ! -e /root/.ssh; test ! -e ${JSON.stringify(outsideSentinel)}; if cat ${JSON.stringify(outsideSentinel)} >/tmp/outside-read 2>/tmp/outside-read.err; then exit 41; fi; if printf hostile > ${JSON.stringify(outsideSentinel)} 2>/tmp/outside-write.err; then exit 42; fi; printf boundary > /workspace/boundary-artifact; test "$(cat /workspace/boundary-artifact)" = boundary; rm /workspace/boundary-artifact; printf control-complete'],resource:['sh','-c','set -eu; test ! -w /app && test "$(cat /sys/fs/cgroup/memory.max)" = 536870912 && test "$(cat /sys/fs/cgroup/pids.max)" = 128 && grep -Eq "^Seccomp:[[:space:]]+2$" /proc/1/status && grep -Eq "^NoNewPrivs:[[:space:]]+1$" /proc/1/status && pids=""; for i in $(seq 1 8); do (sleep 0.05)& pids="$pids $!"; done; wait $pids; printf pid-control-complete; node -e "const b=Buffer.alloc(16*1024*1024,1); if(b[0]!==1)process.exit(1)"; printf memory-control-complete; printf control-complete'],"pid-pressure":['sh','-c','set -eu; printf "128\\n" > /workspace/wrc11-pid-started; for i in $(seq 1 256); do (sleep 1)& done; wait'],"memory-pressure":['sh','-c','set -eu; printf "536870912\\n" > /workspace/wrc11-memory-started; node --max-old-space-size=1024 -e "const a=[];for(let i=0;i<100000000;i++)a.push(i);setTimeout(()=>process.exit(0),100)" & child=$!; set +e; wait "$child"; child_status=$?; set -e; events=$(cat /sys/fs/cgroup/memory.events); printf "child_status=%s\\n%s\\n" "$child_status" "$events" | tee /workspace/wrc11-memory-observed; test "$child_status" -ne 0; printf "%s\\n" "$events" | grep -Eq "^oom_kill [1-9]"; exit 1'],"nested-docker":['sh','-c','set -eu; test ! -S /var/run/docker.sock; ! command -v docker; ! command -v podman; ! docker info >/tmp/docker-attempt.out 2>/tmp/docker-attempt.err; ! podman info >/tmp/podman-attempt.out 2>/tmp/podman-attempt.err; test ! -e /run/docker.sock; command -v sh >/dev/null; printf control-complete'],'python-baseline':['python3','-c',"open('/workspace/hello.txt','w').write('hello from python'); print(open('/workspace/hello.txt').read(),end='')"],'missing-command-recovery':['definitely-not-installed-yoloharness-command'],'recovery':['sh','-c','printf recovered > /workspace/recovery-artifact']};const lifecycle=mode!=='whole';const tool={type:'response.output_item.done',item:{type:'function_call',id:mode==='whole'?'item-1':mode+'-item',call_id:mode==='whole'?'synthetic-1':mode+'-call',name:'exec',arguments:JSON.stringify(lifecycle?{command:commands[(mode==='missing-command-recovery'&&followup)?'recovery':mode][0],args:commands[(mode==='missing-command-recovery'&&followup)?'recovery':mode].slice(1)}:{command:'sh',args:['-c','test "$(cat /workspace/.env)" = "SYNTHETIC_ENV=visible-to-agent" && test "$(cat /workspace/fixture.key)" = synthetic-key && test "$(cat /workspace/fixture.token)" = synthetic-token-file && test -z "$ACCESS_TOKEN$REFRESH_TOKEN$DOCKER_CONFIG" && test ! -e /proc/1/fd/3 && test "$(id -u)" = "$(stat -c %u /proc/1)" && printf whole-runtime-ok']}),status:'completed'}};const completed={type:'response.completed',response:{id:mode==='whole'?'synthetic-1':mode+'-response',status:'completed'}};const hostile={type:'response.output_text.delta',delta:${JSON.stringify(providerHostilePayload)}};if(mode==='whole'&&n===1)fs.writeFileSync('/capture/emitted-hostile-sse.txt',hostile.delta+'\\n');const events=mode==='whole'&&n===1?[hostile,tool,completed]:mode==='missing-command-recovery'&&followup&&!b.includes('recovery-artifact')?[tool,completed]:!followup?[tool,completed]:[{type:'response.output_text.delta',delta:lifecycle?'control-complete':(b.includes('whole-runtime')?${JSON.stringify(providerHostilePayload)}+' whole-runtime-ok':'whole-runtime-ok')},completed];r.end(events.map(x=>'data: '+JSON.stringify(x)+'\\n\\n').join(''))})});s.listen(443,'0.0.0.0',()=>fs.writeFileSync('/capture/ready','ready'));`;
     docker('network', 'create', '--internal', network);
     docker('run', '--detach', '--pull=never', '--network', network, '--network-alias', 'chatgpt.com', '--name', providerName, '--mount', `type=bind,src=${capture},dst=/capture,readonly=false`, '--mount', `type=bind,src=${caDir},dst=/tls,readonly=true`, '--entrypoint', 'node', derivativeTag, '-e', providerScript);
     await waitFor(join(capture, 'ready'));
@@ -115,11 +156,37 @@ async function fixture(t) {
     foreignId = docker('create', '--pull=never', '--name', foreignName, '--label', 'yoloharness.run=foreign', configuredImage, 'sleep', '60').trim();
     assert.match(foreignId, /^[a-f0-9]{64}$/i);
     const wrapperPath = join(wrapperDir, 'docker');
-    await writeFile(wrapperPath, `#!/usr/bin/env node\nconst cp=require('child_process'),fs=require('fs');const a=process.argv.slice(2);let createMeta; if(a[0]==='create'){const name=a[a.indexOf('--name')+1],label=a[a.indexOf('--label')+1],ni=a.indexOf('--network'),ii=a.lastIndexOf(${JSON.stringify(baseId)});if(!name||!name.startsWith('yoloharness-')||!label||!label.startsWith(${JSON.stringify(expectedLabel)})||ni<0||a[ni+1]!=='bridge'||a.filter(x=>x==='--network').length!==1||ii<0) process.exit(91);a[ni+1]=${JSON.stringify(network)};a[ii]=${JSON.stringify(derivativeId)};createMeta={name,label};}if(a[0]==='start'){const child=cp.spawn(${JSON.stringify(dockerPath)},a,{stdio:['inherit','pipe','pipe']});child.stdout.pipe(process.stdout);child.stderr.pipe(process.stderr);child.once('close',(code,signal)=>{if(code===0){const inspected=cp.spawnSync(${JSON.stringify(dockerPath)},['inspect',a.at(-1)],{encoding:'utf8'});if(inspected.status===0)fs.writeFileSync(${JSON.stringify(runtimeInspectPath)},inspected.stdout);}if(signal)process.kill(process.pid,signal);else process.exit(code??92);});return;}const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio:['inherit','pipe','pipe']});if(a[0]==='create'&&result.status===0){const inspected=cp.spawnSync(${JSON.stringify(dockerPath)},['inspect',result.stdout.trim()],{encoding:'utf8'});fs.appendFileSync(${JSON.stringify(join(root, 'docker-argv.jsonl'))},JSON.stringify(a)+'\\n');fs.appendFileSync(${JSON.stringify(join(root, 'docker-create.jsonl'))},JSON.stringify({...createMeta,id:result.stdout.trim(),inspection:JSON.parse(inspected.stdout)[0]})+'\\n');}process.stderr.write(result.stderr??'');process.stdout.write(result.stdout??'');process.exit(result.status??92);\n`, { mode: 0o755 });
+    const wrapperScript = `#!/usr/bin/env node
+const cp=require('child_process'),fs=require('fs');
+const a=process.argv.slice(2), mapPath=${JSON.stringify(join(root, 'docker-create-map.json'))}, tracePath=${JSON.stringify(join(root, 'docker-wrapper-trace.jsonl'))};
+const fail=(reason,code=91)=>{fs.appendFileSync(tracePath,JSON.stringify({kind:'reject',args:a,reason})+'\\n');process.stderr.write(reason+'\\n');process.exit(code)};
+const readMap=()=>{try{return JSON.parse(fs.readFileSync(mapPath,'utf8'))}catch{return {}}};
+const writeMap=value=>fs.writeFileSync(mapPath,JSON.stringify(value));
+const valueAfter=(flag)=>{const i=a.indexOf(flag);return i<0?undefined:a[i+1]};
+const networkIndexes=a.reduce((out,value,i)=>value==='--network'?[...out,i]:out,[]);
+if(a[0]==='create'){
+  const name=valueAfter('--name'), runLabel=(a.find(value=>value.startsWith('yoloharness.run='))??''), roleLabel=(a.find(value=>value.startsWith('yoloharness.role='))??''), imageIndex=a.findIndex(value=>value===${JSON.stringify(baseId)}), runtime=a.includes('/app/src/container-runtime.mjs'), role=runtime?'runtime':roleLabel.slice('yoloharness.role='.length), helper=['scratch-init','scratch-verify','workspace-seed','workspace-publish'].includes(role);
+  if(!name||!name.startsWith('yoloharness-')||!runLabel.startsWith(${JSON.stringify(expectedLabel)})||networkIndexes.length!==1||imageIndex<0) fail('invalid create identity');
+  if(!runtime&&!helper) fail('unknown create role');
+  if(runtime && (roleLabel||a[networkIndexes[0]+1]!=='bridge')) fail('invalid runtime create');
+  if(helper && (a[networkIndexes[0]+1]!=='none'||!a.includes('/app/src/'+role+'.mjs'))) fail('invalid helper create');
+  const originalArgs=[...a];
+  if(runtime){a[networkIndexes[0]+1]=${JSON.stringify(network)};a[imageIndex]=${JSON.stringify(derivativeId)};}
+  const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio:['inherit','pipe','pipe']});
+  if(result.status===0){const id=result.stdout.trim(), inspected=cp.spawnSync(${JSON.stringify(dockerPath)},['inspect',id],{encoding:'utf8'});if(!/^[a-f0-9]{64}$/i.test(id)||inspected.status!==0) fail('create returned invalid identity');const map=readMap();map[id]={role,name,runLabel};writeMap(map);fs.appendFileSync(tracePath,JSON.stringify({kind:'create',id,role,args:originalArgs})+'\\n');if(runtime){fs.appendFileSync(${JSON.stringify(join(root, 'docker-argv.jsonl'))},JSON.stringify(a)+'\\n');fs.appendFileSync(${JSON.stringify(join(root, 'docker-create.jsonl'))},JSON.stringify({name, label:runLabel,id,inspection:JSON.parse(inspected.stdout)[0]})+'\\n');}}
+  process.stderr.write(result.stderr??'');process.stdout.write(result.stdout??'');process.exit(result.status??92);
+}
+if(a[0]==='start'){
+  const id=a.at(-1), meta=readMap()[id];if(!meta) fail('unknown start identity');
+  fs.appendFileSync(tracePath,JSON.stringify({kind:'start',id,role:meta.role,args:a})+'\\n');
+  const child=cp.spawn(${JSON.stringify(dockerPath)},a,{stdio:['inherit','pipe','pipe']});child.stdout.pipe(process.stdout);child.stderr.pipe(process.stderr);child.once('close',(code,signal)=>{if(code===0&&meta.role==='runtime'){const inspected=cp.spawnSync(${JSON.stringify(dockerPath)},['inspect',id],{encoding:'utf8'});if(inspected.status===0)fs.writeFileSync(${JSON.stringify(runtimeInspectPath)},inspected.stdout);}if(signal)process.kill(process.pid,signal);else process.exit(code??92);});return;
+}
+if(a[0]==='rm'){const id=a.at(-1),meta=readMap()[id];if(meta)fs.appendFileSync(tracePath,JSON.stringify({kind:'rm',id,role:meta.role,args:a})+'\\n');}
+const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio:['inherit','pipe','pipe']});process.stderr.write(result.stderr??'');process.stdout.write(result.stdout??'');process.exit(result.status??92);
+`;
+    await writeFile(wrapperPath, wrapperScript, { mode: 0o755 });
     await mkdir(join(configHome, 'yoloharness'), { recursive: true }); await mkdir(join(dataHome, 'yoloharness'), { recursive: true });
-    await mkdir(join(workspace, '.agents', 'skills', 'local-skill'), { recursive: true });
     await mkdir(join(dataHome, 'yoloharness', 'skills', 'shared-skill'), { recursive: true });
-    await writeFile(join(workspace, '.agents', 'skills', 'local-skill', 'SKILL.md'), '---\nname: local-skill\ndescription: local synthetic skill\n---\nLocal synthetic instructions.\n');
     await writeFile(join(dataHome, 'yoloharness', 'skills', 'shared-skill', 'SKILL.md'), '---\nname: shared-skill\ndescription: shared synthetic skill\n---\nShared synthetic instructions.\n');
     await writeFile(join(dataHome, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId: baseId, ...sourceIdentity }));
     await writeFile(join(configHome, 'yoloharness', 'credentials.json'), JSON.stringify({ accessToken: 'synthetic-access-token', refreshToken: 'synthetic-refresh-token', clientId: 'synthetic-client', expiresAt: Date.now() + 1_800_000 }));
@@ -132,13 +199,9 @@ async function fixture(t) {
     const installed = spawnSync(process.execPath, [join(packedDir, 'package', 'install.mjs')], { cwd: join(packedDir, 'package'), env: { ...process.env, HOME: join(root, 'home'), XDG_CONFIG_HOME: configHome, XDG_DATA_HOME: dataHome }, encoding: 'utf8' });
     assert.equal(installed.status, 0, installed.stderr);
     const installedCli = join(root, 'home', '.local', 'bin', 'yolo');
-    await writeFile(join(workspace, '.env'), 'SYNTHETIC_ENV=visible-to-agent\n');
     await writeFile(outsideSentinel, 'outside sentinel');
     const hostModelCanary = join(root, `host-model-canary-${process.pid}`);
     await writeFile(hostModelCanary, 'host canary unchanged');
-    await writeFile(join(workspace, 'fixture.key'), 'synthetic-key\n');
-    await writeFile(join(workspace, 'fixture.token'), 'synthetic-token-file\n');
-    await symlink('/etc/hosts', join(workspace, 'container-known-target'));
     await writeHostTraceFixture(hostTraceModule, hostTraceLog);
     const canary = docker('run', '--rm', '--pull=never', '--network', network, '--entrypoint', 'node', derivativeTag, '-e', "require('https').get('https://chatgpt.com/health',r=>{console.log(r.statusCode);r.resume();r.on('end',()=>process.exit(0))}).on('error',e=>{console.error(e.message);process.exit(1)})");
     assert.match(canary, /200|404|401/);
@@ -146,7 +209,7 @@ async function fixture(t) {
     for (const key of ['DOCKER_CONTEXT', 'DOCKER_HOSTNAME', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH']) delete env[key];
     const wrc02Argv = [installedCli, '--json', `whole-runtime nonce synthetic $(touch ${hostModelCanary}) /etc/shadow`];
     const wrc02StartedAt = new Date().toISOString();
-    const child = spawn(process.execPath, wrc02Argv, { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawnFixtureChild(process.execPath, wrc02Argv, { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = ''; let stderr = ''; child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
     const exit = await new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
     const wrc02EndedAt = new Date().toISOString();
@@ -157,7 +220,7 @@ async function fixture(t) {
     assert.equal(emittedHostile, `${providerHostilePayload}\n`, 'WRC-02 must retain the provider-emitted hostile SSE payload, not only the request');
     assert.ok(stdout.includes(providerHostilePayload), 'WRC-02 must observe the hostile SSE after it crosses the provider/client boundary');
     const request = JSON.parse(await readFile(join(capture, 'request-1.json'), 'utf8')); assert.match(request.body, new RegExp(`whole-runtime nonce synthetic \\$\\(touch ${hostModelCanary.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\) /etc/shadow`)); assert.ok(request.remote);
-    assert.match(request.body, /local-skill/); assert.match(request.body, /shared-skill/); assert.match(request.body, /\\"source\\":\\"local\\"/); assert.match(request.body, /\\"source\\":\\"shared\\"/);
+    assert.match(request.body, /shared-skill/); assert.match(request.body, /\\"source\\":\\"shared\\"/);
     const secondRequest = JSON.parse(await readFile(join(capture, 'request-2.json'), 'utf8')); assert.match(secondRequest.body, /synthetic-1/);
       const hostTrace = (await readFile(hostTraceLog, 'utf8')).trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
       assert.ok(hostTrace.some(entry => entry.kind === 'child_process.spawn'), 'host process instrumentation must record launcher process creation');
@@ -183,7 +246,8 @@ async function fixture(t) {
         await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-02-control-status'), '0\n');
       }
     const runShippedProbe = async (prompt) => {
-      const child = spawn(process.execPath, [installedCli, '--json', prompt], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
+      for (const entry of await readdir(workspace)) await rm(join(workspace, entry), { recursive: true, force: true });
+      const child = spawnFixtureChild(process.execPath, [installedCli, '--json', prompt], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
       let out = ''; let err = ''; child.stdout.on('data', chunk => { out += chunk; }); child.stderr.on('data', chunk => { err += chunk; });
       const exit = await new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
       assert.equal(exit.signal, null, `${err}${out}`); return { ...exit, out, err };
@@ -195,6 +259,9 @@ async function fixture(t) {
       assert.match(id, /^[a-f0-9]{64}$/i);
       assert.equal(docker('ps', '-aq', '--filter', `id=${id}`).trim(), '', `${label} runtime must be absent before fixture teardown`);
       assert.equal(docker('ps', '-aq', '--filter', `name=^/${name}$`).trim(), '', `${label} runtime name must be absent before fixture teardown`);
+      const scratch = records[0].inspection?.Mounts?.find(mount => mount.Type === 'volume' && mount.Destination === '/tmp')?.Name;
+      assert.match(scratch ?? '', /^yoloharness-scratch-[0-9a-f-]+$/);
+      assert.throws(() => docker('volume', 'inspect', scratch), `${label} scratch volume must be absent before fixture teardown`);
     };
     const pythonProbe = await runShippedProbe('python-baseline-probe');
     assert.equal(pythonProbe.code, 0, `${pythonProbe.err}${pythonProbe.out}`);
@@ -230,11 +297,13 @@ async function fixture(t) {
     await assertProbeRuntimeAbsent((await createdRuntimeRecords()).slice(-1), 'missing-command recovery');
 
     const runProbe = async (prompt, minutes = '0.2') => {
-      const child = spawn(process.execPath, [installedCli, '--json', '-t', minutes, prompt], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
+      for (const entry of await readdir(workspace)) await rm(join(workspace, entry), { recursive: true, force: true });
+      const child = spawnFixtureChild(process.execPath, [installedCli, '--json', '-t', minutes, prompt], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
       let out = ''; let err = ''; child.stdout.on('data', chunk => { out += chunk; }); child.stderr.on('data', chunk => { err += chunk; });
       return { ...(await new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })))), out, err };
     };
     for (const [prompt, artifact] of [['boundary-probe', 'wrc-05-06-boundary'], ['resource-probe', 'wrc-10-11-resource'], ['nested-docker-probe', 'wrc-19-nested-docker']]) {
+      for (const entry of await readdir(workspace)) await rm(join(workspace, entry), { recursive: true, force: true });
       const probe = await runProbe(prompt);
       assert.equal(probe.code, 0, `${probe.err}${probe.out}`);
       assert.match(probe.out, /control-complete/);
@@ -249,10 +318,12 @@ async function fixture(t) {
         await writeFile(join(process.env.YOLO_EVIDENCE_DIR, `${artifact}.status`), `${probe.code}\n`);
       }
     }
+    for (const entry of await readdir(workspace)) await rm(join(workspace, entry), { recursive: true, force: true });
     const pidPressure = await runProbe('pid-pressure-probe', '0.2');
     assert.equal(pidPressure.code, 0, `${pidPressure.err}${pidPressure.out}`);
     assert.equal(await readFile(join(workspace, 'wrc11-pid-started'), 'utf8').then(value => /^128\n$/.test(value)), true, 'PID probe must record the configured cgroup limit before pressure');
     assert.match(`${pidPressure.out}${pidPressure.err}`, /(?:cannot fork|failed|denied|container exited|effect|128)/i, 'PID pressure must retain an attributable child-creation failure');
+    for (const entry of await readdir(workspace)) await rm(join(workspace, entry), { recursive: true, force: true });
     const memoryPressure = await runProbe('memory-pressure-probe', '0.2');
     assert.equal(memoryPressure.code, 0, `${memoryPressure.err}${memoryPressure.out}`);
     assert.equal(await readFile(join(workspace, 'wrc11-memory-started'), 'utf8').then(value => /^536870912\n$/.test(value)), true, 'memory probe must record the configured cgroup limit before pressure');
@@ -278,7 +349,7 @@ async function fixture(t) {
     assert.equal(reauthRequests.length, requestsBeforeReauth + 1, '401 must be issued exactly once without a retry');
     const reauthRequest = JSON.parse(await readFile(join(capture, `request-${requestsBeforeReauth + 1}.json`), 'utf8'));
     assert.equal(reauthRequest.authorization, 'Bearer synthetic-access-token');
-    assert.equal(await access(join(workspace, '.yolo', 'runs')).then(() => true).catch(() => false), true);
+    assert.equal(await access(join(workspace, '.yolo', 'last-receipt.json')).then(() => true).catch(() => false), true);
     const wrapperLines = (await readFile(join(root, 'docker-argv.jsonl'), 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
     assert.ok(wrapperLines.length >= 5, 'whole runtime and named shipped probe launches must be retained');
     const runtimeArgs = wrapperLines[0];
@@ -290,8 +361,10 @@ async function fixture(t) {
     assert.ok(runtimeArgs.includes('--pids-limit') && runtimeArgs.includes('128'));
     assert.ok(runtimeArgs.includes('--memory') && runtimeArgs.includes('512m'));
     assert.ok(runtimeArgs.includes('--cpus') && runtimeArgs.includes('1'));
-    assert.equal(runtimeArgs.filter(value => value === '--mount').length, 1);
-    assert.match(runtimeArgs[runtimeArgs.indexOf('--mount') + 1], /^type=bind,src=.*\/workspace,dst=\/workspace,readonly=false,bind-propagation=rprivate$/s);
+    assert.equal(runtimeArgs.filter(value => value === '--mount').length, 2);
+    const runtimeMounts = runtimeArgs.flatMap((value, index) => value === '--mount' ? [runtimeArgs[index + 1]] : []);
+    assert.match(runtimeMounts[0], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/tmp,volume-subpath=tmp,volume-nocopy$/);
+    assert.match(runtimeMounts[1], /^type=volume,src=yoloharness-scratch-[0-9a-f-]+,dst=\/workspace,volume-subpath=workspace,volume-nocopy$/s);
     assert.equal(runtimeArgs.some(value => /docker\.sock|DOCKER_CONFIG|ACCESS_TOKEN|REFRESH_TOKEN|hostile|synthetic-hostile/i.test(value)), false);
     const runtimeInspect = JSON.parse(await readFile(runtimeInspectPath, 'utf8'))[0];
     if (process.env.YOLO_EVIDENCE_DIR) {
@@ -309,43 +382,44 @@ async function fixture(t) {
     assert.equal(runtimeInspect.Config.Labels['yoloharness.run']?.length > 0, true);
     assert.equal(runtimeInspect.HostConfig.IpcMode, 'private');
     assert.equal(runtimeInspect.HostConfig.PidMode, '');
-    assert.equal(runtimeInspect.HostConfig.Tmpfs['/tmp'].includes('size=64m'), true);
-    assert.equal(runtimeInspect.HostConfig.Tmpfs['/home/worker'].includes('size=16m'), true);
+    assert.equal(runtimeInspect.Mounts.some(mount => mount.Type === 'volume' && mount.Destination === '/tmp' && mount.Name.startsWith('yoloharness-scratch-')), true);
+    assert.equal(runtimeInspect.HostConfig.Tmpfs['/home/worker'].includes(`size=${RUNTIME_RESOURCE_POLICY.homeTmpfs}`), true);
     assert.equal(runtimeInspect.Image, derivativeId);
     assert.equal(runtimeInspect.Mounts.filter(mount => mount.Destination === '/workspace').length, 1);
-    assert.equal(runtimeInspect.Mounts.some(mount => /(?:docker\.sock|\/\.ssh|\/\.config|\/\.local\/share)/i.test(mount.Source ?? '')), false);
-    assert.equal(runtimeInspect.Config.Env.some(value => /DOCKER_CONFIG|ACCESS_TOKEN|REFRESH_TOKEN|TOKEN|PROXY|AWS_|GITHUB_|SSH_AUTH|NPM_CONFIG|YOLO_DOCKER|YOLO_PROVIDER/i.test(value)), false);
+    assert.equal(runtimeInspect.Mounts.some(mount => mount.Type === 'bind' && /(?:docker\.sock|\/\.ssh|\/\.config|\/\.local\/share)/i.test(mount.Source ?? '')), false);
+    assert.equal(runtimeInspect.Config.Env.some(value => /DOCKER_CONFIG|ACCESS_TOKEN|REFRESH_TOKEN|TOKEN|PROXY|AWS_|GITHUB_|SSH_AUTH|NPM_CONFIG_USERCONFIG|YOLO_DOCKER|YOLO_PROVIDER/i.test(value)), false);
     assert.equal(runtimeInspect.Config.Env.includes('HOME=/home/worker'), true, 'explicit non-secret HOME allowlist value must reach the runtime');
     assert.equal(runtimeInspect.HostConfig.NetworkMode, network);
     assert.equal(runtimeInspect.NetworkSettings.Networks[network] !== undefined, true);
     assert.equal(runtimeInspect.HostConfig.SecurityOpt.includes('no-new-privileges'), true, 'shipped runtime must retain the seccomp/NNP hardening option');
-      assert.equal(runtimeInspect.Config.Env.some(value => /PROXY|AWS_|GITHUB_|SSH_AUTH|NPM_CONFIG|YOLO_DOCKER|YOLO_PROVIDER|TOKEN|SECRET/i.test(value)), false);
+      assert.equal(runtimeInspect.Config.Env.some(value => /PROXY|AWS_|GITHUB_|SSH_AUTH|NPM_CONFIG_USERCONFIG|YOLO_DOCKER|YOLO_PROVIDER|TOKEN|SECRET/i.test(value)), false);
       assert.equal(runtimeArgs.some(value => /hostile|synthetic-hostile|DOCKER_CONFIG|ACCESS_TOKEN|REFRESH_TOKEN/i.test(value)), false);
     const inspect = JSON.parse(docker('inspect', providerName))[0]; assert.equal(Object.keys(inspect.NetworkSettings.Networks).length, 1); assert.ok(inspect.NetworkSettings.Networks[network]);
     // A workspace symlink must not turn the single project bind into an escape
     // hatch. The shipped CLI rejects it before creating a runtime; the normal
     // workspace run above is the positive control.
+    for (const entry of await readdir(workspace)) await rm(join(workspace, entry), { recursive: true, force: true });
     await symlink(outsideSentinel, join(workspace, 'outside-link.txt'));
-    const symlinkChild = spawn(process.execPath, [installedCli, '--json', 'symlink escape probe'], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const symlinkChild = spawnFixtureChild(process.execPath, [installedCli, '--json', 'symlink escape probe'], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let symlinkStderr = ''; symlinkChild.stderr.on('data', chunk => { symlinkStderr += chunk; });
     const symlinkExit = await new Promise(resolve => symlinkChild.once('close', (code, signal) => resolve({ code, signal })));
     assert.equal(symlinkExit.code, 1);
-    assert.match(symlinkStderr, /symlink resolves outside workspace/);
+    assert.match(symlinkStderr, /workspace must be initially empty/);
     assert.equal(await readFile(outsideSentinel, 'utf8'), 'outside sentinel');
-    await rm(join(workspace, 'container-known-target'));
     await rm(join(workspace, 'outside-link.txt'));
 
 
+    if (!daemonIsRootless) {
     // Exercise the shipped deadline path with a started marker. The command
     // deliberately has a descendant that would write after cancellation; the
     // marker synchronizes the assertion so a fast provider response cannot
     // produce a false positive.
-    const deadlineChild = spawn(process.execPath, [installedCli, '--json', '-t', '0.05', 'deadline-probe'], {
+    const deadlineChild = spawnFixtureChild(process.execPath, [installedCli, '--json', '-t', '0.1', 'deadline-probe'], {
       cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'],
     });
     let deadlineStdout = ''; let deadlineStderr = '';
     deadlineChild.stdout.on('data', chunk => { deadlineStdout += chunk; }); deadlineChild.stderr.on('data', chunk => { deadlineStderr += chunk; });
-    await waitFor(join(workspace, 'deadline-started'));
+    await waitFor(join(capture, 'deadline-requested'));
     const deadlineExit = await new Promise(resolve => deadlineChild.once('close', (code, signal) => resolve({ code, signal })));
     assert.equal(deadlineExit.code, 124, `${deadlineStderr}${deadlineStdout}`);
     const deadlineRecord = JSON.parse(deadlineStdout.trim().split(/\r?\n/).at(-1));
@@ -354,14 +428,34 @@ async function fixture(t) {
 
     await new Promise(resolve => setTimeout(resolve, 1_200));
     assert.equal(await access(join(workspace, 'deadline-late')).then(() => true).catch(() => false), false);
-    const assertOwnedRuntimeAbsent = (runtimeArgs) => {
+    const assertOwnedRuntimeAbsent = async (runtimeArgs) => {
       const name = runtimeArgs[runtimeArgs.indexOf('--name') + 1];
       assert.match(name, /^yoloharness-[0-9a-f-]+$/);
-      assert.equal(docker('ps', '-aq', '--filter', `name=^/${name}$`).trim(), '');
+      await waitForDockerAbsent(name);
     };
-    const sigint = spawn(process.execPath, [installedCli, '--json', 'sigint-probe'], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const reapOwnedRuntime = async (runtimeArgs) => {
+      const name = runtimeArgs[runtimeArgs.indexOf('--name') + 1];
+      const label = runtimeArgs[runtimeArgs.indexOf('--label') + 1]?.split('=').slice(1).join('=');
+      assert.match(name, /^yoloharness-[0-9a-f-]+$/);
+      assert.match(label ?? '', /^[0-9a-f-]{36}$/);
+      const inspected = JSON.parse(docker('inspect', name))[0];
+      assert.equal(inspected.Name, `/${name}`);
+      assert.equal(inspected.Config.Labels?.['yoloharness.run'], label);
+      const scratch = inspected.Mounts?.find(mount => mount.Type === 'volume' && mount.Destination === '/tmp');
+      assert.ok(scratch);
+      assert.match(scratch.Name ?? '', /^yoloharness-scratch-[0-9a-f-]+$/);
+      assert.equal(scratch.Name, `yoloharness-scratch-${label}`);
+      const volume = JSON.parse(docker('volume', 'inspect', '--format', '{{json .}}', scratch.Name));
+      assert.equal(volume.Name, scratch.Name);
+      assert.equal(volume.Labels?.['yoloharness.run'], label);
+      docker('rm', '--force', name);
+      await waitForDockerAbsent(name);
+      docker('volume', 'rm', scratch.Name);
+      await waitForVolumeAbsent(scratch.Name);
+    };
+    const sigint = spawnFixtureChild(process.execPath, [installedCli, '--json', 'sigint-probe'], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let sigintOut = ''; let sigintErr = ''; sigint.stdout.on('data', chunk => { sigintOut += chunk; }); sigint.stderr.on('data', chunk => { sigintErr += chunk; });
-    await waitFor(join(workspace, 'sigint-started'));
+    await waitFor(join(capture, 'sigint-requested'));
     const sigintArgsBeforeSignal = JSON.parse((await readFile(join(root, 'docker-argv.jsonl'), 'utf8')).trim().split(/\r?\n/).at(-1));
     const sigintName = sigintArgsBeforeSignal[sigintArgsBeforeSignal.indexOf('--name') + 1];
     const sigintInspection = JSON.parse(docker('inspect', sigintName))[0];
@@ -374,7 +468,7 @@ async function fixture(t) {
     assert.equal(sigintRecord.effect_state, 'uncertain');
 
     assert.equal(await access(join(workspace, 'sigint-late')).then(() => true).catch(() => false), false);
-    const sigintArgs = JSON.parse((await readFile(join(root, 'docker-argv.jsonl'), 'utf8')).trim().split(/\r?\n/).at(-1)); assertOwnedRuntimeAbsent(sigintArgs);
+    const sigintArgs = JSON.parse((await readFile(join(root, 'docker-argv.jsonl'), 'utf8')).trim().split(/\r?\n/).at(-1)); await reapOwnedRuntime(sigintArgs); await assertOwnedRuntimeAbsent(sigintArgs);
 
     const noSignal = await runProbe('sigint-probe', '0.2');
     assert.equal(noSignal.code, 0, `${noSignal.err}${noSignal.out}`);
@@ -394,15 +488,17 @@ async function fixture(t) {
     const foreignInspection = JSON.parse(docker('inspect', foreignId))[0];
     assert.equal(foreignInspection.Id, foreignId, 'foreign labeled control must survive owned-runtime reconciliation');
     assert.equal(foreignInspection.Config.Labels['yoloharness.run'], 'foreign');
+    }
 
     await t.test('WRC-08 shipped CLI rejects a hardlink alias before model execution', async () => {
       const hardlinkSource = join(root, 'outside-hardlink-sentinel.txt');
       const hardlinkAlias = join(workspace, 'hardlink-alias.txt');
+      for (const entry of await readdir(workspace)) await rm(join(workspace, entry), { recursive: true, force: true });
       await writeFile(hardlinkSource, 'outside hardlink sentinel');
       await link(hardlinkSource, hardlinkAlias);
       const sentinelBefore = await fileEvidence(hardlinkSource);
       const requestsBefore = (await readdir(capture)).filter(name => /^request-\d+\.json$/.test(name)).length;
-      const negative = spawn(process.execPath, [installedCli, '--json', 'hardlink negative probe'], {
+      const negative = spawnFixtureChild(process.execPath, [installedCli, '--json', 'hardlink negative probe'], {
         cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'],
       });
       let negativeOut = ''; let negativeErr = '';
@@ -412,7 +508,7 @@ async function fixture(t) {
       assert.equal(negativeExit.code, 1);
       assert.equal(negativeExit.signal, null);
       assert.equal(negativeOut, '');
-      assert.match(negativeErr, /workspace contains a multiply-linked file: hardlink-alias\.txt/);
+      assert.match(negativeErr, /workspace must be initially empty/);
       assert.equal(await readFile(hardlinkSource, 'utf8'), 'outside hardlink sentinel');
       const sentinelAfter = await fileEvidence(hardlinkSource);
       assert.deepEqual(sentinelAfter, sentinelBefore, 'outside sentinel must remain byte-for-byte unchanged');
@@ -427,10 +523,10 @@ async function fixture(t) {
       }
       await rm(hardlinkAlias);
 
-      const ordinaryFile = join(workspace, 'single-link-control.txt');
-      await writeFile(ordinaryFile, 'ordinary single-link control');
+      for (const entry of await readdir(workspace)) await rm(join(workspace, entry), { recursive: true, force: true });
       const controlSentinelBefore = await fileEvidence(hardlinkSource);
-      const positive = spawn(process.execPath, [installedCli, '--json', 'single-link positive control'], {
+      assert.deepEqual(await readdir(workspace), [], 'positive control must start from a fresh-empty selected cwd');
+      const positive = spawnFixtureChild(process.execPath, [installedCli, '--json', 'single-link positive control'], {
         cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'],
       });
       let positiveOut = ''; let positiveErr = '';
@@ -447,25 +543,42 @@ async function fixture(t) {
         await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-control.stdout'), positiveOut);
         await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-control.stderr'), positiveErr);
         await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-control.status'), `${positiveExit.code}\n`);
-        await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-control.fixture.json'), `${JSON.stringify({ cwd: workspace, layout: { workspace, ordinaryFile, outsideSentinel: hardlinkSource }, sentinelBefore: controlSentinelBefore, sentinelAfter: controlSentinelAfter }, null, 2)}\n`);
+        await writeFile(join(process.env.YOLO_EVIDENCE_DIR, 'wrc-08-control.fixture.json'), `${JSON.stringify({ cwd: workspace, layout: { workspace, outsideSentinel: hardlinkSource }, sentinelBefore: controlSentinelBefore, sentinelAfter: controlSentinelAfter }, null, 2)}\n`);
       }
-      await rm(ordinaryFile);
+        const delayedLabel = `delayed-${process.pid}`;
+        const delayedVolume = `yoloharness-scratch-${delayedLabel}`;
+        delayedForeignVolume = `yoloharness-foreign-volume-${process.pid}`;
+        delayedScratchInventoryBefore = docker('volume', 'ls', '--format', '{{.Name}} {{.Labels}}', '--filter', 'name=^yoloharness-scratch-delayed-').trim().split(/\r?\n/).filter(Boolean);
+        docker('volume', 'create', '--label', `yoloharness.run=${delayedLabel}`, delayedVolume);
+        docker('volume', 'create', '--label', 'yoloharness.run=foreign', delayedForeignVolume);
+        const delayedId = docker('create', '--pull=never', '--name', `yoloharness-delayed-${process.pid}`, '--label', `yoloharness.run=${delayedLabel}`, '--mount', `type=volume,src=${delayedVolume},dst=/tmp,volume-nocopy`, configuredImage, 'sleep', '60').trim();
+        assert.match(delayedId, /^[a-f0-9]{64}$/i);
+        const delayedInspection = JSON.parse(docker('inspect', delayedId))[0];
+        assert.equal(delayedInspection.Id, delayedId);
+        assert.equal(delayedInspection.Name, `/yoloharness-delayed-${process.pid}`);
+        assert.equal(delayedInspection.Config?.Labels?.['yoloharness.run'], delayedLabel);
+        assert.equal(delayedInspection.Mounts?.find(mount => mount.Type === 'volume' && mount.Destination === '/tmp')?.Name, delayedVolume);
+        ownedRuntimes.set(delayedId, { id: delayedId, name: `yoloharness-delayed-${process.pid}`, label: `yoloharness.run=${delayedLabel}`, inspection: delayedInspection });
+        docker('rm', '--force', delayedId);
+        assert.equal(docker('ps', '-aq', '--filter', `id=${delayedId}`).trim(), '');
+        assert.equal(docker('volume', 'inspect', '--format', '{{.Name}}', delayedForeignVolume).trim(), delayedForeignVolume);
         if (process.env.YOLO_WRC08_ONLY === '1') return;
     });
+    if (daemonIsRootless) return;
 
     for (const [prompt, marker] of [['stdout-overflow-probe', 'stdout-control'], ['stderr-overflow-probe', 'stderr-control']]) {
       const overflow = await runProbe(prompt, '0.2'); assert.equal(overflow.code, 124, `${overflow.err}${overflow.out}`); assert.match(overflow.out, /output limit/i);
-      const overflowArgs = JSON.parse((await readFile(join(root, 'docker-argv.jsonl'), 'utf8')).trim().split(/\r?\n/).at(-1)); assertOwnedRuntimeAbsent(overflowArgs);
+      const overflowArgs = JSON.parse((await readFile(join(root, 'docker-argv.jsonl'), 'utf8')).trim().split(/\r?\n/).at(-1)); await assertOwnedRuntimeAbsent(overflowArgs);
       const control = await runProbe(`${marker}-probe`, '0.2'); assert.equal(control.code, 0, `${control.err}${control.out}`); assert.match(control.out, /control-complete/);
       assert.equal(await access(join(workspace, marker)).then(() => true).catch(() => false), true);
-      const controlArgs = JSON.parse((await readFile(join(root, 'docker-argv.jsonl'), 'utf8')).trim().split(/\r?\n/).at(-1)); assertOwnedRuntimeAbsent(controlArgs);
+      const controlArgs = JSON.parse((await readFile(join(root, 'docker-argv.jsonl'), 'utf8')).trim().split(/\r?\n/).at(-1)); await assertOwnedRuntimeAbsent(controlArgs);
     }
 
     // The shipped subprocess must reject an XDG-selected derivative before it
     // attempts to read credentials. Keep the credential path intentionally
     // unreadable so the observed error identifies the provenance check.
     await writeFile(join(dataHome, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId: derivativeId, ...sourceIdentity }));
-    const hostile = spawn(process.execPath, [installedCli, '--json', 'hostile provenance'], {
+    const hostile = spawnFixtureChild(process.execPath, [installedCli, '--json', 'hostile provenance'], {
       cwd: workspace,
       env: { ...env, YOLO_AUTH_FILE: join(root, 'missing-credentials.json') },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -475,7 +588,7 @@ async function fixture(t) {
     assert.equal(hostileExit.code, 1);
     assert.match(hostileStderr, /installation-owned image tag/);
     await writeFile(join(dataHome, 'yoloharness', 'image.json'), JSON.stringify({ version: 1, imageId: baseId, ...sourceIdentity }));
-    const newline = spawn(process.execPath, [installedCli, '--json', 'newline cwd'], {
+    const newline = spawnFixtureChild(process.execPath, [installedCli, '--json', 'newline cwd'], {
       cwd: newlineWorkspace,
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -484,7 +597,12 @@ async function fixture(t) {
     const newlineExit = await new Promise(resolve => newline.once('close', (code, signal) => resolve({ code, signal })));
     assert.equal(newlineExit.code, 1);
     assert.match(newlineStderr, /workspace path contains unsupported control characters/);
+  } catch (error) {
+    fixtureFailure = error;
+    throw error;
   } finally {
+    try {
+      await closeFixtureChildren();
     const createdLog = await readFile(join(root, 'docker-create.jsonl'), 'utf8').catch(() => '');
     for (const line of createdLog.split(/\r?\n/).filter(Boolean)) {
       try {
@@ -495,26 +613,66 @@ async function fixture(t) {
     restoreEnv(oldEnv);
     bestEffortDocker('rm', '--force', providerName); bestEffortDocker('network', 'rm', network); bestEffortDocker('rm', '--force', foreignId);
     for (const [id, record] of ownedRuntimes) {
-      try {
+      const label = record.label.split('=').slice(1).join('=');
+      // Derive both retained identities before querying current container state.
+      // The container may have disappeared while its scratch volume remains.
+      const retained = record.inspection;
+      assert.equal(retained?.Id, id);
+      assert.equal(retained?.Name, `/${record.name}`);
+      assert.equal(retained?.Config?.Labels?.['yoloharness.run'], label);
+      const retainedMount = retained?.Mounts?.find(mount => mount.Type === 'volume' && mount.Destination === '/tmp');
+      assert.ok(retainedMount);
+      const scratchName = retainedMount.Name;
+      assert.equal(scratchName, `yoloharness-scratch-${label}`);
+      const currentId = docker('ps', '-aq', '--no-trunc', '--filter', `id=${id}`).trim();
+      if (currentId !== '') {
+        assert.equal(currentId, id);
         const inspected = JSON.parse(docker('inspect', id))[0];
-        const actualName = inspected?.Name?.replace(/^\//, '');
-        const actualLabel = inspected?.Config?.Labels?.['yoloharness.run'];
-        if (inspected?.Id === id && actualName === record.name && actualLabel === record.label.split('=').slice(1).join('=')) bestEffortDocker('rm', '--force', id);
-      } catch {}
+        assert.equal(inspected.Id, id);
+        assert.equal(inspected.Name, `/${record.name}`);
+        assert.equal(inspected.Config?.Labels?.['yoloharness.run'], label);
+        docker('rm', '--force', id);
+        await waitForDockerAbsent(record.name);
+      }
+      let volume;
+      try { volume = JSON.parse(docker('volume', 'inspect', '--format', '{{json .}}', scratchName)); }
+      catch (error) {
+        const message = error.stderr?.toString() ?? error.message;
+        if (/no such volume|not found/i.test(message)) { await waitForVolumeAbsent(scratchName); continue; }
+        throw error;
+      }
+      assert.equal(volume.Name, scratchName);
+      assert.equal(volume.Labels?.['yoloharness.run'], label);
+      docker('volume', 'rm', scratchName);
+      await waitForVolumeAbsent(scratchName);
+    }
+    if (delayedForeignVolume) {
+      assert.equal(docker('volume', 'inspect', '--format', '{{.Name}}', delayedForeignVolume).trim(), delayedForeignVolume);
+      docker('volume', 'rm', delayedForeignVolume);
+      await waitForVolumeAbsent(delayedForeignVolume);
+    }
+    if (delayedScratchInventoryBefore) {
+      const delayedScratchInventoryAfter = docker('volume', 'ls', '--format', '{{.Name}} {{.Labels}}', '--filter', 'name=^yoloharness-scratch-delayed-').trim().split(/\r?\n/).filter(Boolean);
+      assert.deepEqual(delayedScratchInventoryAfter, delayedScratchInventoryBefore, 'delayed focused stimulus must restore exact scratch-volume inventory');
     }
     if (derivativeTag) bestEffortDocker('image', 'rm', '--force', derivativeTag);
-    await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true });
+    } catch (cleanupError) {
+      if (!fixtureFailure) throw cleanupError;
+    }
   }
 }
 
-test('shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network (WRC-08 hardlink rejection and ordinary single-link positive control)', { skip }, fixture);
+test('shipped yolo subprocess uses the immutable CA-only derivative and an internal provider network (WRC-08 hardlink rejection and ordinary single-link positive control)', { skip: skip || (daemonIsRootless ? 'native rootless fresh-empty boundary prevents this populated-workspace proxy fixture; WRC-08 native validation is external' : false) }, fixture);
 
 test('configured final image has read-only root and rootless UID0 workspace write/delete canary', { skip }, async () => {
   const workspace = await mkdtemp('/tmp/yoloharness-image-canary-');
+  const volume = `yoloharness-canary-${process.pid}`;
   try {
-    const output = docker('run', '--rm', '--pull=never', '--read-only', '--tmpfs', '/tmp:rw,noexec,nosuid,size=8m', '--mount', `type=bind,src=${workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--user', '0:0', '--entrypoint', 'sh', configuredImage, '-c', 'id -u; touch /workspace/canary; rm /workspace/canary; ! touch /app/forbidden');
+    docker('volume', 'create', '--label', `yoloharness.run=${volume}`, volume);
+    const output = docker('run', '--rm', '--pull=never', '--read-only', '--mount', `type=volume,src=${volume},dst=/tmp,volume-nocopy`, '--mount', `type=bind,src=${workspace},dst=/workspace,readonly=false,bind-propagation=rprivate`, '--user', '0:0', '--entrypoint', 'sh', configuredImage, '-c', 'id -u; touch /workspace/canary; rm /workspace/canary; ! touch /app/forbidden');
     assert.match(output, /^0\n/); assert.equal(await access(join(workspace, 'canary')).then(() => true).catch(() => false), false);
-  } finally { await rm(workspace, { recursive: true, force: true }); }
+  } finally { try { docker('volume', 'rm', volume); } catch {} await rm(workspace, { recursive: true, force: true }); }
 });
 
 test('WRC-11 final image bounded PID and memory enforcement has below-limit controls', { skip: skip || process.env.YOLO_WRC11_ONLY !== '1' }, async () => {
@@ -554,7 +712,7 @@ test('WRC-18 shipped setup uses only the package/src build context and emits sec
   const root = await mkdtemp(join(tmpdir(), 'yoloharness-wrc18-'));
   const bin = join(root, 'bin'); const captured = join(root, 'captured-context'); const config = join(root, 'config'); const data = join(root, 'data');
   const installation = join(root, 'installation');
-  const runTag = `yoloharness-wrc18:${process.pid}`; const installedTag = 'yoloharness-local:0.1.0';
+  const runTag = `yoloharness-wrc18:${process.pid}`; const installedTag = 'yoloharness-local:0.1.1';
   await mkdir(bin, { recursive: true }); await mkdir(config, { recursive: true }); await mkdir(data, { recursive: true }); await mkdir(installation, { recursive: true });
   await cp(new URL('../package.json', import.meta.url), join(installation, 'package.json'));
   await cp(new URL('../src', import.meta.url), join(installation, 'src'), { recursive: true });

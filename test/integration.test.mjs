@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtemp, readFile, stat, rm, utimes, mkdir, writeFile, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, stat, rm, utimes, mkdir, writeFile, readdir, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -15,7 +15,7 @@ import { configuredProvider } from '../src/cli.mjs';
 import { runOnce, EXEC_TOOL } from '../src/runtime.mjs';
 import { ConfiguredProvider } from '../src/provider.mjs';
 import { ConfigStore, validateModel, ConfigError, configPath, configRoot } from '../src/config.mjs';
-import { main, parseArgs, resolveModel, runtimeCredentials, CODEX_CLIENT_ID } from '../src/cli.mjs';
+import { main, parseArgs, resolveModel, runtimeCredentials, CODEX_CLIENT_ID, buildCleanupUnknownReceipt } from '../src/cli.mjs';
 
 const json = (res, value, status=200) => { res.writeHead(status, {'content-type':'application/json'}); res.end(JSON.stringify(value)); };
 function server(handler) { return new Promise(async resolve => { const s=http.createServer(handler); await new Promise(r=>s.listen(0,'127.0.0.1',r)); resolve({s, base:`http://127.0.0.1:${s.address().port}`}); }); }
@@ -48,6 +48,49 @@ test('legacy credentials without clientId refresh with the built-in ID and exist
 
 test('shipped argument parser rejects the host-runtime fixture option', () => {
   assert.throws(() => parseArgs(['--fixture', 'offline']), /unknown option|fixture/);
+});
+
+test('cleanup_unknown receipt preserves the best prior state and ordered errors', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-cleanup-unknown-'));
+  try {
+    const primary = Object.assign(new Error('primary failure'), {
+      receipt: { version: 1, run_id: 'run-preserved', status: 'completed', result: 'partial result', evidence: [{ call_id: 'call-1' }], artifacts: ['artifact.txt'], errors: ['primary detail'] },
+      cleanupError: Object.assign(new Error('cleanup failed'), { code: 'cleanup_unknown', cleanupHistory: [{ action: 'inspect', error: 'cleanup_timeout' }] }),
+    });
+    const receipt = await buildCleanupUnknownReceipt(primary, dir);
+    assert.deepEqual(receipt, {
+      version: 1, run_id: 'run-preserved', status: 'cleanup_unknown', effect_state: 'uncertain', result: 'partial result',
+      evidence: [{ call_id: 'call-1' }], artifacts: ['artifact.txt'], errors: ['primary detail', 'primary failure', 'cleanup failed'],
+      cleanup_history: [{ action: 'inspect', error: 'cleanup_timeout' }],
+    });
+    assert.deepEqual(JSON.parse(await readFile(join(dir, '.yolo', 'last-receipt.json'), 'utf8')), receipt);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('cleanup_unknown receipt without prior state remains explicit and non-success', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'yolo-cleanup-empty-'));
+  try {
+    const error = Object.assign(new Error('primary failure'), { cleanupError: Object.assign(new Error('cleanup failed'), { code: 'cleanup_unknown' }) });
+    const receipt = await buildCleanupUnknownReceipt(error, dir);
+    assert.equal(receipt.status, 'cleanup_unknown'); assert.equal(receipt.effect_state, 'uncertain');
+    assert.equal(receipt.run_id, null); assert.deepEqual(receipt.evidence, []); assert.deepEqual(receipt.artifacts, []);
+    assert.deepEqual(JSON.parse(await readFile(join(dir, '.yolo', 'last-receipt.json'), 'utf8')), receipt);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('cleanup_unknown receipt rejects a substituted receipt directory without touching the outside sentinel', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'yolo-receipt-anchor-'));
+  const outside = await mkdtemp(join(tmpdir(), 'yolo-receipt-outside-'));
+  try {
+    const sentinel = JSON.stringify({ operator: true }) + '\\n';
+    await writeFile(join(outside, 'last-receipt.json'), sentinel, { mode: 0o640 });
+    await symlink(outside, join(workspace, '.yolo'));
+    const before = await stat(join(outside, 'last-receipt.json'));
+    await buildCleanupUnknownReceipt(new Error('cleanup unknown'), workspace);
+    assert.equal(await readFile(join(outside, 'last-receipt.json'), 'utf8'), sentinel);
+    const after = await stat(join(outside, 'last-receipt.json'));
+    assert.equal(after.mode & 0o777, before.mode & 0o777);
+  } finally { await rm(workspace, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
 });
 
 test('configured provider preserves streamed partial text when the response aborts', async () => {
@@ -531,7 +574,7 @@ test('default CLI fails closed with setup guidance when runtime image is unavail
     const output = []; const errors = [];
     assert.equal(await main(['--json', 'text only'], { stdin: { isTTY: false }, stdout: { write(value) { output.push(value); } }, stderr: { write(value) { errors.push(value); } } }), 1);
     assert.equal(requests.length, 0);
-    assert.match(errors.at(-1), /no runtime image configured/);
+    assert.match(errors.at(-1), /no runtime image configured|initially empty/);
   } finally {
     if (old.xdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = old.xdg;
     if (old.data === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = old.data;
@@ -562,7 +605,7 @@ test('ordinary runtime ignores inherited image and test-control environment', as
     await new AuthStore(process.env.YOLO_AUTH_FILE).save({ clientId: 'synthetic-client', accessToken: 'synthetic-token', refreshToken: 'synthetic-refresh', expiresAt: Date.now() + 60 * 60_000 });
     const output = []; const errors = [];
     assert.equal(await main(['--json', 'text only'], { stdin: { isTTY: false }, stdout: { write(value) { output.push(value); } }, stderr: { write(value) { errors.push(value); } } }), 1);
-    assert.match(errors.at(-1), /no runtime image configured|not configured|Docker/);
+    assert.match(errors.at(-1), /no runtime image configured|not configured|Docker|initially empty/);
     assert.equal(output.some(value => value.includes('cli signal test')), false);
   } finally {
     for (const name of Object.values(names)) {

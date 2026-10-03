@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { AuthClient, AuthStore } from './auth.mjs';
-import { ConfigStore, configPath, configRoot, validateModel, imageMetadataPath } from './config.mjs';
+import { ConfigStore, configPath, configRoot, validateModel, imageMetadataPath, DEFAULT_EPHEMERAL_PATHS, validateEphemeralPath, validateEphemeralPaths, effectiveEphemeralPaths } from './config.mjs';
 import { ContainerLauncher } from './container-launcher.mjs';
-import { readFile, mkdir, cp, rm, open, rename, readdir, access } from 'node:fs/promises';
+import { readFile, mkdir, cp, rm, open, rename, readdir, access, lstat } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { mkdtemp } from 'node:fs/promises';
@@ -10,9 +10,11 @@ import { tmpdir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
+import { validateEmptyWorkspace } from './workspace-sync.mjs';
+import { persistReceipt, reserveReceipt } from './receipt-persistence.mjs';
 const execFileAsync = promisify(execFile);
 
-const VERSION = '0.1.0';
+const VERSION = '0.1.1';
 const RUNTIME_IMAGE_TAG = `yoloharness-local:${VERSION}`;
 const RUNTIME_ENTRYPOINT = ['node', '/app/src/container-runtime.mjs'];
 // Kept local so production launcher errors do not require loading the agent
@@ -31,7 +33,7 @@ const AUTH_ENDPOINTS = Object.freeze({
   redirectUri: 'https://auth.openai.com/deviceauth/callback',
 });
 export const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
-function usage() { return 'Usage: yolo [-t MINUTES] [--json] <prompt>\n       yolo setup\n       yolo doctor\n       yolo config set model <model-id>\n       yolo auth login|status|logout\n       yolo --help\n       yolo --version'; }
+function usage() { return 'Usage: yolo [-t MINUTES] [--json] <prompt>\n       yolo setup\n       yolo doctor\n       yolo config set model <model-id>\n       yolo config ephemeral-path list|add|remove|reset [path]\n       yolo auth login|status|logout\n       yolo --help\n       yolo --version'; }
 export function parseArgs(args) {
   let minutes = 10; let json = false; const prompt = [];
   for (let i = 0; i < args.length; i += 1) {
@@ -52,39 +54,126 @@ export function parseArgs(args) {
 }
 
 export async function main(args = process.argv.slice(2), io = { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr }, { clientFactory } = {}) {
+  let deadlineTimer;
+  let runStarted = false;
+  let receiptAuthority;
+  let receiptTransferred = false;
   try {
     if (args[0] === 'setup') return await setupCommand(io);
     if (args[0] === 'doctor') return await doctorCommand(io);
     if (args[0] === 'auth') return await authCommand(args.slice(1), io, { clientFactory });
+
     if (args[0] === 'config') return await configCommand(args.slice(1), io);
     const options = parseArgs(args);
     if (options.help) { io.stdout.write(`${usage()}\n`); return 0; }
     if (options.version) { io.stdout.write(`${VERSION}\n`); return 0; }
-    io.stderr.write(`starting bounded run (${options.minutes} minutes)\n`);
-    io.stderr.write('Warning: files in the selected project are intentionally exposed to the agent and may be disclosed\n');
+    const deadline = Date.now() + options.minutes * 60_000;
     const controller = new AbortController();
+    deadlineTimer = setTimeout(() => controller.abort(Object.assign(new Error('run deadline exceeded'), { code: 'deadline' })), Math.max(1, deadline - Date.now()));
     const onInterrupt = () => { io.stderr.write('interrupt requested; stopping run\n'); controller.abort(new Error('SIGINT')); };
     process.once('SIGINT', onInterrupt);
     const workspace = process.cwd();
     const model = await resolveModel();
+    // Refuse before Docker, credentials, provider, or host mutation.
+    await validateEmptyWorkspace(workspace);
+    receiptAuthority = await reserveReceipt(workspace);
+    if (!receiptAuthority) {
+      const conflict = { version: 1, run_id: null, status: 'receipt_conflict', effect_state: 'none', result: null, evidence: [], artifacts: [], errors: ['authoritative receipt reservation conflict'] };
+      io.stdout.write(`${options.json ? JSON.stringify(conflict) : `receipt_conflict: ${conflict.errors[0]}`}\n`);
+      return 1;
+    }
+    io.stderr.write(`starting bounded run (${options.minutes} minutes)\n`);
+    io.stderr.write('Warning: files in the selected project are intentionally exposed to the agent and may be disclosed\n');
+    runStarted = true;
     // Resolve the trusted invoker-selected Docker client once.  The same
     // executable and normal Docker context/host configuration are used for
     // image inspection and the subsequent container lifecycle.
     const dockerCommand = await resolveDockerCommand();
-    const image = await configuredImage({ dockerCommand });
-    const credentials = await runtimeCredentials(options.minutes);
-    const launcher = new ContainerLauncher({ image, workspace, command: dockerCommand, timeoutMs: options.minutes * 60_000 + 10_000 });
-    const record = await launcher.launch({ prompt: options.prompt, model, deadline: Date.now() + options.minutes * 60_000, accessToken: credentials.accessToken, expiresAt: credentials.expiresAt }, { signal: controller.signal });
+    const image = await configuredImage({ dockerCommand, signal: controller.signal, deadline });
+    const credentials = await runtimeCredentials(options.minutes, deadline, { signal: controller.signal });
+    const config = await new ConfigStore(configPath()).load();
+    const launcher = new ContainerLauncher({ image, workspace, command: dockerCommand, timeoutMs: options.minutes * 60_000 });
+    const record = await launcher.launch({ prompt: options.prompt, model, ephemeralPaths: effectiveEphemeralPaths(config), deadline, accessToken: credentials.accessToken, expiresAt: credentials.expiresAt }, { signal: controller.signal, deadline, receiptAuthority });
+    receiptTransferred = true;
+    clearTimeout(deadlineTimer);
     process.removeListener('SIGINT', onInterrupt);
     io.stdout.write(`${options.json ? JSON.stringify(record) : `${record.status} run=${record.run_id ?? 'unknown'} effect_state=${record.effect_state ?? 'unknown'} evidence=${record.evidence?.length ?? 0} artifacts=${record.artifacts?.length ?? 0}: ${record.result ?? record.errors.join('; ')}`}\n`);
-    return record.status === 'completed' ? 0 : record.status === 'interrupted' ? 130 : record.status === 'deadline' ? 124 : 1;
+    return record.status === 'completed' && record.effect_state !== 'uncertain' ? 0 : record.status === 'interrupted' ? 130 : record.status === 'deadline' ? 124 : 1;
   } catch (error) {
+    if (receiptAuthority && !receiptTransferred) await receiptAuthority.close().catch(() => {});
+    clearTimeout(deadlineTimer);
     const message = error instanceof MissingProviderError ? error.message : error.message;
-    io.stderr.write(`${message}\n`); return 1;
+    if (hasCleanupUnknown(error)) {
+      const receipt = await buildCleanupUnknownReceipt(error, process.cwd());
+      io.stdout.write(`${JSON.stringify(receipt)}\n`);
+      return 1;
+    }
+    io.stderr.write(`${message}${runStarted ? '; generated output may be retained or partial; inspect it and delete the generated directory before retrying' : ''}\n`); return 1;
   }
 }
 
-export async function configuredImage({ inspect, dockerCommand } = {}) {
+export async function buildCleanupUnknownReceipt(error, workspace = process.cwd(), persistenceOptions) {
+  const prior = bestReceiptIn(error) ?? await readWorkspaceReceipt(workspace) ?? {};
+  const cleanup = cleanupErrorIn(error);
+  const errors = [...(Array.isArray(prior.errors) ? prior.errors : [])];
+  for (const value of [error?.message, cleanup && cleanup !== error ? cleanup.message : null]) {
+    if (value && !errors.includes(value)) errors.push(value);
+  }
+  const receipt = {
+    version: 1,
+    run_id: prior.run_id ?? null,
+    status: 'cleanup_unknown',
+    effect_state: 'uncertain',
+    result: prior.result ?? error?.partialResult ?? null,
+    evidence: Array.isArray(prior.evidence) ? prior.evidence : (Array.isArray(error?.partialEvidence) ? error.partialEvidence : []),
+    artifacts: Array.isArray(prior.artifacts) ? prior.artifacts : (Array.isArray(error?.partialArtifacts) ? error.partialArtifacts : []),
+    errors,
+    cleanup_history: cleanup?.cleanupHistory ?? prior.cleanup_history ?? [],
+  };
+  try { await persistReceipt(workspace, receipt, persistenceOptions); } catch {}
+  return receipt;
+}
+
+function bestReceiptIn(value, seen = new Set()) {
+  if (!value || typeof value !== 'object' || seen.has(value)) return null;
+  seen.add(value);
+  if (value.version === 1 && (value.run_id !== undefined || value.result !== undefined) && Array.isArray(value.evidence) && Array.isArray(value.artifacts)) return value;
+  for (const nested of [value.receipt, value.partialReceipt, value.cause, value.cleanupError, ...(value.errors ?? []), ...(value.aggregateErrors ?? [])]) {
+    const found = bestReceiptIn(nested, seen);
+    if (found) return found;
+  }
+  return null;
+}
+
+async function readWorkspaceReceipt(workspace) {
+  try {
+    const root = await open(workspace, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+    try {
+      const yolo = await open(join(workspace, '.yolo'), fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+      try {
+        const receipt = await open(join(workspace, '.yolo', 'last-receipt.json'), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+        const value = JSON.parse(await receipt.readFile('utf8'));
+        await receipt.close();
+        return value?.version === 1 ? value : null;
+      } finally { await yolo.close(); }
+    } finally { await root.close(); }
+  } catch { return null; }
+}
+
+function cleanupErrorIn(error, seen = new Set()) {
+  if (!error || typeof error !== 'object' || seen.has(error)) return null;
+  seen.add(error);
+  if (error.code === 'cleanup_unknown') return error;
+  for (const nested of [error.cleanupError, error.cause, ...(error.errors ?? []), ...(error.aggregateErrors ?? [])]) {
+    const found = cleanupErrorIn(nested, seen);
+    if (found) return found;
+  }
+  return null;
+}
+
+function hasCleanupUnknown(error) { return Boolean(cleanupErrorIn(error)); }
+
+export async function configuredImage({ inspect, dockerCommand, signal, deadline } = {}) {
   try {
     const value = JSON.parse(await readFile(imageMetadataPath(), 'utf8'));
     if (!value || Object.keys(value).length !== 4 || value.version !== 1 ||
@@ -93,7 +182,7 @@ export async function configuredImage({ inspect, dockerCommand } = {}) {
         typeof value.sourceVersion !== 'string' || !value.sourceVersion) throw new Error('invalid image metadata');
     const installed = await runtimeSourceIdentity();
     if (value.sourceDigest !== installed.sourceDigest || value.sourceVersion !== installed.sourceVersion) throw new Error('configured image metadata does not match installed runtime source');
-    const inspectImage = inspect ?? (image => inspectRuntimeImage(image, dockerCommand));
+    const inspectImage = inspect ?? (image => inspectRuntimeImage(image, dockerCommand, { signal, deadline }));
     const inspected = JSON.parse(await inspectImage(value.imageId));
     const config = inspected?.Config ?? {};
     if (inspected.Id !== value.imageId) throw new Error('runtime image identity did not match configured immutable ID');
@@ -104,9 +193,10 @@ export async function configuredImage({ inspect, dockerCommand } = {}) {
   } catch (error) { if (error.code === 'ENOENT') throw new MissingProviderError('no runtime image configured; run `yolo setup` before starting a run'); throw error; }
 }
 
-async function inspectRuntimeImage(image, dockerCommand = undefined) {
+async function inspectRuntimeImage(image, dockerCommand = undefined, { signal, deadline } = {}) {
   const docker = dockerCommand ?? await resolveDockerCommand();
-  const { stdout } = await execFileAsync(docker, ['image', 'inspect', '--format', '{{json .}}', image], { maxBuffer: 64 * 1024, env: dockerEnvironment() });
+  const remaining = deadline === undefined ? undefined : Math.max(1, deadline - Date.now());
+  const { stdout } = await execFileAsync(docker, ['image', 'inspect', '--format', '{{json .}}', image], { maxBuffer: 64 * 1024, env: dockerEnvironment(), signal, ...(remaining === undefined ? {} : { timeout: remaining }) });
   return stdout;
 }
 
@@ -186,13 +276,13 @@ async function saveImageMetadata(value) {
   } catch (error) { await rm(temp, { force: true }).catch(() => {}); throw error; }
 }
 
-export async function runtimeCredentials(minutes) {
+export async function runtimeCredentials(minutes, deadline = Date.now() + minutes * 60_000, { signal } = {}) {
   const path = process.env.YOLO_AUTH_FILE ?? join(configRoot(), 'yoloharness', 'credentials.json');
   const store = new AuthStore(path); let credentials = await store.load();
   if (!credentials?.accessToken || !credentials?.refreshToken || !Number.isFinite(credentials.expiresAt)) throw new MissingProviderError('no usable credentials; run `yolo auth login`');
-  const required = Date.now() + minutes * 60_000 + 30_000;
+  const required = deadline + 30_000;
   if (credentials.expiresAt <= required) {
-    credentials = await new AuthClient(authConfig(store, credentials.clientId, false)).refresh(credentials);
+    credentials = await new AuthClient(authConfig(store, credentials.clientId, false)).refresh(credentials, { signal });
   }
   if (!Number.isFinite(credentials.expiresAt) || credentials.expiresAt <= required) throw new MissingProviderError('access token lifetime does not cover the requested deadline; run `yolo auth login`');
   return credentials;
@@ -232,9 +322,17 @@ export async function resolveModel() {
   return saved.model;
 }
 
+
 async function configCommand(args, io) {
-  if (args.length !== 3 || args[0] !== 'set' || args[1] !== 'model') throw new TypeError('usage: yolo config set model <model-id>');
-  const model = validateModel(args[2]); const store = new ConfigStore(configPath()); await store.load(); await store.save(model); io.stdout.write(`saved model ${model}\n`); return 0;
+  const store = new ConfigStore(configPath());
+  if (args[0] === 'set' && args[1] === 'model' && args.length === 3) { const model = validateModel(args[2]); const prior = await store.load(); await store.saveDocument({ model, ephemeralPaths: effectiveEphemeralPaths(prior) }); io.stdout.write(`saved model ${model}\n`); return 0; }
+  if (args[0] !== 'ephemeral-path') throw new TypeError('usage: yolo config set model <model-id> | yolo config ephemeral-path list|add|remove|reset [path]');
+  const prior = await store.load(); const model = prior?.model ?? null;
+  const current = effectiveEphemeralPaths(prior); const action = args[1];
+  if (action === 'list' && args.length === 2) { if (prior?.version === 1 || !prior) await store.saveDocument({ model, ephemeralPaths: current }); for (const path of current) io.stdout.write(`${path}\n`); return 0; }
+  if (action === 'reset' && args.length === 2) { await store.saveDocument({ model, ephemeralPaths: DEFAULT_EPHEMERAL_PATHS }); io.stdout.write('ephemeral paths reset\n'); return 0; }
+  if ((action === 'add' || action === 'remove') && args.length === 3) { const path = validateEphemeralPath(args[2]); const next = action === 'add' ? [...current, path] : current.filter(value => value !== path); await store.saveDocument({ model, ephemeralPaths: validateEphemeralPaths(next) }); io.stdout.write(`${action === 'add' ? 'added' : 'removed'} ephemeral path ${path}\n`); return 0; }
+  throw new TypeError('usage: yolo config ephemeral-path list|add|remove|reset [path]');
 }
 
 export async function doctorStatus({ env = process.env, exec = execFileAsync } = {}) {

@@ -7,7 +7,7 @@ yolo "<prompt>"
 yolo -t 10 "<prompt>"
 ```
 
-One invocation, one goal, bounded autonomous work, a final result and artifacts, then exit. No ongoing chat interface, gateway, or task-management dashboard. Proposed default time budget: 10 minutes, subject to implementation validation. `-t` is a wall-clock maximum, not a requirement to keep working after completion; cancellation and stopping active tools must be real, not merely stopping output. Setup/auth is separate from the work budget. At deadline, report the verified partial result, remaining work, and any uncertain effects rather than claim success.
+One invocation, one goal, bounded autonomous work, a final result and artifacts, then exit. No ongoing chat interface, gateway, or task-management dashboard. Proposed default time budget: 10 minutes, subject to implementation validation. `-t` is the model/bootstrap budget; current preflight occurs before it, runtime startup can consume it, and cleanup/finalization may extend process lifetime. Do not treat it as a proven strict wall-clock maximum until the attached-client watchdog and relative runtime deadline gaps are fixed and tested. At deadline, report the verified partial result, remaining work, and any uncertain effects rather than claim success.
 
 Keep the original design's useful pieces: scoped tools, evidence-backed memory, compact context, budgets, inspectable events, and isolated experimentation. Memory can persist across invocations without introducing a chat product. Do not add a large framework to support a small command.
 
@@ -34,7 +34,7 @@ Do not copy existing Hermes credentials into the project or commit auth state. N
 
 Target a disposable container for each run. Docker may be installed later by Ryan; no installation is requested now. Mount only the selected project, not the whole home, SSH directory, Docker socket, or credential store. Run without privilege, constrain resources, and make network access deliberate. Keep provider credentials outside the untrusted tool-execution environment; assess a small host-side auth/model broker rather than giving arbitrary shell tools access to refresh tokens. A container alone is not a complete sandbox.
 
-The shipped Linux MVP is an installable, container-only CLI. The historical prototype remains a local deterministic fixture and is not part of the package; neither path is a safe autonomous host-shell agent fallback. Skills are limited to project/shared roots, project precedence, bounded regular-file snapshots, and container-side loading.
+The shipped Linux MVP is an installable, container-only CLI. It has no autonomous host-shell fallback. Skills are limited to project/shared roots, project precedence, bounded regular-file snapshots, and container-side loading.
 
 ## Current authorization
 

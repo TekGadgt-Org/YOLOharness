@@ -1,6 +1,6 @@
 # YOLOharness — the harness I would choose
 
-Status: design proposal from a timeboxed multi-profile jam, not a claim of model-optimality or a finished agent. The prototype is a separate deterministic experiment. Public sources inform this document; unreleased OpenAI internals are unknown.
+Status: design proposal from a timeboxed multi-profile jam, not a claim of model-optimality or a finished agent. Public sources inform this document; unreleased OpenAI internals are unknown.
 
 ## The bet
 
@@ -33,7 +33,7 @@ CLI / later local read-only inspector
   -> ordered events -> reducer -> task views / recovery / evidence
 ```
 
-Six modules, one local process initially: `runtime`, `codex`, `context`, `memory`, `policy`, `cli`. SQLite is the proposed transactional source of truth; JSONL is an export format and the disposable prototype's store. Do not turn the spike's flat log into a promise of concurrent/crash-safe durability. No Redis, vector service, always-on browser, message bus, or multi-node scheduler at launch.
+Six modules, one local process initially: `runtime`, `codex`, `context`, `memory`, `policy`, `cli`. SQLite is the proposed transactional source of truth; JSONL is an export format. Do not turn a flat log into a promise of concurrent/crash-safe durability. No Redis, vector service, always-on browser, message bus, or multi-node scheduler at launch.
 
 ### Task and event contracts
 
@@ -43,7 +43,7 @@ Task states: `ready`, `running`, `waiting_approval`, `waiting_input`, `completed
 
 Production event envelope: `version`, `run_id`, `seq`, `event_id`, `at`, `type`, `payload`, `causation_id`. Unique `(run_id, seq)`, a single authorized writer per run, and transactional state transitions. Payloads are bounded and redacted before persistence; full permitted artifacts are referenced rather than repeatedly embedded.
 
-Minimal production events: `run.started`, `turn.requested`, `turn.finished`, `evidence.recorded`, `effect.proposed`, `approval.recorded`, `effect.started`, `effect.finished`, `checkpoint.saved`, `run.stopped`. This proposed vocabulary is not the prototype API.
+Minimal production events: `run.started`, `turn.requested`, `turn.finished`, `evidence.recorded`, `effect.proposed`, `approval.recorded`, `effect.started`, `effect.finished`, `checkpoint.saved`, `run.stopped`. This vocabulary is a design contract for the production runtime.
 
 Recovery reconstructs recorded state; **replay never executes tools**. A started effect without a terminal receipt is `unknown`, not safe to retry. Reconcile via external readback or ask the operator. Exactly-once external execution cannot be guaranteed by a local log.
 
@@ -81,7 +81,7 @@ Budget wall time, model turns, tool calls, output bytes, and provider usage when
 
 Operator should be able to ask: Why did you remember this? What will run? What did you actually verify? What survived compaction? What is still running? Show concise answers backed by event/artifact IDs.
 
-Proposed UX commands in `ux/interaction-design.md` are a design, not shipped commands. The prototype README is authoritative for the code actually present.
+Proposed UX commands are a design, not shipped commands. The shipped CLI supports only the bounded container path and explicitly configured provider paths.
 
 ## Integration constraint check (collaborative-problem-solving)
 
@@ -121,5 +121,3 @@ A small replayable evaluation set: bug repair, cross-file feature, long interrup
 - Codex app-server: https://developers.openai.com/codex/app-server — documented auth/history/approval/streaming integration; stdio transport.
 - Hermes persistent memory: https://hermes-agent.nousresearch.com/docs/user-guide/features/memory/ — bounded curated memory and frozen session snapshot for cache stability.
 - OpenClaw agent loop: https://docs.openclaw.ai/concepts/agent-loop — serialized session runs, runtime events, cancellation, writer claims.
-
-See `research/findings.md` for the specialist comparison and additional source qualifications once delivered.

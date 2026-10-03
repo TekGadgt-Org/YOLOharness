@@ -182,10 +182,17 @@ export class ContainerLauncher {
           catch (error) {
             if (error.code !== 'EEXIST') throw error;
             const existing = await open(`/proc/self/fd/${yolo.fd}/last-receipt.json`, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-            try {
-              JSON.parse(await existing.readFile('utf8'));
-            } finally { await existing.close(); }
-            receipt = null;
+            let prior;
+            try { prior = JSON.parse(await existing.readFile('utf8')); }
+            finally { await existing.close(); }
+            // The runtime's private receipt is an ownership-bound handoff:
+            // publication may have materialized it before the launcher adds
+            // cleanup/deadline evidence.  Only this explicit runtime marker
+            // permits the launcher to complete that handoff; all other
+            // preexisting content remains create-only and untouched.
+            if (prior?.receipt_owner === 'runtime') {
+              receipt = await open(`/proc/self/fd/${yolo.fd}/last-receipt.json`, fsConstants.O_WRONLY | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW);
+            } else receipt = null;
           }
           if (receipt) { try { await receipt.writeFile(`${JSON.stringify(outcome)}\n`); await receipt.sync(); } finally { await receipt.close(); } }
           }

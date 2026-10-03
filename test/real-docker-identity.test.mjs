@@ -82,7 +82,10 @@ async function cleanupOwned(fixture, foreignId = null, runDocker = docker) {
   const resources = [
     ['container', fixture.provider, ['rm', '--force', fixture.provider]],
     ['network', fixture.network, ['network', 'rm', fixture.network]],
-    ['image', fixture.tag, ['image', 'rm', fixture.tag]],
+    // The derivative image is fixture-owned. Force removal only after its
+    // fixture-owned provider/runtime containers have been reaped; this keeps
+    // cleanup deterministic when Docker retains a stopped container reference.
+    ['image', fixture.tag, ['image', 'rm', '--force', fixture.tag]],
   ];
   const history = { attempts: [], errors: [], retries: [], successes: [] };
   for (let attempt = 0; attempt < 3 && resources.length; attempt += 1) {

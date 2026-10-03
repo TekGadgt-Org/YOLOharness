@@ -16,5 +16,44 @@ export async function validateEmptyWorkspace(workspace = process.cwd()) { const 
 
 export async function seedWorkspace(source, staged, dependencyNames = [], baselinePath = join(staged, MANIFEST)) { const exclusions = normalizeExclusions(dependencyNames); await rm(staged, { recursive: true, force: true }); await mkdir(staged, { recursive: true, mode: 0o700 }); const entries = await walk(source, exclusions); for (const entry of entries) { const target = join(staged, entry.key); if (entry.info.isDirectory()) await mkdir(target, { recursive: true, mode: entry.info.mode & 0o777 }); else { await mkdir(dirname(target), { recursive: true, mode: 0o700 }); const fh = await open(target, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, entry.info.mode & 0o777); try { await fh.writeFile(await readFile(entry.path)); } finally { await fh.close(); } } } await writeFile(baselinePath, JSON.stringify({ version: 2, entries: Object.fromEntries(entries.map(entry => [entry.key, entry.info.isFile() ? 'file' : 'directory'])) }) + '\n', { mode: 0o600 }); }
 
-async function destinationCheck(destination, key) { const parts = key.split('/'); let current = destination; for (const part of parts) { current = join(current, part); const existing = await lstat(current).catch(() => null); if (!existing) continue; const info = await ownerSafe(current); if (!info.isDirectory() || current === join(destination, key)) throw new Error(`publication conflict: ${key}`); } }
-export async function publishWorkspace(staged, destination, dependencyNames = []) { const exclusions = normalizeExclusions(dependencyNames); const names = await readdir(destination); if (names.some(name => name !== HARNESS_PREFIX)) throw new Error('publication destination is not empty'); const entries = await walk(staged, exclusions); let created = 0; try { for (const entry of entries) { await destinationCheck(destination, entry.key); const target = join(destination, entry.key); if (entry.info.isDirectory()) { await mkdir(target, { mode: entry.info.mode & 0o777 }); created += 1; continue; } await mkdir(dirname(target), { recursive: true, mode: 0o700 }); const fh = await open(target, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, entry.info.mode & 0o777); try { await fh.writeFile(await readFile(entry.path)); await fh.sync(); } finally { await fh.close(); } created += 1; } return { version: 1, published: true, created }; } catch (error) { throw Object.assign(new Error(`publication_incomplete: ${error.message}; inspect or delete the generated directory before retrying`), { code: 'publication_incomplete', created }); } }
+async function anchoredDir(base, parts, create = false) {
+  const baseFlags = base.startsWith('/proc/self/fd/') ? fsConstants.O_RDONLY | fsConstants.O_DIRECTORY : fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW;
+  let fd = await open(base, baseFlags);
+  try {
+    for (const part of parts) {
+      if (part === '.' || part === '..' || part.includes('/')) throw new Error(`unsafe publication path: ${parts.join('/')}`);
+      const child = `/proc/self/fd/${fd.fd}/${part}`;
+      if (create) await mkdir(child, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
+      const next = await open(child, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+      await fd.close(); fd = next;
+    }
+    return fd;
+  } catch (error) { await fd.close().catch(() => {}); throw error; }
+}
+async function anchoredCreate(base, key, flags, mode) {
+  const parts = key.split('/'); const leaf = parts.pop();
+  const dir = await anchoredDir(base, parts, true);
+  try { return await open(`/proc/self/fd/${dir.fd}/${leaf}`, flags | fsConstants.O_NOFOLLOW, mode); }
+  finally { await dir.close(); }
+}
+export async function publishWorkspace(staged, destination, dependencyNames = []) {
+  const exclusions = normalizeExclusions(dependencyNames); const dest = await anchoredDir(destination, []);
+  try {
+    const names = await readdir(`/proc/self/fd/${dest.fd}`); if (names.some(name => name !== HARNESS_PREFIX)) throw new Error('publication destination is not empty');
+    const entries = await walk(staged, exclusions); let created = 0;
+    try {
+      for (const entry of entries) {
+        const parts = entry.key.split('/'); const leaf = parts.pop(); const parent = await anchoredDir(`/proc/self/fd/${dest.fd}`, parts, true);
+        try {
+          const target = `/proc/self/fd/${parent.fd}/${leaf}`;
+          if (entry.info.isDirectory()) { await mkdir(target, { mode: entry.info.mode & 0o777 }); created += 1; }
+          else { const fh = await open(target, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, entry.info.mode & 0o777); try { await fh.writeFile(await readFile(entry.path)); await fh.sync(); } finally { await fh.close(); } created += 1; }
+        } finally { await parent.close(); }
+      }
+      return { version: 1, published: true, created, created_entries: created };
+    } catch (error) {
+      const receipt = Object.assign(new Error(`publication_incomplete: ${error.message}; inspect or delete the generated directory before retrying`), { code: 'publication_incomplete', created_entries: created });
+      throw receipt;
+    }
+  } finally { await dest.close(); }
+}

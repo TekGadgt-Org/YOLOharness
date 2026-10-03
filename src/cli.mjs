@@ -64,6 +64,7 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     if (options.version) { io.stdout.write(`${VERSION}\n`); return 0; }
     io.stderr.write(`starting bounded run (${options.minutes} minutes)\n`);
     io.stderr.write('Warning: files in the selected project are intentionally exposed to the agent and may be disclosed\n');
+    const deadline = Date.now() + options.minutes * 60_000;
     const controller = new AbortController();
     const onInterrupt = () => { io.stderr.write('interrupt requested; stopping run\n'); controller.abort(new Error('SIGINT')); };
     process.once('SIGINT', onInterrupt);
@@ -76,10 +77,10 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     // image inspection and the subsequent container lifecycle.
     const dockerCommand = await resolveDockerCommand();
     const image = await configuredImage({ dockerCommand });
-    const credentials = await runtimeCredentials(options.minutes);
+    const credentials = await runtimeCredentials(options.minutes, deadline);
     const config = await new ConfigStore(configPath()).load();
-    const launcher = new ContainerLauncher({ image, workspace, command: dockerCommand, timeoutMs: options.minutes * 60_000 + 10_000 });
-    const record = await launcher.launch({ prompt: options.prompt, model, ephemeralPaths: effectiveEphemeralPaths(config), deadline: Date.now() + options.minutes * 60_000, accessToken: credentials.accessToken, expiresAt: credentials.expiresAt }, { signal: controller.signal });
+    const launcher = new ContainerLauncher({ image, workspace, command: dockerCommand, timeoutMs: options.minutes * 60_000 });
+    const record = await launcher.launch({ prompt: options.prompt, model, ephemeralPaths: effectiveEphemeralPaths(config), deadline, accessToken: credentials.accessToken, expiresAt: credentials.expiresAt }, { signal: controller.signal, deadline });
     process.removeListener('SIGINT', onInterrupt);
     io.stdout.write(`${options.json ? JSON.stringify(record) : `${record.status} run=${record.run_id ?? 'unknown'} effect_state=${record.effect_state ?? 'unknown'} evidence=${record.evidence?.length ?? 0} artifacts=${record.artifacts?.length ?? 0}: ${record.result ?? record.errors.join('; ')}`}\n`);
     return record.status === 'completed' && record.effect_state !== 'uncertain' ? 0 : record.status === 'interrupted' ? 130 : record.status === 'deadline' ? 124 : 1;
@@ -252,11 +253,11 @@ async function saveImageMetadata(value) {
   } catch (error) { await rm(temp, { force: true }).catch(() => {}); throw error; }
 }
 
-export async function runtimeCredentials(minutes) {
+export async function runtimeCredentials(minutes, deadline = Date.now() + minutes * 60_000) {
   const path = process.env.YOLO_AUTH_FILE ?? join(configRoot(), 'yoloharness', 'credentials.json');
   const store = new AuthStore(path); let credentials = await store.load();
   if (!credentials?.accessToken || !credentials?.refreshToken || !Number.isFinite(credentials.expiresAt)) throw new MissingProviderError('no usable credentials; run `yolo auth login`');
-  const required = Date.now() + minutes * 60_000 + 30_000;
+  const required = deadline + 30_000;
   if (credentials.expiresAt <= required) {
     credentials = await new AuthClient(authConfig(store, credentials.clientId, false)).refresh(credentials);
   }

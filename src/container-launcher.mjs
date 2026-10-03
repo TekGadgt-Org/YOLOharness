@@ -1,6 +1,7 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { realpath, readdir, lstat, readFile, readlink, writeFile, mkdir, rmdir } from 'node:fs/promises';
+import { realpath, readdir, lstat, readFile, readlink, writeFile, mkdir, rmdir, open } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import { join, relative } from 'node:path';
 import { encodeBootstrap } from './bootstrap.mjs';
 import { snapshotSkills } from './skills.mjs';
@@ -33,9 +34,9 @@ export class ContainerLauncher {
     this.image = image; this.workspace = workspace; this.command = command; this.spawn = spawn; this.timeoutMs = timeoutMs; this.hostPlatform = hostPlatform;
   }
 
-  async launch(bootstrap, { signal } = {}) {
+  async launch(bootstrap, { signal, deadline } = {}) {
     const startedAt = Date.now();
-    const executionDeadline = startedAt + this.timeoutMs;
+    const executionDeadline = Number.isFinite(deadline) ? deadline : startedAt + this.timeoutMs;
     const remaining = () => Math.max(1, executionDeadline - Date.now());
     if (signal?.aborted) throw signal.reason;
     const ephemeralPaths = bootstrap?.ephemeralPaths === undefined
@@ -122,7 +123,7 @@ export class ContainerLauncher {
 
     } catch (error) {
       if (error?.code === 'publication_incomplete') {
-        outcome = { version: 1, run_id: null, status: 'publication_incomplete', effect_state: 'uncertain', result: null, evidence: [], artifacts: [], errors: [error.message] };
+        outcome = error.receipt ?? { version: 1, run_id: null, status: 'publication_incomplete', effect_state: 'uncertain', result: null, evidence: [], artifacts: [], created_entries: error.created_entries ?? 0, errors: [error.message] };
         failure = null;
       } else {
         failure = error;
@@ -156,8 +157,16 @@ export class ContainerLauncher {
     }
     if (outcome) {
       outcome = { ...outcome, execution_deadline: executionDeadline, cleanup_deadline: cleanupDeadline, cleanup_grace_ms: CLEANUP_TOTAL_MS };
-      await mkdir(join(this.workspace, '.yolo', 'runs'), { recursive: true, mode: 0o700 }).catch(() => {});
-      try { await mkdir(join(this.workspace, '.yolo'), { recursive: true, mode: 0o700 }); await writeFile(join(this.workspace, '.yolo', 'last-receipt.json'), `${JSON.stringify(outcome)}\n`, { mode: 0o600 }); }
+      try {
+        const root = await open(this.workspace, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+        try {
+          const yoloPath = `/proc/self/fd/${root.fd}/.yolo`;
+          await mkdir(yoloPath, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
+          const yolo = await open(yoloPath, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+          try { const receipt = await open(`/proc/self/fd/${yolo.fd}/last-receipt.json`, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW, 0o600); try { await receipt.writeFile(`${JSON.stringify(outcome)}\n`); await receipt.sync(); } finally { await receipt.close(); } }
+          finally { await yolo.close(); }
+        } finally { await root.close(); }
+      }
       catch (error) { outcome = { ...outcome, status: 'cleanup_unknown', effect_state: 'uncertain', errors: [...(outcome.errors ?? []), `receipt persistence failed: ${error.message}`] }; }
     }
     if (failure) throw failure;
@@ -201,6 +210,7 @@ async function runWorkspaceHelper(command, image, volume, label, identity, role,
     verified = true;
     const result = await operation(command, ['start', '--attach', id], spawn, options).promise;
     const evidence = JSON.parse(result.trim());
+    if (evidence?.status === 'publication_incomplete') throw Object.assign(new Error(evidence.errors?.at(-1) ?? 'publication incomplete'), { code: 'publication_incomplete', receipt: evidence, created_entries: evidence.created_entries });
     const expected = role === 'workspace-seed' ? evidence.seeded === true : evidence.published === true;
     const fixtureCompatible = evidence.ownership === true || evidence.marker === 'write-read-remove';
     if (evidence?.version !== 1 || (!expected && !fixtureCompatible)) throw new Error(`${role} helper returned malformed verification`);

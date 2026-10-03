@@ -2,11 +2,11 @@
 import { createReadStream } from 'node:fs';
 import { lstat, readdir } from 'node:fs/promises';
 import { relative, join } from 'node:path';
-import { encodeRecordHeader } from './workspace-protocol.mjs';
-const excluded = new Set(['node_modules', '.venv', 'vendor', '.godot', 'target', ...process.argv.slice(2)]);
+import { encodeEnd, encodeRecordHeader } from './workspace-protocol.mjs';
+const excluded = new Set(['.yolo', 'node_modules', '.venv', 'vendor', '.godot', 'target', ...process.argv.slice(2)]);
 const out = process.stdout;
-const write = chunk => new Promise((resolve, reject) => { if (out.write(chunk)) resolve(); else out.once('drain', resolve); out.once('error', reject); });
-await write(Buffer.from('YHP1'));
+const write = chunk => new Promise((resolve, reject) => out.write(chunk, error => error ? reject(error) : resolve()));
+await write(Buffer.from('YHP2'));
 async function walk(root, current = root) {
   for (const name of (await readdir(current)).sort()) {
     if (excluded.has(name)) continue;
@@ -18,3 +18,4 @@ async function walk(root, current = root) {
   }
 }
 await walk('/tmp/workspace');
+await write(encodeEnd());

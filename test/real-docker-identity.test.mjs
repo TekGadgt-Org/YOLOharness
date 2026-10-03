@@ -494,7 +494,15 @@ test('packed public executable preserves production reconciler history through c
     const records = await jsonl(fixture.log); const runtimeCreate = records.find(record => record.argv[0] === 'create' && record.argv.includes('/app/src/container-runtime.mjs')); assert.ok(runtimeCreate);
     const scratch = runtimeCreate.argv[runtimeCreate.argv.indexOf('--mount') + 1].match(/^type=volume,src=([^,]+)/)?.[1]; assert.match(scratch ?? '', /^yoloharness-scratch-[0-9a-f-]+$/);
     const normalizeHistory = history => history.map(({ at, ...event }) => event);
-    const expectedHistory = [];
+    const expectedHistory = [
+      { name: scratch, action: 'attempt', operation: 'inspect' },
+      { name: scratch, action: 'attempt', operation: 'remove' },
+      { name: scratch, action: 'error', operation: 'remove', classification: 'busy', error: 'docker operation failed (1): Error response from daemon: volume is busy' },
+      { name: scratch, action: 'retry', classification: 'busy' },
+      { name: scratch, action: 'attempt', operation: 'remove' },
+      { name: scratch, action: 'error', operation: 'remove', classification: 'permission', error: 'docker operation failed (1): Error response from daemon: permission denied' },
+      { name: scratch, action: 'terminal', classification: 'permission' },
+    ];
     assert.deepEqual(normalizeHistory(receipt.cleanup_history), expectedHistory);
     assert.deepEqual(normalizeHistory(JSON.parse(await readFile(join(fixture.workspace, '.yolo', 'last-receipt.json'), 'utf8')).cleanup_history), expectedHistory);
     assert.equal(records.some(record => record.argv.some(value => /last-receipt|chmod|runtime-output\.json/.test(value))), false);

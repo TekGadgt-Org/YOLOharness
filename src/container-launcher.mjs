@@ -16,6 +16,7 @@ const OP_TIMEOUT = 10_000;
 const CLEANUP_TOTAL_MS = 3000;
 const CLEANUP_STABLE_ABSENCE_MS = 500;
 const CLEANUP_POLL_MS = 50;
+
 const VOLUME_PREFIX = 'yoloharness-scratch-';
 const HELPER_PREFIX = 'yoloharness-scratch-';
 // These paths are materialized by Docker inside every container and therefore
@@ -131,7 +132,11 @@ export class ContainerLauncher {
         // Publication is a separate durability step. Keep the runtime's
         // authoritative receipt as the launcher outcome; the publication
         // helper must not replace it with its transport-only summary.
-        await runWorkspaceExportPublisher(this.command, this.image, volumeName, label, identity, ephemeralPaths, this.workspace, this.spawn, { deadline: reason ? cleanupDeadline : executionDeadline, cleanupDeadline: () => cleanupDeadline });
+        await runWorkspaceExportPublisher(this.command, this.image, volumeName, label, identity, ephemeralPaths, this.workspace, this.spawn, {
+          signal,
+          deadline: reason ? cleanupDeadline : executionDeadline,
+          cleanupDeadline: () => (cleanupDeadline ??= Date.now() + CLEANUP_TOTAL_MS),
+        });
       }
       if (reason) {
         const partial = lastReceipt(result.out) ?? await workspaceReceipt(this.workspace);
@@ -146,7 +151,7 @@ export class ContainerLauncher {
 
     } catch (error) {
       if (error?.code === 'publication_incomplete') {
-        outcome = error.receipt ?? { version: 1, run_id: null, status: 'publication_incomplete', effect_state: 'uncertain', result: null, evidence: [], artifacts: [], created_entries: error.created_entries ?? 0, errors: [error.message] };
+        outcome = error.receipt ?? { version: 1, run_id: null, status: 'publication_incomplete', effect_state: 'uncertain', result: null, evidence: error.partial_evidence ?? [], artifacts: [], created_entries: error.created_entries ?? 0, created_entry_paths: error.created_entry_paths ?? [], publication_result: error.publicationResult ?? null, errors: [error.message] };
         failure = null;
       } else {
         failure = error;
@@ -186,7 +191,7 @@ export class ContainerLauncher {
       if (cleanupError?.cleanupHistory && outcome) outcome = { ...outcome, cleanup_history: cleanupError.cleanupHistory };
       if (cleanupError) {
         const message = cleanupError.code === 'cleanup_unknown' ? `cleanup_unknown: ${dockerErrorOutput(cleanupError) || cleanupError.cause?.message || cleanupError.message}` : cleanupError.message;
-        if (outcome) outcome = { ...outcome, status: reason ? (reason.code === 'deadline' ? 'deadline' : 'interrupted') : (['interrupted', 'deadline'].includes(outcome.status) ? outcome.status : 'cleanup_unknown'), effect_state: 'uncertain', errors: [...(outcome.errors ?? []), message], cleanup_history: cleanupError.cleanupHistory ?? outcome.cleanup_history ?? [] }
+        if (outcome) outcome = { ...outcome, status: 'cleanup_unknown', effect_state: 'uncertain', errors: [...(outcome.errors ?? []), message], cleanup_history: cleanupError.cleanupHistory ?? outcome.cleanup_history ?? [] }
         else if (failure) { failure.cleanupError = cleanupError; failure.receipt = await workspaceReceipt(this.workspace); }
         else failure = cleanupError;
       }
@@ -262,38 +267,90 @@ async function runWorkspaceHelper(command, image, volume, label, identity, role,
   }
 }
 
-async function runWorkspaceExportPublisher(command, image, volume, label, identity, paths, destination, spawn, { deadline, cleanupDeadline } = {}) {
+export async function runWorkspaceExportPublisher(command, image, volume, label, identity, paths, destination, spawn, { signal, deadline, cleanupDeadline } = {}) {
   const role = 'workspace-publish'; const name = `${HELPER_PREFIX}${role}-${label}`;
   const args = ['create', '--pull=never', '--name', name, '--label', `yoloharness.run=${label}`, '--label', `yoloharness.role=${role}`, '--init', '--network', 'none', '--read-only', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--pids-limit', RUNTIME_RESOURCE_POLICY.pids, '--memory', RUNTIME_RESOURCE_POLICY.memory, '--cpus', RUNTIME_RESOURCE_POLICY.cpus, '--user', `${identity.uid}:${identity.gid}`, '--mount', `type=volume,src=${volume},dst=/tmp,volume-nocopy,readonly`, '--entrypoint', 'node', image, '/app/src/workspace-publish.mjs', ...paths];
-  let id; let verified = false; let attached; let attachedClosed = false;
+  let id; let verified = false; let attached; let closeObserved = false;
+  const observe = (tag, promise) => promise.then(value => ({ tag, ok: true, value }), error => ({ tag, ok: false, error }));
+  const until = async (promise, limit, tag) => {
+    if (!Number.isFinite(limit)) return promise;
+    let timer;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise(resolve => { timer = setTimeout(() => resolve({ tag, ok: false, timeout: true, error: Object.assign(new Error(`${tag} deadline exceeded`), { code: 'deadline' }) }), Math.max(1, limit - Date.now())); }),
+      ]);
+    } finally { clearTimeout(timer); }
+  };
   try {
-    id = (await operation(command, args, spawn, { deadline, cleanupDeadline }).promise).trim();
+    id = (await operation(command, args, spawn, { signal, deadline, cleanupDeadline }).promise).trim();
     if (!/^[a-f0-9]{64}$/i.test(id)) throw new Error('workspace exporter returned an invalid container ID');
     await verifyOwnedContainer(command, id, name, label, spawn, role, { deadline }); verified = true;
     attached = spawn(command, ['start', '--attach', id], { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: DOCKER_ENV() });
-    const close = new Promise((resolve, reject) => {
-      attached.once('error', reject);
-      attached.once('close', (code, signalName) => { attachedClosed = true; return code === 0 ? resolve({ code, signal: signalName }) : reject(Object.assign(new Error(`workspace exporter exited (${code ?? signalName})`), { code: 'exporter_exit', exitCode: code, signal: signalName })); });
+    const closeOutcome = new Promise(resolve => {
+      attached.once('close', (code, signalName) => { closeObserved = true; resolve({ tag: 'close', ok: code === 0, code, signal: signalName }); });
     });
-    // Install stream observers before reading. This avoids missing close/error
-    // when Docker emits a short export synchronously.
+    const errorOutcome = new Promise(resolve => attached.once('error', error => resolve({ tag: 'child_error', ok: false, error })));
     attached.stderr?.on('data', () => {});
     const stream = attached.stdout;
     if (!stream || typeof stream[Symbol.asyncIterator] !== 'function') throw new Error('workspace exporter did not provide framed stdout');
-    const parse = publishExport(stream, destination, paths, { signal, deadline });
-    const remaining = Number.isFinite(deadline) ? Math.max(1, deadline - Date.now()) : undefined;
-    let timer;
-    const expiry = new Promise((_, reject) => { if (remaining !== undefined) timer = setTimeout(() => reject(Object.assign(new Error('workspace export deadline exceeded'), { code: 'deadline' })), remaining); });
-    let result;
-    try { result = await Promise.race([parse, expiry, ...(signal ? [new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason ?? Object.assign(new Error('workspace export aborted'), { code: 'aborted' })), { once: true }))] : [])]); }
-    catch (error) { attached.kill('SIGTERM'); await close.catch(() => {}); await parse.catch(() => {}); throw error; }
-    finally { if (timer) clearTimeout(timer); }
-    await close;
-    if (result?.published !== true) throw new Error('workspace exporter returned malformed publication');
+    const parseOutcome = observe('parse', publishExport(stream, destination, paths, { signal, deadline }));
+    let abortListener;
+    const abortOutcome = signal && new Promise(resolve => {
+      abortListener = () => resolve({ tag: 'abort', ok: false, error: signal.reason ?? Object.assign(new Error('workspace export aborted'), { code: 'aborted' }) });
+      if (signal.aborted) abortListener(); else signal.addEventListener('abort', abortListener, { once: true });
+    });
+    let deadlineTimer;
+    const deadlineOutcome = Number.isFinite(deadline) && new Promise(resolve => {
+      deadlineTimer = setTimeout(() => resolve({ tag: 'deadline', ok: false, error: Object.assign(new Error('workspace export deadline exceeded'), { code: 'deadline' }) }), Math.max(1, deadline - Date.now()));
+    });
+    const never = new Promise(() => {});
+    const joined = Promise.all([parseOutcome, closeOutcome]).then(([parse, close]) => ({ tag: 'joined', parse, close }));
+    const first = await Promise.race([
+      joined,
+      parseOutcome.then(outcome => outcome.ok ? never : outcome),
+      closeOutcome.then(outcome => outcome.ok ? never : outcome),
+      errorOutcome,
+      ...(abortOutcome ? [abortOutcome] : []),
+      ...(deadlineOutcome ? [deadlineOutcome] : []),
+    ]);
+    clearTimeout(deadlineTimer);
+    if (abortListener) signal.removeEventListener('abort', abortListener);
+
+    let failure = first.tag === 'joined' ? (!first.parse.ok ? first.parse.error : !first.close.ok ? Object.assign(new Error(`workspace exporter exited (${first.close.code ?? first.close.signal})`), { code: 'exporter_exit', exitCode: first.close.code, signal: first.close.signal }) : undefined) : first.error ?? (first.tag === 'close' ? Object.assign(new Error(`workspace exporter exited (${first.code ?? first.signal})`), { code: 'exporter_exit', exitCode: first.code, signal: first.signal }) : undefined);
+    const hardDeadline = cleanupDeadline?.() ?? deadline;
+    if (failure && !closeObserved) {
+      attached.kill('SIGTERM');
+      await until(closeOutcome, Math.min(Date.now() + 50, hardDeadline), 'exporter close');
+      if (!closeObserved) attached.kill('SIGKILL');
+    }
+    const parse = first.tag === 'joined' ? first.parse : await until(parseOutcome, hardDeadline, 'export parser');
+    const close = first.tag === 'joined' ? first.close : await until(closeOutcome, hardDeadline, 'exporter close');
+    if (!closeObserved || close.timeout) {
+      throw Object.assign(new Error('workspace exporter close was not observed'), { code: 'cleanup_unknown', clientCloseObserved: false, publicationResult: parse.ok ? parse.value : undefined, partial_evidence: parse.error?.partial_evidence });
+    }
+    if (!parse.ok) failure ??= parse.error;
+    if (!close.ok) failure ??= Object.assign(new Error(`workspace exporter exited (${close.code ?? close.signal})`), { code: 'exporter_exit', exitCode: close.code, signal: close.signal });
+    if (failure) {
+      const publicationResult = parse.ok ? parse.value : undefined;
+      const source = parse.error ?? failure;
+      throw Object.assign(new Error(`publication_incomplete: ${failure.message}`), {
+        code: 'publication_incomplete',
+        cause: failure,
+        exitCode: close.code,
+        signal: close.signal,
+        publicationResult,
+        created_entries: publicationResult?.created ?? source.created_entries ?? 0,
+        created_entry_paths: publicationResult?.created_entries ?? source.created_entry_paths ?? [],
+        partial_evidence: publicationResult?.partial_evidence ?? source.partial_evidence ?? [],
+        clientCloseObserved: true,
+      });
+    }
+    if (parse.value?.published !== true) throw new Error('workspace exporter returned malformed publication');
+    return parse.value;
   } finally {
-    if (attached && !attachedClosed && !attached.killed && attached.exitCode === null) { attached.kill('SIGTERM'); await new Promise(resolve => attached.once('close', resolve)); }
-    if (verified) await reapHelper(command, id, name, label, role, spawn, { deadline: cleanupDeadline?.() ?? deadline });
-    else if (id) await reconcileUnknownCreate(command, name, label, spawn, role, { deadline: cleanupDeadline?.() ?? deadline });
+    if (verified && closeObserved) await reapHelper(command, id, name, label, role, spawn, { deadline: cleanupDeadline?.() ?? deadline });
+    else if (id && !verified) await reconcileUnknownCreate(command, name, label, spawn, role, { deadline: cleanupDeadline?.() ?? deadline });
   }
 }
 

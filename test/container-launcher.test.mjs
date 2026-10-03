@@ -3,11 +3,15 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, stat, link, symlink, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { ContainerLauncher, validateWorkspace, decodeMountInfoTargets, containerIdentity } from '../src/container-launcher.mjs';
+import { PassThrough } from 'node:stream';
+import { ContainerLauncher, validateWorkspace, decodeMountInfoTargets, containerIdentity, runWorkspaceExportPublisher } from '../src/container-launcher.mjs';
+import { encodeExport } from '../src/workspace-protocol.mjs';
 import { persistReceipt } from '../src/receipt-persistence.mjs';
 import { configuredImage, runtimeSourceIdentity } from '../src/cli.mjs';
 import { RUNTIME_RESOURCE_POLICY } from '../src/resource-policy.mjs';
 import { DEFAULT_EPHEMERAL_PATHS } from '../src/config.mjs';
+
+const EMPTY_YHP2_EXPORT = encodeExport([]);
 
 test('receipt persistence never truncates a preexisting runtime marker sentinel', async () => {
   const workspace = await mkdtemp('/tmp/yolo-receipt-marker-');
@@ -83,7 +87,8 @@ test('launcher creates and mounts one exact owned scratch volume', async () => {
     let helperCleaned = false;
     const spawn = (_command, args) => {
       const operation = args[0]; operations.push(args);
-      const listeners = new Map(); const stdout = new EventEmitter(); const stderr = new EventEmitter();
+      const publisherAttach = operation === 'start' && helperArgs?.includes('/app/src/workspace-publish.mjs') && args.includes('--attach');
+      const listeners = new Map(); const stdout = publisherAttach ? new PassThrough() : new EventEmitter(); const stderr = new EventEmitter();
       const result = { stdout, stderr, stdin: { end() {} }, kill() {}, once(event, fn) { listeners.set(event, fn); } };
       const close = code => setImmediate(() => listeners.get('close')?.(code));
       if (operation === 'info') { setImmediate(() => stdout.emit('data', JSON.stringify({ OSType: 'linux', SecurityOptions: ['name=rootless'] }))); close(0); }
@@ -93,7 +98,7 @@ test('launcher creates and mounts one exact owned scratch volume', async () => {
       else if (operation === 'create') { createArgs = args; setImmediate(() => stdout.emit('data', id)); close(0); }
       else if (operation === 'inspect' && helperArgs && !helperCleaned && args.at(-1) === id) { const role = helperArgs[helperArgs.indexOf('--label', helperArgs.indexOf('--label') + 1) + 1].split('=').slice(1).join('='); setImmediate(() => stdout.emit('data', JSON.stringify({ Id: id, Name: `/${helperArgs[helperArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': helperArgs[helperArgs.indexOf('--label') + 1].split('=').slice(1).join('='), 'yoloharness.role': role } } }))); close(0); }
       else if (operation === 'inspect' && args.at(-1) === id) { if (containerRemoved || (helperArgs && helperCleaned && !args.includes('--format')) || (helperArgs && !createArgs && helperCleaned)) { setImmediate(() => stderr.emit('data', `Error: No such container: ${id}`)); close(1); } else { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: id, Name: `/${createArgs[createArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': createArgs[createArgs.indexOf('--label') + 1].split('=').slice(1).join('=') } } }))); close(0); } }
-      else if (operation === 'start') { setImmediate(() => stdout.emit('data', helperArgs?.includes('/app/src/workspace-seed.mjs') && !args.includes('--interactive') ? JSON.stringify({ version: 1, seeded: true }) + '\n' : helperArgs?.includes('/app/src/workspace-publish.mjs') && !args.includes('--interactive') ? JSON.stringify({ version: 1, published: true }) + '\n' : createArgs ? '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n' : helperArgs.includes('/app/src/scratch-init.mjs') ? JSON.stringify({ version: 1, uid: 0, gid: 0, mode: 493, ownership: true }) + '\n' : JSON.stringify({ version: 1, uid: 0, gid: 0, marker: 'write-read-remove', writable: true, mode: 384 }) + '\n')); close(0); }
+      else if (operation === 'start') { if (publisherAttach) setImmediate(() => stdout.end(EMPTY_YHP2_EXPORT)); else setImmediate(() => stdout.emit('data', helperArgs?.includes('/app/src/workspace-seed.mjs') && !args.includes('--interactive') ? JSON.stringify({ version: 1, seeded: true }) + '\n' : createArgs ? '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n' : helperArgs.includes('/app/src/scratch-init.mjs') ? JSON.stringify({ version: 1, uid: 0, gid: 0, mode: 493, ownership: true }) + '\n' : JSON.stringify({ version: 1, uid: 0, gid: 0, marker: 'write-read-remove', writable: true, mode: 384 }) + '\n')); close(0); }
       else if (operation === 'stop' || operation === 'kill') close(0);
       else if (operation === 'rm') { if (helperArgs?.includes('/app/src/workspace-seed.mjs') || helperArgs?.includes('/app/src/workspace-publish.mjs')) helperCleaned = true; else if (createArgs) containerRemoved = true; else helperCleaned = true; close(0); }
       else if (operation === 'volume' && args[1] === 'rm') { volumeRemoved = true; close(0); }
@@ -412,7 +417,8 @@ test('macOS Linux-daemon consumer create argv uses 0:0 without supplementary gro
   try {
     const spawn = (_command, args) => {
       if (args[0] === 'volume') return volumeMock(args);
-      const listeners = new Map(); const stdout = new EventEmitter(); const stderr = new EventEmitter();
+      const publisherAttach = args[0] === 'start' && helperArgs?.includes('/app/src/workspace-publish.mjs') && args.includes('--attach');
+      const listeners = new Map(); const stdout = publisherAttach ? new PassThrough() : new EventEmitter(); const stderr = new EventEmitter();
       const result = { stdout, stderr, stdin: { end() {} }, kill() { setImmediate(() => listeners.get('close')?.(137)); }, once(event, fn) { listeners.set(event, fn); } };
       const close = code => setImmediate(() => listeners.get('close')?.(code));
       if (args[0] === 'info') { setImmediate(() => stdout.emit('data', JSON.stringify({ OSType: 'linux', OperatingSystem: 'Colima', ClientInfo: { Context: 'colima' }, SecurityOptions: ['name=userns'] }))); close(0); }
@@ -420,7 +426,7 @@ test('macOS Linux-daemon consumer create argv uses 0:0 without supplementary gro
       else if (args[0] === 'create') { createArgs = args; setImmediate(() => stdout.emit('data', ids.runtime)); close(0); }
       else if (args[0] === 'inspect' && args.at(-1) === ids.helper && helperArgs && !helperCleaned) { const role = helperArgs[helperArgs.indexOf('--label', helperArgs.indexOf('--label') + 1) + 1].split('=').slice(1).join('='); setImmediate(() => stdout.emit('data', JSON.stringify({ Id: ids.helper, Name: `/${helperArgs[helperArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': helperArgs[helperArgs.indexOf('--label') + 1].split('=').slice(1).join('='), 'yoloharness.role': role } } }))); close(0); }
       else if (args[0] === 'inspect' && args.at(-1) === ids.runtime && createArgs && !createArgs._cleaned) { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: ids.runtime, Name: `/${createArgs[createArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': createArgs[createArgs.indexOf('--label') + 1].split('=').slice(1).join('=') } } }))); close(0); }
-      else if (args[0] === 'start') { setImmediate(() => stdout.emit('data', helperArgs?.includes('/app/src/workspace-seed.mjs') && !args.includes('--interactive') ? JSON.stringify({ version: 1, seeded: true }) + '\n' : helperArgs?.includes('/app/src/workspace-publish.mjs') && !args.includes('--interactive') ? JSON.stringify({ version: 1, published: true }) + '\n' : createArgs ? '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n' : helperArgs.includes('/app/src/scratch-init.mjs') ? JSON.stringify({ version: 1, uid: 0, gid: 0, mode: 493, ownership: true }) + '\n' : JSON.stringify({ version: 1, uid: 0, gid: 0, marker: 'write-read-remove', writable: true, mode: 384 }) + '\n')); close(0); }
+      else if (args[0] === 'start') { if (publisherAttach) setImmediate(() => stdout.end(EMPTY_YHP2_EXPORT)); else setImmediate(() => stdout.emit('data', helperArgs?.includes('/app/src/workspace-seed.mjs') && !args.includes('--interactive') ? JSON.stringify({ version: 1, seeded: true }) + '\n' : createArgs ? '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n' : helperArgs.includes('/app/src/scratch-init.mjs') ? JSON.stringify({ version: 1, uid: 0, gid: 0, mode: 493, ownership: true }) + '\n' : JSON.stringify({ version: 1, uid: 0, gid: 0, marker: 'write-read-remove', writable: true, mode: 384 }) + '\n')); close(0); }
       else if (args[0] === 'stop' || args[0] === 'kill') close(0);
       else if (args[0] === 'rm') { if (helperArgs?.includes('/app/src/workspace-seed.mjs') || helperArgs?.includes('/app/src/workspace-publish.mjs')) helperCleaned = true; else if (createArgs) createArgs._cleaned = true; else helperCleaned = true; close(0); }
       else if (args[0] === 'inspect') { setImmediate(() => stderr.emit('data', `Error: No such container: ${ids.runtime}`)); close(1); }
@@ -465,7 +471,8 @@ test('rootful consumer create argv carries selected ownership without duplicate 
   try {
     const spawn = (_command, args) => {
       if (args[0] === 'volume') return volumeMock(args);
-      const listeners = new Map(); const stdout = new EventEmitter(); const stderr = new EventEmitter();
+      const publisherAttach = args[0] === 'start' && helperArgs?.includes('/app/src/workspace-publish.mjs') && args.includes('--attach');
+      const listeners = new Map(); const stdout = publisherAttach ? new PassThrough() : new EventEmitter(); const stderr = new EventEmitter();
       const result = { stdout, stderr, stdin: { end() {} }, kill() { setImmediate(() => listeners.get('close')?.(137)); }, once(event, fn) { listeners.set(event, fn); } };
       const close = code => setImmediate(() => listeners.get('close')?.(code));
       if (args[0] === 'info') { setImmediate(() => stdout.emit('data', JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04', SecurityOptions: ['name=seccomp,profile=builtin'] }))); close(0); }
@@ -473,7 +480,7 @@ test('rootful consumer create argv carries selected ownership without duplicate 
       else if (args[0] === 'create') { createArgs = args; setImmediate(() => stdout.emit('data', ids.runtime)); close(0); }
       else if (args[0] === 'inspect' && !helperCleaned && args.at(-1) === ids.helper) { const roleLabel = helperArgs[helperArgs.indexOf('--label', helperArgs.indexOf('--label') + 1) + 1]; setImmediate(() => stdout.emit('data', JSON.stringify({ Id: ids.helper, Name: `/${helperArgs[helperArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': helperArgs[helperArgs.indexOf('--label') + 1].split('=').slice(1).join('='), 'yoloharness.role': roleLabel.split('=').slice(1).join('=') } } }))); close(0); }
       else if (args[0] === 'inspect' && args.at(-1) === ids.runtime && createArgs && !createArgs._cleaned) { setImmediate(() => stdout.emit('data', JSON.stringify({ Id: ids.runtime, Name: `/${createArgs[createArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': createArgs[createArgs.indexOf('--label') + 1].split('=').slice(1).join('=') } } }))); close(0); }
-      else if (args[0] === 'start') { setImmediate(() => stdout.emit('data', helperArgs?.includes('/app/src/workspace-seed.mjs') && !args.includes('--interactive') ? JSON.stringify({ version: 1, seeded: true }) + '\n' : helperArgs?.includes('/app/src/workspace-publish.mjs') && !args.includes('--interactive') ? JSON.stringify({ version: 1, published: true }) + '\n' : createArgs ? '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n' : helperArgs.includes('/app/src/scratch-init.mjs') ? JSON.stringify({ version: 1, uid: process.getuid(), gid: process.getgid(), mode: 493, ownership: true }) + '\n' : JSON.stringify({ version: 1, uid: process.getuid(), gid: process.getgid(), marker: 'write-read-remove', writable: true, mode: 384 }) + '\n')); close(0); }
+      else if (args[0] === 'start') { if (publisherAttach) setImmediate(() => stdout.end(EMPTY_YHP2_EXPORT)); else setImmediate(() => stdout.emit('data', helperArgs?.includes('/app/src/workspace-seed.mjs') && !args.includes('--interactive') ? JSON.stringify({ version: 1, seeded: true }) + '\n' : createArgs ? '{"version":1,"status":"completed","effect_state":"none","result":"ok","evidence":[],"artifacts":[]}\n' : helperArgs.includes('/app/src/scratch-init.mjs') ? JSON.stringify({ version: 1, uid: process.getuid(), gid: process.getgid(), mode: 493, ownership: true }) + '\n' : JSON.stringify({ version: 1, uid: process.getuid(), gid: process.getgid(), marker: 'write-read-remove', writable: true, mode: 384 }) + '\n')); close(0); }
       else if (args[0] === 'stop' || args[0] === 'kill') close(0);
       else if (args[0] === 'rm') { if (helperArgs?.includes('/app/src/workspace-seed.mjs') || helperArgs?.includes('/app/src/workspace-publish.mjs')) helperCleaned = true; else if (createArgs) createArgs._cleaned = true; else helperCleaned = true; close(0); }
       else if (args[0] === 'inspect') { setImmediate(() => stderr.emit('data', `Error: No such container: ${ids.runtime}`)); close(1); }
@@ -639,4 +646,98 @@ test('abort returns cleanup_unknown without daemon cleanup while an attach clien
     await assert.rejects(launcher.launch({ prompt: 'stuck attach', model: 'synthetic-model', deadline: Date.now() + 10_000, accessToken: 'synthetic-access', expiresAt: Date.now() + 20_000 }, { signal: controller.signal }), error => error.code === 'cleanup_unknown');
     assert.ok(Date.now() - startedAt < 4000, 'launcher must not retain an open operation indefinitely');
   } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
+function publisherLifecycleSpawn({ exportBytes, exitCode = 0, ignoreTerm = false, neverClose = false, events = [] }) {
+  const id = 'a'.repeat(64);
+  let createArgs;
+  let removed = false;
+  const operationChild = (output = '', code = 0, stderrOutput = '') => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => true;
+    setImmediate(() => {
+      if (output) child.stdout.emit('data', output);
+      if (stderrOutput) child.stderr.emit('data', stderrOutput);
+      child.emit('close', code, null);
+    });
+    return child;
+  };
+  return (_command, args) => {
+    if (args[0] === 'create') { createArgs = args; return operationChild(id); }
+    if (args[0] === 'inspect') {
+      if (removed) return operationChild('', 1, `Error: No such container: ${id}`);
+      const label = createArgs[createArgs.indexOf('--label') + 1].split('=').slice(1).join('=');
+      const role = createArgs[createArgs.indexOf('--label', createArgs.indexOf('--label') + 1) + 1].split('=').slice(1).join('=');
+      return operationChild(JSON.stringify({ Id: id, Name: `/${createArgs[createArgs.indexOf('--name') + 1]}`, Config: { Labels: { 'yoloharness.run': label, 'yoloharness.role': role } } }));
+    }
+    if (args[0] === 'start') {
+      const child = new EventEmitter();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.exitCode = null;
+      child.kill = signalName => {
+        events.push(signalName);
+        if (signalName === 'SIGTERM' && ignoreTerm) return true;
+        if (!neverClose) setImmediate(() => { child.exitCode = signalName === 'SIGKILL' ? 137 : 143; child.emit('close', child.exitCode, signalName); });
+        return true;
+      };
+      setImmediate(() => {
+        child.stdout.end(exportBytes);
+        if (!neverClose && exitCode !== null) setImmediate(() => { child.exitCode = exitCode; child.emit('close', exitCode, null); });
+      });
+      return child;
+    }
+    if (args[0] === 'rm') { events.push('rm'); removed = true; return operationChild('', 0); }
+    throw new Error(`unexpected publisher lifecycle operation: ${args.join(' ')}`);
+  };
+}
+
+test('publisher retains exact publication evidence when exporter exits nonzero', async () => {
+  const destination = await mkdtemp('/tmp/yolo-publisher-evidence-');
+  try {
+    const exportBytes = encodeExport([{ type: 'file', path: 'created.txt', mode: 0o600, data: Buffer.from('ok') }]);
+    const now = Date.now();
+    await assert.rejects(runWorkspaceExportPublisher('docker', 'image', 'volume', 'label', { uid: 0, gid: 0 }, [], destination, publisherLifecycleSpawn({ exportBytes, exitCode: 17 }), {
+      signal: new AbortController().signal,
+      deadline: now + 1000,
+      cleanupDeadline: () => now + 2000,
+    }), error => {
+      assert.equal(error.code, 'publication_incomplete');
+      assert.equal(error.exitCode, 17);
+      assert.deepEqual(error.publicationResult.created_entries, ['created.txt']);
+      assert.equal(error.publicationResult.partial_evidence[0].bytes, 2);
+      return true;
+    });
+    assert.equal(await readFile(join(destination, 'created.txt'), 'utf8'), 'ok');
+  } finally { await rm(destination, { recursive: true, force: true }); }
+});
+
+test('publisher parse failure escalates TERM to KILL, observes close, then reaps', async () => {
+  const destination = await mkdtemp('/tmp/yolo-publisher-kill-');
+  const events = [];
+  try {
+    const now = Date.now();
+    await assert.rejects(runWorkspaceExportPublisher('docker', 'image', 'volume', 'label', { uid: 0, gid: 0 }, [], destination, publisherLifecycleSpawn({ exportBytes: Buffer.from('bad'), exitCode: null, ignoreTerm: true, events }), {
+      signal: new AbortController().signal,
+      deadline: now + 1000,
+      cleanupDeadline: () => now + 2000,
+    }), error => error.code === 'publication_incomplete');
+    assert.deepEqual(events, ['SIGTERM', 'SIGKILL', 'rm']);
+  } finally { await rm(destination, { recursive: true, force: true }); }
+});
+
+test('publisher reports cleanup_unknown and does not reap without an observed close', async () => {
+  const destination = await mkdtemp('/tmp/yolo-publisher-unknown-');
+  const events = [];
+  try {
+    const now = Date.now();
+    await assert.rejects(runWorkspaceExportPublisher('docker', 'image', 'volume', 'label', { uid: 0, gid: 0 }, [], destination, publisherLifecycleSpawn({ exportBytes: Buffer.from('bad'), exitCode: null, ignoreTerm: true, neverClose: true, events }), {
+      signal: new AbortController().signal,
+      deadline: now + 50,
+      cleanupDeadline: () => now + 400,
+    }), error => error.code === 'cleanup_unknown' && error.clientCloseObserved === false);
+    assert.deepEqual(events, ['SIGTERM', 'SIGKILL']);
+  } finally { await rm(destination, { recursive: true, force: true }); }
 });

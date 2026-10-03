@@ -4,7 +4,9 @@ import { publishWorkspace } from './workspace-sync.mjs';
 const excluded = process.argv.slice(2);
 try {
   const result = await publishWorkspace('/tmp/workspace', '/source', excluded, '/tmp/workspace-baseline.json');
-  process.stdout.write(`${JSON.stringify({ version: 1, ...result })}\n`);
+  let runtime;
+  try { runtime = JSON.parse(await readFile('/tmp/runtime-receipt.json', 'utf8')); } catch {}
+  process.stdout.write(`${JSON.stringify(runtime?.version === 1 ? runtime : { version: 1, ...result })}\n`);
 } catch (error) {
   if (error?.code !== 'publication_incomplete') throw error;
   let runtime;

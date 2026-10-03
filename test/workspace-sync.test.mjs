@@ -125,3 +125,17 @@ test('publication discard removes retained state without changing the source whe
     assert.equal((await inspectPublication(source)).retained, false);
   } finally { delete process.env.YOLO_PUBLICATION_FAULT; await rm(root, { recursive: true, force: true }); }
 });
+
+test('malformed publication journals fail closed without deleting unrelated siblings', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'yoloharness-sync-'));
+  const source = join(root, 'source'); const sibling = join(root, 'unrelated');
+  try {
+    await mkdir(source); await mkdir(sibling); await writeFile(join(sibling, 'keep'), 'do not touch'); await chmod(sibling, 0o751); await chmod(join(sibling, 'keep'), 0o640);
+    await writeFile(join(root, 'source.yoloharness-publication.json'), JSON.stringify({ version: 2, sourceName: 'source', candidateName: '../unrelated', backupName: 'source.yoloharness-backup-forged', phase: 'prepared', candidateInSource: true, backupPresent: true }));
+    await assert.rejects(recoverPublicationState(source), /journal is malformed/);
+    await assert.rejects(discardPublication(source), /journal is malformed/);
+    assert.equal(await readFile(join(sibling, 'keep'), 'utf8'), 'do not touch');
+    assert.equal((await stat(sibling)).mode & 0o777, 0o751);
+    assert.equal((await stat(join(sibling, 'keep'))).mode & 0o777, 0o640);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

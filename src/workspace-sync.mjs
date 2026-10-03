@@ -92,81 +92,81 @@ async function safeTarget(source, key) {
 
 const JOURNAL_VERSION = 2;
 const MAX_JOURNAL_BYTES = 16 * 1024;
-function journalPath(source) { return join(source, '.yoloharness-publication.json'); }
-function absolutePath(value) { return typeof value === 'string' && value.startsWith('/') && !value.includes('\0'); }
+function journalName(source) { return `${source.split('/').pop()}.yoloharness-publication.json`; }
+function procPath(handle, name) { return `/proc/self/fd/${handle.fd}/${name}`; }
+function baseName(source) { return source.split('/').pop(); }
 function validateJournal(state, source) {
-  if (!state || state.version !== JOURNAL_VERSION || state.source !== source ||
-      !absolutePath(state.candidate) || !absolutePath(state.backup) ||
-      !['prepared', 'source-renamed', 'candidate-renamed', 'backup-removed'].includes(state.phase)) {
+  const sourceName = baseName(source);
+  const candidateName = state?.candidateName;
+  const backupName = state?.backupName;
+  const validName = value => typeof value === 'string' && /^[A-Za-z0-9._-]+$/.test(value);
+  const validCandidate = value => validName(value) && value.startsWith('.yoloharness-publication-');
+  const validBackup = value => validName(value) && value.startsWith(`${sourceName}.yoloharness-backup-`);
+  if (!state || state.version !== JOURNAL_VERSION || state.sourceName !== sourceName ||
+      !validCandidate(candidateName) || !validBackup(backupName) || candidateName === backupName ||
+      !['prepared', 'source-renamed', 'candidate-renamed', 'backup-removed'].includes(state.phase) ||
+      (['prepared', 'candidate-renamed'].includes(state.phase) !== state.candidateInSource) ||
+      (state.phase === 'backup-removed' && state.backupPresent !== false)) {
     throw new Error('workspace publication journal is malformed');
-  }
-  const parent = dirname(source);
-  for (const value of [state.candidate, state.backup]) {
-    if (parent !== '/' && dirname(value) !== parent && !value.startsWith(`${parent}/`)) throw new Error('workspace publication journal path escapes source parent');
   }
   return state;
 }
-async function readJournal(source) {
-  let path = journalPath(source); let info = await lstat(path).catch(() => null);
-  if (!info) {
-    const names = await readdir(dirname(source)).catch(() => []);
-    for (const name of names.filter(value => value.includes('.yoloharness-backup-')).slice(0, 32)) {
-      const candidate = join(dirname(source), name, '.yoloharness-publication.json');
-      if (await lstat(candidate).then(value => { info = value; path = candidate; return true; }).catch(() => false)) break;
-    }
-  }
+async function readJournal(source, parentHandle) {
+  const path = procPath(parentHandle, journalName(source));
+  const info = await lstat(path).catch(() => null);
   if (!info) return null;
   if (!info.isFile() || info.size > MAX_JOURNAL_BYTES) throw new Error('workspace publication journal is invalid');
   return validateJournal(JSON.parse(await readFile(path, 'utf8')), source);
 }
-async function syncDirectory(path) { const handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0)); try { await handle.sync(); } finally { await handle.close(); } }
-async function writeJournal(source, state) {
-  const journalRoot = await lstat(source).then(() => source).catch(() => state.backup);
-  const path = journalPath(journalRoot); const handle = await open(path, 'w', 0o600);
-  try { await handle.writeFile(`${JSON.stringify(validateJournal(state, source))}\n`); await handle.sync(); } finally { await handle.close(); }
-  await syncDirectory(journalRoot);
+async function writeJournal(source, state, parentHandle) {
+  validateJournal(state, source);
+  const path = procPath(parentHandle, journalName(source));
+  const handle = await open(path, 'w', 0o600);
+  try { await handle.writeFile(`${JSON.stringify(state)}\n`); await handle.sync(); } finally { await handle.close(); }
+  await parentHandle.sync();
 }
-async function removeJournal(source) {
-  const state = await readJournal(source).catch(() => null); const path = state ? journalPath(await lstat(source).then(() => source).catch(() => state.backup)) : journalPath(source);
-  await rm(path, { force: true }); await syncDirectory(dirname(source));
+async function removeJournal(source, parentHandle) {
+  await rm(procPath(parentHandle, journalName(source)), { force: true });
+  await parentHandle.sync();
 }
 
 async function recoverPublication(source) {
-  const state = await readJournal(source); if (!state) return false;
-  const sourceInfo = await lstat(source).catch(() => null);
-  const backupInfo = await lstat(state.backup).catch(() => null);
-  if (!sourceInfo && backupInfo) await rename(state.backup, source);
-  else if (sourceInfo && backupInfo) await rm(state.backup, { recursive: true, force: true });
-  else if (!sourceInfo) throw new Error('workspace publication recovery is incomplete');
-  await rm(state.candidate, { recursive: true, force: true });
-  await removeJournal(source); return true;
+  const parentHandle = await open(dirname(source), fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0));
+  try {
+    const state = await readJournal(source, parentHandle); if (!state) return false;
+    const root = name => procPath(parentHandle, name);
+    const sourcePath = root(state.sourceName); const backupPath = root(state.backupName);
+    let candidatePath = ['prepared', 'candidate-renamed'].includes(state.phase) ? join(sourcePath, state.candidateName) : join(backupPath, state.candidateName);
+    const sourceInfo = await lstat(sourcePath).catch(() => null);
+    const backupInfo = await lstat(backupPath).catch(() => null);
+    if (!sourceInfo && backupInfo) { await rename(backupPath, sourcePath); await parentHandle.sync(); candidatePath = join(sourcePath, state.candidateName); }
+    else if (sourceInfo && backupInfo) { await rm(backupPath, { recursive: true, force: true }); await parentHandle.sync(); }
+    else if (!sourceInfo) throw new Error('workspace publication recovery is incomplete');
+    await rm(candidatePath, { recursive: true, force: true }); await parentHandle.sync();
+    await removeJournal(source, parentHandle); return true;
+  } finally { await parentHandle.close(); }
 }
 
 export async function inspectPublication(source) {
   const absolute = source.startsWith('/') ? source : join(process.cwd(), source);
-  const state = await readJournal(absolute);
-  if (!state) return { version: 1, retained: false, source: absolute };
-  const [sourceInfo, candidateInfo, backupInfo] = await Promise.all([lstat(absolute).catch(() => null), lstat(state.candidate).catch(() => null), lstat(state.backup).catch(() => null)]);
+  const parentHandle = await open(dirname(absolute), fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0));
+  const state = await readJournal(absolute, parentHandle);
+  if (!state) { await parentHandle.close(); return { version: 1, retained: false, source: absolute }; }
+  const sourcePath = procPath(parentHandle, state.sourceName); const backupPath = procPath(parentHandle, state.backupName);
+  const candidatePath = ['prepared', 'candidate-renamed'].includes(state.phase) ? join(sourcePath, state.candidateName) : join(backupPath, state.candidateName);
+  const [sourceInfo, candidateInfo, backupInfo] = await Promise.all([lstat(sourcePath).catch(() => null), lstat(candidatePath).catch(() => null), lstat(backupPath).catch(() => null)]);
+  await parentHandle.close();
   return { version: 1, retained: true, source: absolute, phase: state.phase, source_present: Boolean(sourceInfo), candidate_present: Boolean(candidateInfo), backup_present: Boolean(backupInfo) };
 }
 export async function recoverPublicationState(source) { const absolute = source.startsWith('/') ? source : join(process.cwd(), source); return recoverPublication(absolute); }
 export async function discardPublication(source) {
-  const absolute = source.startsWith('/') ? source : join(process.cwd(), source); const state = await readJournal(absolute);
-  if (!state) return false;
-  await rm(state.candidate, { recursive: true, force: true }); await rm(state.backup, { recursive: true, force: true }); await removeJournal(absolute); return true;
-}
-
-async function publishInPlace(candidate, source) {
-  const backup = join(source, `.yoloharness-backup-${process.pid}-${Math.random().toString(16).slice(2)}`);
-  await mkdir(backup, { mode: 0o700 });
-  const candidateName = candidate.slice(source.length + 1); const backupName = backup.slice(source.length + 1);
-  for (const name of await readdir(source)) {
-    if (name === candidateName || name === backupName || name === '.yoloharness-publication.json') continue;
-    await rename(join(source, name), join(backup, name));
-  }
-  await writeJournal(source, { version: JOURNAL_VERSION, source, candidate, backup, phase: 'source-renamed' });
-  for (const name of await readdir(candidate)) await rename(join(candidate, name), join(source, name));
-  await rm(candidate, { recursive: true, force: true }); await rm(backup, { recursive: true, force: true }); await removeJournal(source);
+  const absolute = source.startsWith('/') ? source : join(process.cwd(), source); const parentHandle = await open(dirname(absolute), fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0));
+  try { const state = await readJournal(absolute, parentHandle); if (!state) return false;
+    await rm(procPath(parentHandle, state.backupName), { recursive: true, force: true });
+    await rm(join(procPath(parentHandle, state.sourceName), state.candidateName), { recursive: true, force: true });
+    await rm(join(procPath(parentHandle, state.backupName), state.candidateName), { recursive: true, force: true });
+    await parentHandle.sync(); await removeJournal(absolute, parentHandle); return true;
+  } finally { await parentHandle.close(); }
 }
 
 export async function publishWorkspace(staged, source, dependencyNames = [], baselinePath = join(staged, MANIFEST)) {
@@ -212,13 +212,16 @@ export async function publishWorkspace(staged, source, dependencyNames = [], bas
   const parent = dirname(source);
   // The helper has a read-only root and only /source is writable.  Keep the
   // candidate below source so it is writable and remains on the same mount.
-  const candidate = await mkdtemp(join(source, '.yoloharness-publication-'));
-  const backup = `${source}.yoloharness-backup-${process.pid}-${Math.random().toString(16).slice(2)}`;
   const parentHandle = await open(parent, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0));
-  const anchored = value => `/proc/self/fd/${parentHandle.fd}/${value.slice(parent === '/' ? 1 : parent.length + 1)}`;
+  const anchored = value => procPath(parentHandle, value.slice(parent === '/' ? 1 : parent.length + 1));
+  const sourceName = baseName(source);
+  const candidateName = `.yoloharness-publication-${process.pid}-${Math.random().toString(16).slice(2)}`;
+  const candidate = join(source, candidateName);
+  const backupName = `${sourceName}.yoloharness-backup-${process.pid}-${Math.random().toString(16).slice(2)}`;
   let phase = 'prepared';
   try {
-    await copyTreeFiltered(source, candidate, new Set());
+    await mkdir(anchored(candidate), { mode: 0o700 });
+    await copyTreeFiltered(anchored(source), anchored(candidate), new Set());
     for (const [key, path] of stagedEntries) {
       const stagedInfo = await lstat(path);
       if (stagedInfo.isSymbolicLink() || stagedInfo.isDirectory()) continue;
@@ -234,22 +237,18 @@ export async function publishWorkspace(staged, source, dependencyNames = [], bas
         await rm(join(candidate, key), { recursive: true, force: true });
       }
     }
-    await writeJournal(source, { version: JOURNAL_VERSION, source, candidate, backup, phase });
+    await writeJournal(source, { version: JOURNAL_VERSION, sourceName, candidateName, backupName, phase, candidateInSource: true, backupPresent: true }, parentHandle);
     if (process.env.YOLO_PUBLICATION_FAULT === 'after-journal') throw new Error('publication interrupted after journal');
-    try { await rename(anchored(source), anchored(backup)); }
-    catch (error) {
-      if (!['EROFS', 'EXDEV', 'EBUSY'].includes(error.code)) throw error;
-      await publishInPlace(candidate, source); return;
-    }
-    phase = 'source-renamed'; await writeJournal(source, { version: JOURNAL_VERSION, source, candidate: `${backup}/${candidate.slice(source.length + 1)}`, backup, phase });
+    await rename(anchored(source), anchored(join(parent, backupName))); await parentHandle.sync();
+    phase = 'source-renamed'; await writeJournal(source, { version: JOURNAL_VERSION, sourceName, candidateName, backupName, phase, candidateInSource: false, backupPresent: true }, parentHandle);
     if (process.env.YOLO_PUBLICATION_FAULT === 'after-source-rename') throw new Error('publication interrupted after source rename');
-    await rename(anchored(`${backup}/${candidate.slice(source.length + 1)}`), anchored(source));
-    phase = 'candidate-renamed'; await writeJournal(source, { version: JOURNAL_VERSION, source, candidate: `${backup}/${candidate.slice(source.length + 1)}`, backup, phase });
+    await rename(anchored(join(parent, backupName, candidateName)), anchored(source)); await parentHandle.sync();
+    phase = 'candidate-renamed'; await writeJournal(source, { version: JOURNAL_VERSION, sourceName, candidateName, backupName, phase, candidateInSource: true, backupPresent: true }, parentHandle);
     if (process.env.YOLO_PUBLICATION_FAULT === 'after-candidate-rename') throw new Error('publication interrupted after candidate rename');
-    await rm(anchored(backup), { recursive: true, force: true });
-    phase = 'backup-removed'; await writeJournal(source, { version: JOURNAL_VERSION, source, candidate: `${backup}/${candidate.slice(source.length + 1)}`, backup, phase });
+    await rm(anchored(join(parent, backupName)), { recursive: true, force: true }); await parentHandle.sync();
+    phase = 'backup-removed'; await writeJournal(source, { version: JOURNAL_VERSION, sourceName, candidateName, backupName, phase, candidateInSource: false, backupPresent: false }, parentHandle);
     if (process.env.YOLO_PUBLICATION_FAULT === 'after-backup-remove') throw new Error('publication interrupted after backup removal');
-    await removeJournal(source);
+    await removeJournal(source, parentHandle);
   } catch (error) {
     // A journal is intentionally retained after any destructive phase.  The
     // provider is not involved in recovery; the next explicit recovery can

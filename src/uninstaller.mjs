@@ -13,6 +13,9 @@ export async function uninstallApplication({ home, dataHome, binHome, docker = '
   if (invocation && resolve(await realpath(invocation)) !== resolve(expected)) throw new Error('refusing uninstall: not invoked through the installed launcher');
   const launcherInfo = await lstat(launcher).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
   if (!launcherInfo || !launcherInfo.isSymbolicLink() || resolve(dirname(launcher), await readlink(launcher)) !== resolve(expected)) throw new Error('refusing uninstall: not invoked through the installed launcher');
+  const appRootInfo = await lstat(appRoot).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
+  const appInfoBefore = await lstat(app).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
+  if (appInfoBefore && (!appInfoBefore.isDirectory() || appInfoBefore.isSymbolicLink())) throw new Error('refusing uninstall: unsafe app path');
   const imagePath = join(appRoot, 'image.json');
   let imageId = null;
   try { const value = JSON.parse(await readFile(imagePath, 'utf8')); imageId = value?.imageId; } catch (error) { if (error.code !== 'ENOENT') throw new Error('refusing uninstall: malformed image metadata'); }
@@ -21,9 +24,13 @@ export async function uninstallApplication({ home, dataHome, binHome, docker = '
     await run(docker, ['image', 'rm', imageId], { maxBuffer: 16 * 1024 });
   }
   const appInfo = await lstat(app).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
-  if (appInfo && (!appInfo.isDirectory() || appInfo.isSymbolicLink())) throw new Error('refusing uninstall: unsafe app path');
+  const sameIdentity = (before, after) => !before ? !after : after && before.dev === after.dev && before.ino === after.ino && before.mode === after.mode;
+  const currentRoot = await lstat(appRoot).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
+  const currentApp = await lstat(app).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
+  const currentLauncher = await lstat(launcher).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
+  if (!sameIdentity(appRootInfo, currentRoot) || !sameIdentity(appInfoBefore, currentApp) || !sameIdentity(launcherInfo, currentLauncher)) throw new Error('refusing uninstall: installation changed during uninstall');
   await rm(launcher, { force: false });
   if (appInfo) await rm(app, { recursive: true, force: false });
-  await rm(imagePath, { force: false });
+  await rm(imagePath, { force: false }).catch(error => { if (error.code !== 'ENOENT') throw error; });
   return { launcher, appRoot, imageId };
 }

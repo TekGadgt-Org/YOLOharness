@@ -1,4 +1,4 @@
-import { access, chmod, cp, lstat, mkdir, open, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, chmod, cp, lstat, mkdir, open, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -185,12 +185,20 @@ export async function installSkill(source, sharedRoot = sharedSkillsRoot(), { na
   if (parsed.name !== inferred) throw new TypeError('skill name does not match source metadata');
   await mkdir(sharedRoot, { recursive: true, mode: 0o700 });
   const rootInfo = await lstat(sharedRoot); if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new TypeError('unsafe shared skills root');
-  const destination = join(sharedRoot, inferred); const staging = join(sharedRoot, `.staging-${randomUUID()}`);
-  try { const existing = await lstat(destination); if (existing.isSymbolicLink() || existing) throw new Error(`skill already installed: ${inferred}`); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const anchoredRoot = resolve(sharedRoot);
+  const destination = join(anchoredRoot, inferred); const staging = join(anchoredRoot, `.staging-${randomUUID()}`);
+  if (!destination.startsWith(`${anchoredRoot}/`)) throw new TypeError('unsafe shared skill destination');
+  try { await lstat(destination); throw new Error(`skill already installed: ${inferred}`); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   try {
     await copyTree(sourceRoot, staging);
     await writeFile(join(staging, OWNED), JSON.stringify({ version: 1, name: inferred }) + '\n', { flag: 'wx', mode: 0o600 });
-    await rename(staging, destination); // create-only: rename refuses only with a race on some platforms; preflight below closes normal path
+    // Directory rename replaces an existing directory on Unix. Reserve the
+    // destination with mkdir instead, so a concurrent creator wins or makes
+    // this install fail; never merge into or replace its tree.
+    await mkdir(destination, { mode: 0o700 });
+    await copyTree(staging, destination);
+    await writeFile(join(destination, OWNED), JSON.stringify({ version: 1, name: inferred }) + '\n', { flag: 'wx', mode: 0o600 });
+    await rm(staging, { recursive: true, force: false });
   } catch (error) {
     await rm(staging, { recursive: true, force: true }).catch(() => {});
     if (error.code === 'EEXIST' || error.code === 'ENOTEMPTY') throw new Error(`skill already installed: ${inferred}`);

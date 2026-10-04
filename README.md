@@ -81,6 +81,9 @@ code and dependencies are never installed or executed. Packages contain one
 name and description. Git, arbitrary URLs, upgrades, executable resources, and
 multi-skill packages are not supported. Installation is bounded, validated, and
 create-only; use `skills uninstall` before reinstalling a name.
+YOLOharness does not defend its managed installation directories against
+another process running as the same user and modifying those directories
+during installation or uninstallation.
 
 `yolo uninstall` is available only through the exact installed launcher. It removes
 that launcher, the installation-owned app, image metadata, and the exact immutable

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { installSkill } from './skills.mjs';
 const exec = promisify(execFile);
 const NPM_NAME = /^(?:@[A-Za-z0-9._-]+\/)?[A-Za-z0-9._-]+(?:@(?:[0-9][A-Za-z0-9._*-]*|[~^][0-9][A-Za-z0-9._*-]*))?$/;
+const PORTABLE_ARCHIVE_PATH = /^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/;
 
 export async function installSkillSource(source, sharedRoot) {
   if (typeof source !== 'string' || !source) throw new TypeError('skill source is required');
@@ -35,7 +36,7 @@ async function installTgz(archive, sharedRoot) {
       const match = /^(.{10})\s+\S+\s+(\d+)\s+[^ ]+\s+\d+:\d+\s+(.+)$/.exec(line);
       if (!match) throw new TypeError('package archive has an invalid manifest');
       const name = match[3].replace(/\/$/, '');
-      if (!name || name.startsWith('/') || name.split('/').some(part => !part || part === '..' || part === '.')) throw new TypeError('package archive contains an unsafe path');
+      if (!PORTABLE_ARCHIVE_PATH.test(name)) throw new TypeError('package archive contains an unsafe path');
       const normalized = name.split('/').join('/');
       if (names.has(normalized)) throw new TypeError('package archive contains duplicate paths');
       names.add(normalized);

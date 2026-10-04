@@ -72,7 +72,7 @@ function awaitExecutorCleanup(promise, signal, graceMs) {
   });
 }
 
-export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(), provider, executor, tools = [], skills = {}, skillLoader, maxSteps = 100, cleanupGraceMs = 5000, deadlineAt, hardDeadlineAt, reserveMs = 30_000, now = Date.now, clock = { setTimeout, clearTimeout }, signal = new AbortController().signal }) {
+export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(), provider, executor, tools = [], skills = {}, skillLoader, maxSteps = 100, cleanupGraceMs = 5000, deadlineAt, hardDeadlineAt, reserveMs = 30_000, now = Date.now, clock = { setTimeout, clearTimeout }, signal = new AbortController().signal, progress }) {
   if (typeof prompt !== 'string' || !prompt.trim()) throw new TypeError('prompt must be non-empty');
   if (!(Number.isFinite(minutes) && minutes > 0)) throw new TypeError('minutes must be positive and finite');
   if (!(Number.isFinite(cleanupGraceMs) && cleanupGraceMs > 0)) throw new TypeError('cleanupGraceMs must be positive and finite');
@@ -90,14 +90,16 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
   let budgetNotice;
   const evidence = []; const artifacts = []; const errors = []; let result;
   let status = 'running'; let steps = 0;
+  const emit = event => { try { progress?.(event); } catch {} };
   try {
+    emit({ type: 'lifecycle', phase: 'runtime_started' });
     await log.append(runId, 'run_started', { prompt, max_steps: maxSteps });
     while (steps < maxSteps) {
       if (timer.signal.aborted) { status = signal.aborted ? 'interrupted' : 'deadline'; break; }
       const remainingMs = Math.max(0, softAt - now());
       const notice = `[YOLO REMAINING TIME] Approximately ${Math.ceil(remainingMs / 1000)} second(s) remain for agent work.${remainingMs <= Math.max(5_000, reserveMs / 2) ? ' Stop expanding scope and finalize a runnable, verified result now.' : ''}`;
       if (budgetNotice) budgetNotice.content = notice; else { budgetNotice = { role: 'developer', content: notice }; messages.splice(1, 0, budgetNotice); }
-      const response = await abortable(provider.next({ messages, tools, signal: timer.signal }), timer.signal);
+      const response = await abortable(provider.next({ messages, tools, signal: timer.signal, onTextDelta: delta => emit({ type: 'assistant_delta', text: delta }) }), timer.signal);
       if (typeof provider.partialResult === 'string' && provider.partialResult) result = provider.partialResult;
       steps += 1;
       const safe = response && typeof response === 'object' ? response : { result: String(response) };
@@ -113,9 +115,9 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
         if (safe.tool_call.name === 'skill_load') {
           if (!tools.some(tool => tool.name === 'skill_load') || JSON.stringify(tools.find(tool => tool.name === 'skill_load')?.parameters) !== JSON.stringify(SKILL_LOAD_TOOL.parameters)) { errors.push('effect denied: skill loader registry mismatch'); status = 'failed'; break; }
           let call; let loaded;
-          try { call = normalizeSkillCall(safe.tool_call); loaded = (skillLoader ?? (async (catalog, name, resource) => { const { skill_load } = await import('./skills.mjs'); return skill_load(catalog, name, resource); }))(skills, call.name, call.resource); loaded = await loaded; }
+          try { call = normalizeSkillCall(safe.tool_call); emit({ type: 'tool_start', tool: 'skill_load', ordinal: steps }); loaded = (skillLoader ?? (async (catalog, name, resource) => { const { skill_load } = await import('./skills.mjs'); return skill_load(catalog, name, resource); }))(skills, call.name, call.resource); loaded = await loaded; }
           catch (error) { errors.push(`skill load denied: ${error.message}`); status = 'failed'; break; }
-          evidence.push(loaded);
+          emit({ type: 'tool_finish', tool: 'skill_load', ordinal: steps, outcome: 'ok', code: null, output_bytes: Buffer.byteLength(JSON.stringify(loaded)), error_bytes: 0, limited: false }); evidence.push(loaded);
           messages.push({ type: 'function_call', call_id: call.call_id, name: 'skill_load', arguments: JSON.stringify({ name: call.name, ...(call.resource === undefined ? {} : { resource: call.resource }) }) });
           messages.push({ type: 'function_call_output', call_id: call.call_id, output: JSON.stringify(loaded) });
           messages.push({ role: 'assistant', content: safe.message ?? '' });
@@ -126,8 +128,10 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
         const combinedRegistry = tools.length === 2 && tools[0]?.name === 'exec' && tools[1]?.name === 'skill_load' && JSON.stringify(tools[0]?.parameters) === JSON.stringify(EXEC_TOOL.parameters) && JSON.stringify(tools[1]?.parameters) === JSON.stringify(SKILL_LOAD_TOOL.parameters);
         if (!execRegistry && !combinedRegistry) { errors.push('effect denied: executor registry mismatch'); status = 'failed'; break; }
         let call; try { call = normalizeCall(safe.tool_call); } catch (error) { errors.push(`effect denied: ${error.message}`); status = 'failed'; break; }
+        const ordinal = steps; emit({ type: 'tool_start', tool: 'exec', ordinal });
         const receipt = await awaitExecutorCleanup(executor.execute({ call, signal: timer.signal }), timer.signal, cleanupGraceMs);
         if (!validateReceipt(receipt, call.call_id)) { errors.push('effect denied: invalid executor receipt'); status = 'failed'; break; }
+        emit({ type: 'tool_finish', tool: 'exec', ordinal, outcome: receipt.ok ? 'ok' : (timer.signal.aborted ? 'deadline' : 'error'), code: receipt.code, output_bytes: Buffer.byteLength(receipt.output ?? ''), error_bytes: Buffer.byteLength(receipt.error ?? ''), limited: Boolean(receipt.limited) });
         if (!receipt.ok) {
           evidence.push(receipt);
           errors.push(receipt.error);

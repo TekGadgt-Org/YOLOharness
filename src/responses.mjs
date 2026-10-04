@@ -31,7 +31,7 @@ async function *frames(stream) {
 }
 export class ResponsesClient {
   constructor(config) { if (!config?.url || !config.model) throw new TypeError('responses url and model required'); this.url = config.url; this.model = config.model; this.fetch = config.fetch ?? fetch; this.accessToken = config.accessToken; this.headers = config.headers ?? {}; }
-  async *respond({ input, instructions = 'Complete the task using only declared tools.', tools = [], signal, runId = 'run' } = {}) {
+  async *respond({ input, instructions = 'Complete the task using only declared tools.', tools = [], signal, runId = 'run', onTextDelta } = {}) {
     const body = { model: this.model, instructions, input, tools, store: false, stream: true };
     if (tools.length) { body.tools = tools; body.tool_choice = 'auto'; body.parallel_tool_calls = false; }
     const response = await this.fetch(this.url, { method: 'POST', redirect: 'error', signal, headers: { authorization: `Bearer ${this.accessToken}`, 'content-type': 'application/json', accept: 'text/event-stream', originator: 'yoloharness', session_id: runId, 'x-client-request-id': runId.slice(0, 64), ...this.headers }, body: JSON.stringify(body) });
@@ -42,7 +42,7 @@ export class ResponsesClient {
       if (!line.trim() || line.startsWith(':') || !line.startsWith('data:')) continue;
       const raw = line.slice(5).replace(/^ /, ''); if (raw === '[DONE]') continue;
       let event; try { event = JSON.parse(raw); } catch { throw new ProtocolError('malformed event JSON'); }
-      if (event.type === 'response.output_text.delta') { const delta = String(event.delta ?? ''); text += delta; if (Buffer.byteLength(text) > MAX_TEXT) throw new ProtocolError('response text too large'); yield { type: 'text_delta', delta }; }
+      if (event.type === 'response.output_text.delta') { const delta = String(event.delta ?? ''); text += delta; if (Buffer.byteLength(text) > MAX_TEXT) throw new ProtocolError('response text too large'); try { onTextDelta?.(delta); } catch {} yield { type: 'text_delta', delta }; }
       else if (event.type === 'response.output_item.added' && event.item?.type === 'function_call') { if (calls.size >= MAX_CALLS) throw new ProtocolError('too many tool calls'); calls.set(event.item.id, { ...event.item, arguments: event.item.arguments ?? '' }); }
       else if (event.type === 'response.function_call_arguments.delta') { const call = calls.get(event.item_id); if (call) { call.arguments += String(event.delta ?? ''); if (Buffer.byteLength(call.arguments) > MAX_ARGUMENTS) throw new ProtocolError('tool arguments too large'); } }
       else if (event.type === 'response.output_item.done' && event.item?.type === 'function_call') { const saved = calls.get(event.item.id); const call = { ...event.item, arguments: event.item.arguments ?? saved?.arguments ?? '' }; if (Buffer.byteLength(call.arguments) > MAX_ARGUMENTS) throw new ProtocolError('tool arguments too large'); yield { type: 'tool_call', call }; }

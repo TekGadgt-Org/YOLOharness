@@ -3,14 +3,15 @@ import { Buffer } from 'node:buffer';
 export const BOOTSTRAP_VERSION = 1;
 export const MAX_BOOTSTRAP = 128 * 1024;
 
-export function encodeBootstrap({ prompt, model, deadline, accessToken, expiresAt, skills = {} }) {
+export function encodeBootstrap({ prompt, model, deadline, accessToken, expiresAt, skills = {}, verbose = false }) {
   if (typeof prompt !== 'string' || !prompt.trim() || typeof model !== 'string' || !model ||
       typeof deadline !== 'number' || !Number.isFinite(deadline) || deadline <= Date.now() ||
       typeof accessToken !== 'string' || !accessToken ||
       typeof expiresAt !== 'number' || !Number.isFinite(expiresAt)) {
     throw new TypeError('invalid runtime bootstrap');
   }
-  const payload = JSON.stringify({ version: BOOTSTRAP_VERSION, prompt, model, deadline, accessToken, expiresAt, skills });
+  if (typeof verbose !== 'boolean') throw new TypeError('invalid runtime bootstrap');
+  const payload = JSON.stringify({ version: BOOTSTRAP_VERSION, prompt, model, deadline, accessToken, expiresAt, skills, ...(verbose ? { verbose: true } : {}) });
   const frame = Buffer.from(payload);
   if (frame.byteLength > MAX_BOOTSTRAP) throw new TypeError('runtime bootstrap too large');
   return Buffer.concat([Buffer.from(`${frame.byteLength}:`), frame]);
@@ -28,5 +29,6 @@ export function decodeBootstrap(input) {
       typeof value.model !== 'string' || !value.model || typeof value.deadline !== 'number' || !Number.isFinite(value.deadline) || value.deadline <= Date.now() ||
       typeof value.accessToken !== 'string' || !value.accessToken || typeof value.expiresAt !== 'number' || !Number.isFinite(value.expiresAt) || value.expiresAt <= value.deadline) throw new TypeError('malformed runtime bootstrap');
   if (!value.skills || typeof value.skills !== 'object' || Array.isArray(value.skills)) throw new TypeError('malformed runtime bootstrap');
+  if (value.verbose !== undefined && typeof value.verbose !== 'boolean') throw new TypeError('malformed runtime bootstrap');
   return value;
 }

@@ -6,7 +6,7 @@ A bounded experiment in the harness Astra would choose for itself: a small, insp
 
 ## Current direction
 
-A thin, container-first, one-shot agent: `yolo "<prompt>"` or `yolo -t <minutes> "<prompt>"`. Ordinary runs execute the provider, planner, parser, dispatch, and generated commands inside Docker. On a rootless Linux daemon, the container uses UID/GID 0:0 because container root maps to the invoking host user. On standard rootful Linux Docker, it uses the invoking host UID/GID and numeric supplementary groups so files in the project bind remain owned by the invoker; `/home/worker` is a selected-identity-owned mode 0700 tmpfs mount and `/tmp` is a uniquely owned Docker volume. On macOS, a Docker-compatible runtime that reports Linux containers (such as Colima or Docker Desktop) is a v0.1.1 candidate pending native validation; it uses container UID/GID 0:0 with no macOS host groups. A host-root invocation therefore may create host-root-owned files. Native Linux user-namespace-remapped daemons and non-Linux or unverifiable daemon shapes fail closed. The selected project path must be mountable/shareable by the chosen macOS runtime. The host process is only a bounded launcher/supervisor; the shipped package contains a FixtureProvider test seam, but the production CLI does not select it. No host chmod/chown or ACL preparation is performed; the launcher never chmods or chowns the project. The selected Docker daemon is trusted host infrastructure, and rootful Docker access is already host-privileged; this distinction does not change the model/container restrictions.
+A thin, container-first, one-shot agent: `yolo "<prompt>"`, `yolo -t <minutes> "<prompt>"`, or `yolo --verbose -t <minutes> "<prompt>"`. Ordinary runs execute the provider, planner, parser, dispatch, and generated commands inside Docker. On a rootless Linux daemon, the container uses UID/GID 0:0 because container root maps to the invoking host user. On standard rootful Linux Docker, it uses the invoking host UID/GID and numeric supplementary groups so files in the project bind remain owned by the invoker; `/home/worker` is a selected-identity-owned mode 0700 tmpfs mount and `/tmp` is a uniquely owned Docker volume. On macOS, a Docker-compatible runtime that reports Linux containers (such as Colima or Docker Desktop) is a v0.1.1 candidate pending native validation; it uses container UID/GID 0:0 with no macOS host groups. A host-root invocation therefore may create host-root-owned files. Native Linux user-namespace-remapped daemons and non-Linux or unverifiable daemon shapes fail closed. The selected project path must be mountable/shareable by the chosen macOS runtime. The host process is only a bounded launcher/supervisor; the shipped package contains a FixtureProvider test seam, but the production CLI does not select it. No host chmod/chown or ACL preparation is performed; the launcher never chmods or chowns the project. The selected Docker daemon is trusted host infrastructure, and rootful Docker access is already host-privileged; this distinction does not change the model/container restrictions.
 
 Run `yolo setup` to build the installation-owned runtime image and store its immutable local image ID plus source digest/version (`{version:1,imageId,sourceDigest,sourceVersion}`) under `$XDG_DATA_HOME/yoloharness/image.json` (or `$HOME/.local/share/yoloharness/image.json`). Ordinary runs use that exact ID with `--pull=never`. The selected project is the only host bind at `/workspace`; the runtime has a read-only root, dropped capabilities, bounded tmpfs/resource limits, and network egress for provider traffic. Project contents and the in-container access token are intentionally not treated as confidential from generated code.
 
@@ -38,9 +38,25 @@ Node 22+ and Docker are prerequisites. From a downloaded package directory (or a
 4. In a fresh disposable project, run `yolo setup`.
 5. Authenticate: `yolo auth login`.
 6. Set a model if needed: `yolo config set model <model-id>`.
-7. Run from the empty disposable directory: `yolo -t 10 "verify the harness"` (or `yolo "verify the harness"`).
+7. Run from the empty disposable directory: `yolo -t 10 "verify the harness"` (or `yolo "verify the harness"`). Add `--verbose` to see live progress while the run is active.
 
 `yolo doctor` performs no provider call and reports Docker executable, runtime image metadata, built-in device-auth client readiness, local credentials, and model status.
+
+### Live verbose progress
+
+Use `--verbose` when you want bounded, human-readable activity while the agent is running:
+
+```sh
+yolo --verbose -t 10 "create and verify a minimal project"
+```
+
+Verbose progress is written to **stderr**. The existing final status remains the only stdout record, so verbose mode can also be combined with JSON output without contaminating it:
+
+```sh
+yolo --json --verbose -t 10 "create and verify a minimal project"
+```
+
+Without `--verbose`, runs remain quiet until the final status. `-v` continues to print the YOLOharness version; it is not a short verbose flag. Progress is intentionally non-authoritative and may be dropped under terminal backpressure. It omits prompts, credentials, hidden reasoning, raw provider events, tool arguments, command names and output, skill selectors, and final cleanup/publication status. Consult the final stdout receipt for the authoritative outcome.
 
 The installer atomically replaces only app assets below `${XDG_DATA_HOME:-$HOME/.local/share}/yoloharness`, preserves config, credentials, and shared skills, and creates `$HOME/.local/bin/yolo`. It refuses symlinked or non-directory data/bin destinations. Keep the selected output directory disposable: partial publication may require deleting it before retrying, and networked generated code may disclose generated contents.
 

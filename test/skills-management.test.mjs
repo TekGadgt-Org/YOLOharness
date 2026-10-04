@@ -45,6 +45,27 @@ test('installs a standalone local SKILL.md file', async () => {
   assert.equal(await readFile(join(root, 'review', 'SKILL.md'), 'utf8'), '---\nname: review\ndescription: Review\n---\nUse review');
 });
 
+test('accepts bare relative directory, Markdown file, and scoped-looking local sources', async () => {
+  const root = await temp();
+  const fileRoot = await temp();
+  const scopedRoot = await temp();
+  const cwd = await temp();
+  const previousCwd = process.cwd();
+  await mkdir(join(cwd, 'bare-dir'));
+  await writeFile(join(cwd, 'bare-dir', 'SKILL.md'), '---\nname: bare\ndescription: Bare directory\n---\nUse bare directory');
+  await writeFile(join(cwd, 'bare.md'), '---\nname: bare\ndescription: Bare file\n---\nUse bare file');
+  await mkdir(join(cwd, '@scope', 'skill'), { recursive: true });
+  await writeFile(join(cwd, '@scope', 'skill', 'SKILL.md'), '---\nname: skill\ndescription: Scoped local\n---\nUse scoped');
+  process.chdir(cwd);
+  try {
+    assert.equal((await installSkillSource('bare-dir', root)).name, 'bare');
+    assert.equal((await installSkillSource('bare.md', fileRoot)).name, 'bare');
+    assert.equal((await installSkillSource('@scope/skill', scopedRoot)).name, 'skill');
+  } finally {
+    process.chdir(previousCwd);
+  }
+});
+
 test('rejects package specs, URLs, archives, missing paths, and unsupported files before persistent installation', async () => {
   const root = await temp();
   const source = await temp();

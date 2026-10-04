@@ -60,9 +60,34 @@ Without `--verbose`, runs remain quiet until the final status. `-v` continues to
 
 The installer atomically replaces only app assets below `${XDG_DATA_HOME:-$HOME/.local/share}/yoloharness`, preserves config, credentials, and shared skills, and creates `$HOME/.local/bin/yolo`. It refuses symlinked or non-directory data/bin destinations. Keep the selected output directory disposable: partial publication may require deleting it before retrying, and networked generated code may disclose generated contents.
 
-## Uninstall
+## Skills and uninstall
 
-YOLOharness does not have an uninstall command yet. Stop any active `yolo` run before removing it.
+Skills installed with `yolo skills install` are active immediately. Project-local
+`.agents/skills/<name>` entries take precedence over shared entries; shared skills
+are stored below `${XDG_DATA_HOME:-$HOME/.local/share}/yoloharness/skills`.
+
+```bash
+yolo skills list
+yolo skills list --json
+yolo skills install ./my-skill              # directory containing SKILL.md
+yolo skills install ./review.md             # standalone <name>.md
+yolo skills install ./skill-package.tgz     # local npm package fixture
+yolo skills uninstall review
+```
+
+Npm registry package specs are acquired with `npm pack --ignore-scripts`; package
+code and dependencies are never installed or executed. Packages contain one
+`SKILL.md` plus optional `resources/**`, and its frontmatter supplies the installed
+name and description. Git, arbitrary URLs, upgrades, executable resources, and
+multi-skill packages are not supported. Installation is bounded, validated, and
+create-only; use `skills uninstall` before reinstalling a name.
+
+`yolo uninstall` is available only through the exact installed launcher. It removes
+that launcher, the installation-owned app, image metadata, and the exact immutable
+Docker image recorded by setup. It preserves credentials, model configuration,
+shared skills, projects, shell startup files, volumes, and unrelated images. Image
+removal failures stop before deletion so the operation can be retried. It does not
+claim remote token revocation.
 
 These Bash commands remove the launcher, installed app, image metadata, and the exact Docker image recorded by `yolo setup`. They keep your credentials, model setting, and shared skills so a later reinstall can reuse them. If you want to purge credentials too, run `yolo auth logout` now, before removing the launcher. Logout only deletes the local credential file; it does not remotely revoke the OAuth token.
 

@@ -83,7 +83,6 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
       return 1;
     }
     io.stderr.write(`starting bounded run (${options.minutes} minutes)\n`);
-    io.stderr.write('Warning: files in the selected project are intentionally exposed to the agent and may be disclosed\n');
     runStarted = true;
     // Resolve the trusted invoker-selected Docker client once.  The same
     // executable and normal Docker context/host configuration are used for

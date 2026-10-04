@@ -214,7 +214,7 @@ const result=cp.spawnSync(${JSON.stringify(dockerPath)},a,{encoding:'utf8',stdio
     const exit = await new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
     const wrc02EndedAt = new Date().toISOString();
     assert.equal(exit.code, 0, `${stderr}${stdout}\nprovider-log:\n${(() => { try { return docker('logs', providerName); } catch (error) { return error.stdout ?? error.message; } })()}\nwrapper:\n${await readFile(join(root, 'docker-argv.jsonl'), 'utf8').catch(() => 'missing')}\nnetwork:\n${(() => { try { return docker('network', 'inspect', network); } catch (error) { return error.stdout ?? error.message; } })()}`);
-    assert.match(stderr, /Warning: files in the selected project are intentionally exposed/);
+    assert.doesNotMatch(stderr, /Warning: files in the selected project are intentionally exposed/);
     const record = JSON.parse(stdout.trim().split(/\r?\n/).at(-1)); assert.equal(record.status, 'completed'); assert.equal(record.result, `${providerHostilePayload} whole-runtime-ok`);
     const emittedHostile = await readFile(join(capture, 'emitted-hostile-sse.txt'), 'utf8');
     assert.equal(emittedHostile, `${providerHostilePayload}\n`, 'WRC-02 must retain the provider-emitted hostile SSE payload, not only the request');

@@ -6,9 +6,9 @@ A bounded experiment in the harness Astra would choose for itself: a small, insp
 
 ## Current direction
 
-A thin, container-first, one-shot agent: `yolo "<prompt>"`, `yolo -t <minutes> "<prompt>"`, or `yolo --verbose -t <minutes> "<prompt>"`. Ordinary runs execute the provider, planner, parser, dispatch, and generated commands inside Docker. On a rootless Linux daemon, the container uses UID/GID 0:0 because container root maps to the invoking host user. On standard rootful Linux Docker, it uses the invoking host UID/GID and numeric supplementary groups so files in the project bind remain owned by the invoker; `/home/worker` is a selected-identity-owned mode 0700 tmpfs mount and `/tmp` is a uniquely owned Docker volume. On macOS, a Docker-compatible runtime that reports Linux containers (such as Colima or Docker Desktop) is a v0.1.1 candidate pending native validation; it uses container UID/GID 0:0 with no macOS host groups. A host-root invocation therefore may create host-root-owned files. Native Linux user-namespace-remapped daemons and non-Linux or unverifiable daemon shapes fail closed. The selected project path must be mountable/shareable by the chosen macOS runtime. The host process is only a bounded launcher/supervisor; the shipped package contains a FixtureProvider test seam, but the production CLI does not select it. No host chmod/chown or ACL preparation is performed; the launcher never chmods or chowns the project. The selected Docker daemon is trusted host infrastructure, and rootful Docker access is already host-privileged; this distinction does not change the model/container restrictions.
+A thin, container-first, one-shot agent: `yolo "<prompt>"`, `yolo -t <minutes> "<prompt>"`, or `yolo --verbose -t <minutes> "<prompt>"`. Ordinary runs execute the provider, planner, parser, dispatch, and generated commands inside Docker. On a rootless Linux daemon, the container uses UID/GID 0:0 because container root maps to the invoking host user. On standard rootful Linux Docker, it uses the invoking host UID/GID and numeric supplementary groups so published files remain owned by the invoker; `/home/worker` is a selected-identity-owned mode 0700 tmpfs mount and `/tmp` is a uniquely owned Docker volume. On macOS, a Docker-compatible runtime that reports Linux containers uses container UID/GID 0:0 with no macOS host groups. A native ARM64 macOS/Colima run has completed successfully, but repository automation does not prove every macOS runtime or filesystem shape; Docker Desktop has not been validated. A host-root invocation may create host-root-owned files. Native Linux user-namespace-remapped daemons and non-Linux or unverifiable daemon shapes fail closed. The selected project path must be accessible to the chosen macOS runtime. The host process is only a bounded launcher/supervisor; the shipped package contains a FixtureProvider test seam, but the production CLI does not select it. No host chmod/chown or ACL preparation is performed; the launcher never chmods or chowns the project. The selected Docker daemon is trusted host infrastructure, and rootful Docker access is already host-privileged; this distinction does not change the model/container restrictions.
 
-Run `yolo setup` to build the installation-owned runtime image and store its immutable local image ID plus source digest/version (`{version:1,imageId,sourceDigest,sourceVersion}`) under `$XDG_DATA_HOME/yoloharness/image.json` (or `$HOME/.local/share/yoloharness/image.json`). Ordinary runs use that exact ID with `--pull=never`. The selected project is the only host bind at `/workspace`; the runtime has a read-only root, dropped capabilities, bounded tmpfs/resource limits, and network egress for provider traffic. Project contents and the in-container access token are intentionally not treated as confidential from generated code.
+Run `yolo setup` to build the installation-owned runtime image and store its immutable local image ID plus source digest/version (`{version:1,imageId,sourceDigest,sourceVersion}`) under `$XDG_DATA_HOME/yoloharness/image.json` (or `$HOME/.local/share/yoloharness/image.json`). Ordinary runs use that exact ID with `--pull=never`. The selected project is staged into Docker-managed storage mounted at `/workspace`; the untrusted runtime receives no writable host-workspace bind, and trusted host code publishes constrained output create-only afterward. The runtime has a read-only root, dropped capabilities, bounded tmpfs/resource limits, and network egress for provider traffic. Project contents and the in-container access token are intentionally not treated as confidential from generated code.
 
 The runtime protects the host from the containerized agent and hostile staged content: the agent receives only Docker-managed storage, and trusted host code exports a constrained framed stream before create-only publication. It does not protect against another already-compromised process running concurrently as the same host user; use a fresh disposable directory and do not treat this as a defense against host compromise.
 
@@ -18,7 +18,7 @@ Project source, manifests, lockfiles, and intended outputs are staged into one r
 
 ## Direct provider setup (explicit opt-in)
 
-Authentication is separate from a run and never starts automatically. Run `yolo auth login`; device authentication uses the built-in public Codex client configuration and credentials are stored at `$XDG_CONFIG_HOME/yoloharness/credentials.json` (or `YOLO_AUTH_FILE`) outside the project with mode 0600. In an interactive terminal, login asks `Model name?` after authentication and stores non-secret configuration at `$XDG_CONFIG_HOME/yoloharness/config.json`; Enter retains an existing model. Noninteractive login never waits for model input. You can set or change it independently with `yolo config set model <model-id>`. At run time, an explicit `YOLO_MODEL` overrides the saved model without changing it. `yolo auth status` reports only local presence/expiry and `yolo auth logout` removes local credentials; it does not claim remote revocation. Production runs use the installation-owned canonical HTTPS Responses endpoint; the endpoint is not selectable through environment variables. Loopback HTTP providers are available only through explicit test construction with synthetic credentials; the production CLI never routes stored bearer credentials to arbitrary endpoints. No live OAuth, entitlement, Docker isolation, or native macOS execution has been verified in this repository.
+Authentication is separate from a run and never starts automatically. Run `yolo auth login`; device authentication uses the built-in public Codex client configuration and credentials are stored at `$XDG_CONFIG_HOME/yoloharness/credentials.json` (or `YOLO_AUTH_FILE`) outside the project with mode 0600. In an interactive terminal, login asks `Model name?` after authentication and stores non-secret configuration at `$XDG_CONFIG_HOME/yoloharness/config.json`; Enter retains an existing model. Noninteractive login never waits for model input. You can set or change it independently with `yolo config set model <model-id>`. At run time, an explicit `YOLO_MODEL` overrides the saved model without changing it. `yolo auth status` reports only local presence/expiry and `yolo auth logout` removes local credentials; it does not claim remote revocation. Production runs use the installation-owned canonical HTTPS Responses endpoint; the endpoint is not selectable through environment variables. Loopback HTTP providers are available only through explicit test construction with synthetic credentials; the production CLI never routes stored bearer credentials to arbitrary endpoints. Repository automation does not prove live OAuth, account entitlement, or native macOS behavior; the successful ARM64 macOS/Colima run is user-executed validation.
 
 ## What is here
 
@@ -26,7 +26,7 @@ Authentication is separate from a run and never starts automatically. Run `yolo 
 - **[DESIGN.md](DESIGN.md):** historical/proposed architecture and build plan; it is not the shipped runtime contract.
 - **[src/](src/):** bounded one-shot CLI/runtime. Ordinary runs are container-only and fail closed when setup, credentials, or the immutable image is unavailable.
 
-## Install and run (Linux MVP; macOS Docker-compatible Linux VM candidate)
+## Install and run (Linux MVP; user-validated on ARM64 macOS/Colima)
 
 WARNING: `yolo` refuses to start unless the selected cwd is an initially empty, real directory. It is a fresh, disposable one-shot generator, not an existing-project merge tool. Generated output is published create-only: it never overwrites, renames, chmods, or deletes an existing host entry. A timeout, conflict, or interruption can leave partial output; inspect it or delete the directory before retrying. Keep secrets out of the directory: networked generated code can send generated contents out.
 
@@ -69,18 +69,23 @@ are stored below `${XDG_DATA_HOME:-$HOME/.local/share}/yoloharness/skills`.
 ```bash
 yolo skills list
 yolo skills list --json
-yolo skills install ./my-skill              # directory containing SKILL.md
-yolo skills install ./review.md             # standalone <name>.md
+yolo skills install my-skill                # bare relative directory containing SKILL.md
+yolo skills install ./review.md             # standalone local <name>.md
+yolo skills install ../shared/audit-skill   # parent-relative directory
+yolo skills install /absolute/path/to/skill # absolute local path
 yolo skills uninstall review
 ```
 
-Only local `SKILL.md` files and local directories containing `SKILL.md` plus
-optional `resources/**` are accepted. Registry package specs, scoped specs, URLs,
-`.tgz` archives, and unsupported files are rejected before any acquisition or
-destination mutation. If a skill is distributed as an npm package, install or
-unpack it separately with npm, then pass its resulting directory to
-`yolo skills install ./unpacked-skill`. Installation is bounded, validated, and
-create-only; use `skills uninstall` before reinstalling a name.
+Every source is interpreted only as a local filesystem path. Existing bare
+relative, `./`, `../`, absolute, and nested paths such as `@scope/skill` are
+accepted when they identify either a standalone local Markdown file (`SKILL.md`
+or `<name>.md`) or a directory containing `SKILL.md` plus optional bounded
+resources. Nothing is interpreted as an npm package spec. Missing paths, URLs,
+`.tgz` archives, and unsupported files are rejected before destination mutation.
+If a skill is distributed as an npm package, install or unpack it separately with
+npm, then pass its resulting local directory to `yolo skills install`. Installation
+is bounded, validated, and create-only; use `skills uninstall` before reinstalling
+a name.
 YOLOharness does not defend its managed installation directories against
 another process running as the same user and modifying those directories
 during installation or uninstallation.
@@ -92,65 +97,16 @@ shared skills, projects, shell startup files, volumes, and unrelated images. Ima
 removal failures stop before deletion so the operation can be retried. It does not
 claim remote token revocation.
 
-These Bash commands remove the launcher, installed app, image metadata, and the exact Docker image recorded by `yolo setup`. They keep your credentials, model setting, and shared skills so a later reinstall can reuse them. If you want to purge credentials too, run `yolo auth logout` now, before removing the launcher. Logout only deletes the local credential file; it does not remotely revoke the OAuth token.
-
 ```bash
-case ${XDG_DATA_HOME:-} in
-  /*) data_home=$XDG_DATA_HOME ;;
-  *) data_home="$HOME/.local/share" ;;
-esac
-case ${XDG_CONFIG_HOME:-} in
-  /*) config_home=$XDG_CONFIG_HOME ;;
-  *) config_home="$HOME/.config" ;;
-esac
-app_root="$data_home/yoloharness"
-config_root="$config_home/yoloharness"
-launcher="$HOME/.local/bin/yolo"
-image_metadata="$app_root/image.json"
-expected_launcher="$app_root/app/src/cli.mjs"
-
-printf 'launcher: %s\napp data: %s\nconfig: %s\n' \
-  "$launcher" "$app_root" "$config_root"
-
-if [ -f "$image_metadata" ]; then
-  image_id="$(node -e '
-    const fs = require("node:fs");
-    const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-    if (!/^sha256:[0-9a-f]{64}$/i.test(value.imageId)) process.exit(2);
-    process.stdout.write(value.imageId);
-  ' "$image_metadata")" || {
-    printf 'Refusing to remove an image: %s is malformed.\n' "$image_metadata" >&2
-    exit 1
-  }
-  docker image rm "$image_id" || {
-    printf 'Image removal failed; keeping installation metadata.\n' >&2
-    exit 1
-  }
-fi
-
-if [ -L "$launcher" ] && [ "$(readlink "$launcher")" = "$expected_launcher" ]; then
-  rm -- "$launcher"
-elif [ -e "$launcher" ] || [ -L "$launcher" ]; then
-  printf 'Refusing to remove unexpected launcher: %s\n' "$launcher" >&2
-  exit 1
-fi
-
-[ ! -e "$app_root/app" ] || rm -r -- "$app_root/app"
-rm -f -- "$image_metadata"
-rmdir "$app_root" 2>/dev/null || true
-hash -r
+yolo auth logout # optional: remove local credentials before removing the launcher
+yolo uninstall
 ```
 
-`docker image rm` fails rather than forcing removal if another container still uses that image. Inspect and stop the container before retrying; do not replace it with a forced broad cleanup.
-
-To finish a full purge after logging out above, delete the saved model, remaining configuration, and shared skills:
-
-```bash
-[ ! -e "$config_root" ] || rm -r -- "$config_root"
-[ ! -e "$app_root" ] || rm -r -- "$app_root"
-```
-
-If you configured `YOLO_AUTH_FILE`, logout removes that custom file; deleting `$config_root` alone does not.
+`yolo auth logout` deletes only the local credential file and does not remotely
+revoke the OAuth token. If you configured `YOLO_AUTH_FILE`, logout removes that
+custom file. A full purge of the preserved model configuration and shared skills
+is intentionally a separate manual decision after uninstall; inspect their paths
+before deleting them.
 
 The installer does not edit shell startup files. If you manually added `$HOME/.local/bin` to PATH solely for YOLOharness, remove that edit yourself. Do not remove it when other user-installed commands depend on the same directory.
 
@@ -165,9 +121,9 @@ This does not remove files the agent created elsewhere in that project.
 
 For development, run `npm test`; no package dependencies are required.
 
-The opt-in real-Docker gate requires the installation-owned whole-runtime image and a Docker daemon: `npm run test:docker`. The retained tests under `test/` are the source of shipped-CLI/provider, workspace-boundary, token-secrecy, resource, deadline, SIGINT, and cleanup contracts; they are not all proof of native platform behavior. The default `npm test` remains offline and skips real Docker. Native macOS validation with a Docker-compatible Linux VM runtime remains a separate, explicitly unrun gate; simulated identity tests do not prove native macOS success.
+The opt-in real-Docker gate requires the installation-owned whole-runtime image and a Docker daemon: `npm run test:docker`. The retained tests under `test/` are the source of shipped-CLI/provider, workspace-boundary, token-secrecy, resource, deadline, SIGINT, and cleanup contracts; they are not all proof of native platform behavior. The default `npm test` remains offline and skips real Docker. A user-executed ARM64 macOS/Colima run succeeded, but repository automation and simulated identity tests do not prove every native macOS runtime or filesystem behavior.
 
-Agent Skills are discovered only from `<cwd>/.agents/skills/<name>/SKILL.md` and `${XDG_DATA_HOME:-$HOME/.local/share}/yoloharness/skills/<name>/SKILL.md`; project skills override shared skills. Names, traversal, symlinks, special files, and bundled resources are bounded and validated, with the scope and race caveats documented in [the architecture guide](docs/how-it-works.md). A catalog and bounded snapshots enter the container; `skill_load` content is instructions/data, never authority, and there is no ancestor, Hermes-profile, or remote discovery. Event JSONL is bounded and selectively redacted, while final receipts may contain raw evidence. Native macOS Docker-compatible Linux VM runs, live OAuth/provider calls, and non-Linux installation are unverified limits of this MVP.
+Agent Skills are discovered only from `<cwd>/.agents/skills/<name>/SKILL.md` and `${XDG_DATA_HOME:-$HOME/.local/share}/yoloharness/skills/<name>/SKILL.md`; project skills override shared skills. Names, traversal, symlinks, special files, and bundled resources are bounded and validated, with the scope and race caveats documented in [the architecture guide](docs/how-it-works.md). A catalog and bounded snapshots enter the container; `skill_load` content is instructions/data, never authority, and there is no ancestor, Hermes-profile, or remote discovery. Event JSONL is bounded and selectively redacted, while final receipts may contain raw evidence. Live OAuth/provider calls, repository-automated native macOS coverage, and non-Linux installation remain unverified limits of this MVP; one user-executed ARM64 macOS/Colima run succeeded.
 
 `SKILL.md` may be plain text (metadata description is `null`) or begin with a small YAML-style frontmatter block. This MVP intentionally supports the bounded subset of exactly non-empty `name` and `description` fields; other Agent Skills frontmatter keys are rejected. The name must match the directory, and descriptions are limited to 512 characters; malformed or mismatched metadata is rejected. The provider receives only bounded catalog metadata first (including source `local` or `shared` and resource names), encoded as a standard developer message item accepted by the Responses API, then requests instruction/resource content progressively.
 
@@ -176,7 +132,7 @@ Agent Skills are discovered only from `<cwd>/.agents/skills/<name>/SKILL.md` and
 - **Borrow execution, build continuity.** The original proposal used the official Codex app-server; the shipped CLI instead owns direct device auth and its bounded Responses/tool loop. See [DIRECTION.md](DIRECTION.md) and the current guide.
 - **Compile context, don't hoard it.** Stable prefix, task-local retrieval, bounded results, explicit manifests, and recoverable checkpoints.
 - **Remember with provenance.** Every fact has a scope, source, age, and lifecycle. Summaries are indexes, not truth. Memory cannot grant authority.
-- **Make experiments disposable.** Focus mode by default; the shipped writable-bind dependency gap means nested installs are not yet fully disposable.
+- **Make experiments disposable.** Focus mode by default; whole-workspace Docker-volume staging keeps filtered dependency trees out of host publication, including nested installs.
 - **Treat completion as a checked state.** Tests, artifacts, and external receipts—not another agent's confident sentence.
 - **Keep the option to stop.** Compare against stock Codex and Hermes. If this layer doesn't earn its maintenance, implement the useful pieces as a Hermes extension instead.
 
@@ -207,6 +163,6 @@ No system installs or credential changes were performed for this jam.
 
 ## Scope and provenance
 
-Created for Ryan's ~10-minute hallucination challenge on 2026-09-04. Work used the configured researcher (Astra), backend/data/frontend/maintainability/QA/performance profiles (Luna), security profile (Sol), and orchestrator (Astra). A dedicated `yoloharness` Kanban board records work and review.
+Created for Ryan's ~10-minute hallucination challenge on 2026-09-04 and subsequently developed into the implemented CLI described above. Work used the configured researcher (Astra), backend/data/frontend/maintainability/QA/performance profiles (Luna), security profile (Sol), and orchestrator (Astra). A dedicated `yoloharness` Kanban board records work and review.
 
-Public documentation is cited; proprietary or unreleased OpenAI implementation details are unknown. Architecture choices are hypotheses, not claims that this design has been proven optimal. No production implementation, live OAuth/model turn, push, deployment, or publication is authorized by this plan.
+Public documentation is cited; proprietary or unreleased OpenAI implementation details are unknown. Architecture choices are hypotheses, not claims that this design has been proven optimal. The repository contains the implemented CLI; live OAuth/model turns, releases, deployment, and package publication remain separate explicitly authorized actions.

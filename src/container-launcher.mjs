@@ -10,6 +10,7 @@ import { volumeSubpath, scratchSubpaths } from './scratch-path.mjs';
 import { effectiveEphemeralPaths, validateEphemeralPaths } from './config.mjs';
 import { reserveReceipt } from './receipt-persistence.mjs';
 import { publishExport } from './workspace-protocol.mjs';
+import { ProgressFrameDecoder } from './progress.mjs';
 
 const MAX_OUTPUT = 1024 * 1024;
 const OP_TIMEOUT = 10_000;
@@ -37,7 +38,7 @@ export class ContainerLauncher {
     this.image = image; this.workspace = workspace; this.command = command; this.spawn = spawn; this.timeoutMs = timeoutMs; this.hostPlatform = hostPlatform;
   }
 
-  async launch(bootstrap, { signal, deadline, receiptAuthority: suppliedReceiptAuthority } = {}) {
+  async launch(bootstrap, { signal, deadline, receiptAuthority: suppliedReceiptAuthority, onProgress } = {}) {
     const startedAt = Date.now();
     const executionDeadline = Number.isFinite(deadline) ? deadline : startedAt + this.timeoutMs;
     const remaining = () => Math.max(1, executionDeadline - Date.now());
@@ -126,7 +127,7 @@ export class ContainerLauncher {
       clientCloseObserved = true;
       attached = this.spawn(this.command, ['start', '--attach', '--interactive', id], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: DOCKER_ENV() });
       clientCloseObserved = false;
-      const result = await attachedOperation(attached, bootstrapFrame, signal, () => cleanupDeadline);
+      const result = await attachedOperation(attached, bootstrapFrame, signal, () => cleanupDeadline, onProgress);
       clientCloseObserved = result.closeObserved;
       if (clientCloseObserved) {
         // Publication is a separate durability step. Keep the runtime's
@@ -647,10 +648,11 @@ function operation(command, args, spawn, { timeoutMs = OP_TIMEOUT, deadline, sig
   return { promise, get child() { return child; } };
 }
 
-function attachedOperation(child, input, signal, cleanupDeadline) {
+function attachedOperation(child, input, signal, cleanupDeadline, onProgress) {
   return new Promise((resolve, reject) => {
     let out = ''; let err = ''; let done = false; let overflow = false;
     let reapTimer;
+    const decoder = onProgress ? new ProgressFrameDecoder(onProgress, { onFault: message => { try { onProgress({ type: 'diagnostic', message }); } catch {} } }) : null;
     const abort = () => {
       child.kill('SIGTERM');
       const check = () => {
@@ -667,9 +669,9 @@ function attachedOperation(child, input, signal, cleanupDeadline) {
       check();
     };
     const finish = (fn, value) => { if (done) return; done = true; clearTimeout(reapTimer); signal?.removeEventListener('abort', abort); fn(value); };
-    const collect = (which, chunk) => { const text = String(chunk); if (which === 'out') out += text; else err += text; if (Buffer.byteLength(which === 'out' ? out : err) > MAX_OUTPUT) { overflow = true; child.kill('SIGKILL'); } };
+    const collect = (which, chunk) => { const text = String(chunk); if (which === 'out') out += text; else { err += text; decoder?.push(Buffer.from(chunk)); } if (Buffer.byteLength(which === 'out' ? out : err) > MAX_OUTPUT) { overflow = true; child.kill('SIGKILL'); } };
     child.stdout?.on('data', chunk => collect('out', chunk)); child.stderr?.on('data', chunk => collect('err', chunk));
-    child.once('error', error => { error.clientCloseObserved = true; finish(reject, error); }); child.once('close', code => finish(resolve, { code, out, err, overflow, closeObserved: true }));
+    child.once('error', error => { error.clientCloseObserved = true; finish(reject, error); }); child.once('close', code => { decoder?.end(); finish(resolve, { code, out, err, overflow, closeObserved: true }); });
     if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true });
     child.stdin?.end(input);
   });

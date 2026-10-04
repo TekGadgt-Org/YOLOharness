@@ -6,6 +6,7 @@ import { decodeBootstrap } from './bootstrap.mjs';
 import { ConfiguredProvider } from './provider.mjs';
 import { runOnce, EXEC_TOOL, SKILL_LOAD_TOOL } from './runtime.mjs';
 import { ContainerProcessExecutor } from './container-executor.mjs';
+import { ProgressWriter } from './progress.mjs';
 
 const MAX_INPUT = 128 * 1024;
 const RESPONSES_ENDPOINT = 'https://chatgpt.com/backend-api/codex/responses';
@@ -16,11 +17,13 @@ for await (const chunk of process.stdin) {
 }
 let record;
 const controller = new AbortController();
-const interrupt = signal => controller.abort(Object.assign(new Error(signal === 'SIGTERM' ? 'container stopped' : 'SIGINT'), { code: signal === 'SIGTERM' ? 'interrupted' : 'interrupted' }));
+let progressWriter;
+const interrupt = signal => { controller.abort(Object.assign(new Error(signal === 'SIGTERM' ? 'container stopped' : 'SIGINT'), { code: signal === 'SIGTERM' ? 'interrupted' : 'interrupted' })); };
 process.once('SIGTERM', () => interrupt('SIGTERM'));
 process.once('SIGINT', () => interrupt('SIGINT'));
 try {
   const boot = decodeBootstrap(input);
+  progressWriter = boot.verbose ? new ProgressWriter(process.stderr) : null;
   if (boot.expiresAt <= boot.deadline) throw new Error('access token does not cover run deadline');
   const provider = new ConfiguredProvider({ credentials: { accessToken: boot.accessToken, expiresAt: boot.expiresAt }, url: RESPONSES_ENDPOINT, model: boot.model });
   const remaining = Math.max(1, (boot.deadline - Date.now()) / 60000);
@@ -28,7 +31,7 @@ try {
   const reserveMs = Math.min(30_000, Math.max(5_000, Math.floor((hardDeadlineAt - Date.now()) * 0.1)));
   const deadlineAt = hardDeadlineAt - reserveMs;
   const executor = new ContainerProcessExecutor({ timeoutMs: Math.max(1_000, boot.deadline - Date.now()) });
-  record = await runOnce({ prompt: boot.prompt, minutes: remaining, deadlineAt, hardDeadlineAt, reserveMs, workspace: '/workspace', provider, executor, tools: [EXEC_TOOL, SKILL_LOAD_TOOL], skills: boot.skills, maxSteps: 100, signal: controller.signal });
+  record = await runOnce({ prompt: boot.prompt, minutes: remaining, deadlineAt, hardDeadlineAt, reserveMs, workspace: '/workspace', provider, executor, tools: [EXEC_TOOL, SKILL_LOAD_TOOL], skills: boot.skills, maxSteps: 100, signal: controller.signal, progress: progressWriter ? event => progressWriter.emit(event) : undefined });
 } catch (error) {
   const message = error?.code === 'reauth_required' ? 'reauth_required' : (error?.message ?? String(error));
   record = { version: 1, run_id: null, status: controller.signal.aborted ? 'interrupted' : 'failed', effect_state: controller.signal.aborted ? 'uncertain' : 'none', result: error?.partialResult ?? null, evidence: [], artifacts: [], errors: [message] };
@@ -42,4 +45,5 @@ try {
 } catch (error) {
   record = { ...record, status: 'publication_incomplete', effect_state: 'uncertain', errors: [...(record.errors ?? []), `receipt persistence failed: ${error.message}`] };
 }
+progressWriter?.close();
 process.stdout.write(`${JSON.stringify(record)}\n`);

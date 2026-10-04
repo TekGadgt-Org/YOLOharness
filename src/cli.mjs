@@ -12,6 +12,7 @@ import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { validateEmptyWorkspace } from './workspace-sync.mjs';
 import { persistReceipt, reserveReceipt } from './receipt-persistence.mjs';
+import { createProgressRenderer } from './progress.mjs';
 const execFileAsync = promisify(execFile);
 
 const VERSION = '0.1.1';
@@ -33,14 +34,15 @@ const AUTH_ENDPOINTS = Object.freeze({
   redirectUri: 'https://auth.openai.com/deviceauth/callback',
 });
 export const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
-function usage() { return 'Usage: yolo [-t MINUTES] [--json] <prompt>\n       yolo setup\n       yolo doctor\n       yolo config set model <model-id>\n       yolo config ephemeral-path list|add|remove|reset [path]\n       yolo auth login|status|logout\n       yolo --help\n       yolo --version'; }
+function usage() { return 'Usage: yolo [--verbose] [-t MINUTES] [--json] <prompt>\n       yolo setup\n       yolo doctor\n       yolo config set model <model-id>\n       yolo config ephemeral-path list|add|remove|reset [path]\n       yolo auth login|status|logout\n       yolo --help\n       yolo --version'; }
 export function parseArgs(args) {
-  let minutes = 10; let json = false; const prompt = [];
+  let minutes = 10; let json = false; let verbose = false; const prompt = [];
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     if (arg === '--help' || arg === '-h') return { help: true };
     if (arg === '--version' || arg === '-v') return { version: true };
     if (arg === '--json') { json = true; continue; }
+    if (arg === '--verbose') { if (verbose) throw new TypeError('duplicate option: --verbose'); verbose = true; continue; }
     if (arg === '-t' || arg === '--time') {
       const value = Number(args[++i]);
       if (!(Number.isFinite(value) && value > 0)) throw new TypeError('time must be a positive finite number of minutes');
@@ -50,7 +52,7 @@ export function parseArgs(args) {
     prompt.push(arg);
   }
   if (!prompt.join(' ').trim()) throw new TypeError('prompt must be non-empty');
-  return { minutes, json, prompt: prompt.join(' ') };
+  return { minutes, json, ...(verbose ? { verbose: true } : {}), prompt: prompt.join(' ') };
 }
 
 export async function main(args = process.argv.slice(2), io = { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr }, { clientFactory } = {}) {
@@ -58,7 +60,9 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
   let runStarted = false;
   let receiptAuthority;
   let receiptTransferred = false;
+  let renderer;
   try {
+    if (args[0] && ['setup', 'doctor', 'auth', 'config'].includes(args[0]) && args.includes('--verbose')) throw new TypeError('--verbose is only valid for a run');
     if (args[0] === 'setup') return await setupCommand(io);
     if (args[0] === 'doctor') return await doctorCommand(io);
     if (args[0] === 'auth') return await authCommand(args.slice(1), io, { clientFactory });
@@ -92,13 +96,16 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     const credentials = await runtimeCredentials(options.minutes, deadline, { signal: controller.signal });
     const config = await new ConfigStore(configPath()).load();
     const launcher = new ContainerLauncher({ image, workspace, command: dockerCommand, timeoutMs: options.minutes * 60_000 });
-    const record = await launcher.launch({ prompt: options.prompt, model, ephemeralPaths: effectiveEphemeralPaths(config), deadline, accessToken: credentials.accessToken, expiresAt: credentials.expiresAt }, { signal: controller.signal, deadline, receiptAuthority });
+    renderer = options.verbose ? createProgressRenderer({ stream: io.stderr, write: value => io.stderr.write(value) }) : null;
+    const record = await launcher.launch({ prompt: options.prompt, model, ephemeralPaths: effectiveEphemeralPaths(config), deadline, accessToken: credentials.accessToken, expiresAt: credentials.expiresAt, ...(options.verbose ? { verbose: true } : {}) }, { signal: controller.signal, deadline, receiptAuthority, ...(renderer ? { onProgress: renderer } : {}) });
     receiptTransferred = true;
     clearTimeout(deadlineTimer);
     process.removeListener('SIGINT', onInterrupt);
+    renderer?.close();
     io.stdout.write(`${options.json ? JSON.stringify(record) : `${record.status} run=${record.run_id ?? 'unknown'} effect_state=${record.effect_state ?? 'unknown'} evidence=${record.evidence?.length ?? 0} artifacts=${record.artifacts?.length ?? 0}: ${record.result ?? record.errors.join('; ')}`}\n`);
     return record.status === 'completed' && record.effect_state !== 'uncertain' ? 0 : record.status === 'interrupted' ? 130 : record.status === 'deadline' ? 124 : 1;
   } catch (error) {
+    renderer?.close();
     if (receiptAuthority && !receiptTransferred) await receiptAuthority.close().catch(() => {});
     clearTimeout(deadlineTimer);
     const message = error instanceof MissingProviderError ? error.message : error.message;

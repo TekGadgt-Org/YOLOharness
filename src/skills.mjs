@@ -121,7 +121,7 @@ export function skill_load(skills, name, resource) {
 }
 export { MAX_SKILL_BUNDLE };
 
-async function validateTree(root, name, packageSource = false) {
+async function validateTree(root, name) {
   const info = await lstat(root);
   if (!info.isDirectory() || info.isSymbolicLink()) throw new TypeError('skill source must be a real directory');
   let total = 0;
@@ -134,7 +134,7 @@ async function validateTree(root, name, packageSource = false) {
       else {
         const file = await regular(child, `skill resource ${entry.name}`);
         const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
-        if (rel !== 'SKILL.md' && !(packageSource && rel === 'package.json') && !rel.startsWith('resources/')) throw new TypeError('skill resources must be below resources/');
+        if (rel !== 'SKILL.md' && !rel.startsWith('resources/')) throw new TypeError('skill resources must be below resources/');
         total += file.size;
         if (total > MAX_SKILL_BUNDLE) throw new RangeError('skill bundle exceeds size limit');
       }
@@ -145,7 +145,7 @@ async function validateTree(root, name, packageSource = false) {
   const text = decode(await readFile(skillFile), `${name}/SKILL.md`);
   const parsed = metadata(text, name);
   for (const entry of await readdir(root, { withFileTypes: true })) {
-    if (entry.name !== 'SKILL.md' && entry.name !== 'resources' && !(packageSource && entry.name === 'package.json')) throw new TypeError('skill directory has unsupported top-level entry');
+    if (entry.name !== 'SKILL.md' && entry.name !== 'resources') throw new TypeError('skill directory has unsupported top-level entry');
     if (entry.name === 'resources' && !entry.isDirectory()) throw new TypeError('resources must be a directory');
   }
   await visit(root);
@@ -163,7 +163,7 @@ async function copyTree(source, destination) {
   }
 }
 
-export async function installSkill(source, sharedRoot = sharedSkillsRoot(), { name, packageSource = false } = {}) {
+export async function installSkill(source, sharedRoot = sharedSkillsRoot(), { name } = {}) {
   if (typeof source !== 'string' || !isAbsolute(source)) throw new TypeError('local skill source must be an absolute path');
   const sourceInfo = await lstat(source);
   const sourceRoot = sourceInfo.isDirectory() ? source : dirname(source);
@@ -181,7 +181,7 @@ export async function installSkill(source, sharedRoot = sharedSkillsRoot(), { na
   }
   const inferred = name ?? (await (async () => { const text = await readFile(join(sourceRoot, 'SKILL.md'), 'utf8'); return text.startsWith('---\n') ? /^name:[ \t]*(.+)$/m.exec(text)?.[1]?.trim() : sourceRoot.split('/').pop(); })());
   safeName(inferred);
-  const parsed = await validateTree(sourceRoot, inferred, packageSource);
+  const parsed = await validateTree(sourceRoot, inferred);
   if (parsed.name !== inferred) throw new TypeError('skill name does not match source metadata');
   await mkdir(sharedRoot, { recursive: true, mode: 0o700 });
   const rootInfo = await lstat(sharedRoot); if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new TypeError('unsafe shared skills root');

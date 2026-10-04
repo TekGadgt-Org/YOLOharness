@@ -71,15 +71,15 @@ yolo skills list
 yolo skills list --json
 yolo skills install ./my-skill              # directory containing SKILL.md
 yolo skills install ./review.md             # standalone <name>.md
-yolo skills install ./skill-package.tgz     # local npm package fixture
 yolo skills uninstall review
 ```
 
-Npm registry package specs are acquired with `npm pack --ignore-scripts`; package
-code and dependencies are never installed or executed. Packages contain one
-`SKILL.md` plus optional `resources/**`, and its frontmatter supplies the installed
-name and description. Git, arbitrary URLs, upgrades, executable resources, and
-multi-skill packages are not supported. Installation is bounded, validated, and
+Only local `SKILL.md` files and local directories containing `SKILL.md` plus
+optional `resources/**` are accepted. Registry package specs, scoped specs, URLs,
+`.tgz` archives, and unsupported files are rejected before any acquisition or
+destination mutation. If a skill is distributed as an npm package, install or
+unpack it separately with npm, then pass its resulting directory to
+`yolo skills install ./unpacked-skill`. Installation is bounded, validated, and
 create-only; use `skills uninstall` before reinstalling a name.
 YOLOharness does not defend its managed installation directories against
 another process running as the same user and modifying those directories

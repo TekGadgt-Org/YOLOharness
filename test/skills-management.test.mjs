@@ -1,15 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, lstat, rm } from 'node:fs/promises';
-import { execFile as execFileCallback } from 'node:child_process';
-import { promisify } from 'node:util';
+import { mkdtemp, mkdir, writeFile, readFile, lstat, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { installSkill, listSkills, uninstallSkill } from '../src/skills.mjs';
 import { installSkillSource } from '../src/skill-installer.mjs';
 
 const temp = () => mkdtemp(join(tmpdir(), 'yolo-skills-management-'));
-const execFile = promisify(execFileCallback);
 
 test('installs a local skill atomically and uninstalls only the shared skill', async () => {
   const root = await temp();
@@ -38,17 +35,23 @@ test('rejects unsafe local skill sources before creating destination', async () 
   await assert.rejects(() => lstat(join(root, 'bad')));
 });
 
-test('rejects non-portable archive member names before persistent installation', async () => {
+test('installs a standalone local SKILL.md file', async () => {
   const root = await temp();
-  for (const [label, member] of [['backslash', 'package/resources\\\\escape'], ['control', 'package/resources/line\nfeed'], ['punctuation', 'package/resources/space name']]) {
-    const source = await temp();
-    await mkdir(join(source, 'package', 'resources'), { recursive: true });
-    await writeFile(join(source, 'package', 'package.json'), '{}');
-    await writeFile(join(source, 'package', 'SKILL.md'), '---\nname: package\ndescription: Package\n---\nbody');
-    await writeFile(join(source, member.replace(/^package\//, 'package/')), 'bad');
-    const archive = join(source, `${label}.tgz`);
-    await execFile('tar', ['-czf', archive, '-C', source, 'package']);
-    await assert.rejects(() => installSkillSource(archive, root), /unsafe|invalid|unsupported/i);
-    await assert.rejects(() => lstat(join(root, 'package')));
+  const source = await temp();
+  const file = join(source, 'review.md');
+  await writeFile(file, '---\nname: review\ndescription: Review\n---\nUse review');
+  const installed = await installSkillSource(file, root);
+  assert.equal(installed.name, 'review');
+  assert.equal(await readFile(join(root, 'review', 'SKILL.md'), 'utf8'), '---\nname: review\ndescription: Review\n---\nUse review');
+});
+
+test('rejects package specs, URLs, archives, missing paths, and unsupported files before persistent installation', async () => {
+  const root = await temp();
+  const source = await temp();
+  const unsupported = join(source, 'notes.txt');
+  await writeFile(unsupported, 'not a skill');
+  for (const value of ['lodash', '@scope/skill', 'https://example.test/skill.tgz', './skill.tgz', './missing-skill', unsupported]) {
+    await assert.rejects(() => installSkillSource(value, root), /local|unsupported|URL|source|ENOENT|Markdown|SKILL/i);
+    assert.deepEqual(await readdir(root), []);
   }
 });

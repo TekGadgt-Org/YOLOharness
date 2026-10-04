@@ -37,7 +37,7 @@ const AUTH_ENDPOINTS = Object.freeze({
   redirectUri: 'https://auth.openai.com/deviceauth/callback',
 });
 export const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
-function usage() { return 'Usage: yolo [--verbose] [-t MINUTES] [--json] <prompt>\n       yolo setup\n       yolo doctor\n       yolo skills list [--json]\n       yolo skills install <source>\n       yolo skills uninstall <name>\n       yolo uninstall\n       yolo config set model <model-id>\n       yolo config ephemeral-path list|add|remove|reset [path]\n       yolo auth login|status|logout\n       yolo --help\n       yolo --version'; }
+function usage() { return 'Usage: yolo [--verbose] [-t MINUTES] [--json] <prompt>\n       yolo setup\n       yolo doctor\n       yolo skills list [--json]\n       yolo skills install <local-file-or-directory>\n       yolo skills uninstall <name>\n       yolo uninstall\n       yolo config set model <model-id>\n       yolo config ephemeral-path list|add|remove|reset [path]\n       yolo auth login|status|logout\n       yolo --help\n       yolo --version'; }
 export function parseArgs(args) {
   let minutes = 10; let json = false; let verbose = false; const prompt = [];
   for (let i = 0; i < args.length; i += 1) {

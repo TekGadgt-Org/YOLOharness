@@ -155,7 +155,10 @@ The main design is authoritative where specialist proposals differ:
 
 No system installs or credential changes were performed for this jam.
 
-- Node was available on the execution host (v22.23.2). No native macOS execution was performed.
+- At the initial 2026-09-04 jam, Node was available on the execution host
+  (v22.23.2) and no native macOS execution was performed. A later user-executed
+  ARM64 macOS/Colima run succeeded; repository automation still does not prove
+  every native macOS runtime or filesystem behavior.
 - Official `codex` CLI was **not found on PATH** at initial inspection. Ryan would need to install an official supported version before live integration.
 - Authenticate through the official Codex client with an eligible account. Existing Hermes OAuth does not establish that a separate client is authenticated, and we will not copy token files.
 - Verify the desired model is actually exposed to that account/client. This project makes no claim that the model alias used by Hermes maps directly to the public CLI.

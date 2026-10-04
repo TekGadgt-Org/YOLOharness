@@ -4,7 +4,7 @@ Status: current behavior at the checked-out implementation. This guide is an imp
 
 ## One invocation
 
-The shipped CLI is a one-shot Node 22+ ESM program. `yolo [--json] [-t MINUTES] <prompt>` parses a positive finite time (default 10 minutes), joins prompt tokens, installs SIGINT handling, validates configuration/image/credentials, then launches one Docker runtime (`src/cli.mjs:34-90`). `setup`, `doctor`, `auth`, and `config` are separate commands. `doctor` is local readiness, not provider entitlement or a complete run preflight.
+The shipped CLI is a one-shot Node 22+ ESM program. `yolo [--json] [-t MINUTES] <prompt>` parses a positive finite time (default 10 minutes), joins prompt tokens, installs SIGINT handling, validates configuration/image/credentials, then launches one Docker runtime (`src/cli.mjs:34-90`). `setup`, `doctor`, `skills`, `uninstall`, `auth`, and `config` are separate commands. `doctor` is local readiness, not provider entitlement or a complete run preflight.
 
 Current sequence:
 
@@ -22,7 +22,7 @@ Configuration is under `$XDG_CONFIG_HOME/yoloharness` (absolute XDG values only;
 
 ## Runtime boundary and resources
 
-The launcher selects the executable found on PATH and preserves the caller's Docker context/TLS environment for Docker operations. It fails closed on malformed or unsupported daemon identity. Rootless Linux uses container `0:0` (mapped by the daemon); ordinary rootful Linux uses the invoking numeric UID/GID and supplementary groups; Darwin with a Linux Docker daemon uses `0:0`. Linux userns-remap and unverifiable/non-Linux daemon shapes are rejected (`src/container-launcher.mjs:349-378`). Native Darwin/Colima behavior remains externally unverified.
+The launcher selects the executable found on PATH and preserves the caller's Docker context/TLS environment for Docker operations. It fails closed on malformed or unsupported daemon identity. Rootless Linux uses container `0:0` (mapped by the daemon); ordinary rootful Linux uses the invoking numeric UID/GID and supplementary groups; Darwin with a Linux Docker daemon uses `0:0`. Linux userns-remap and unverifiable/non-Linux daemon shapes are rejected (`src/container-launcher.mjs:349-378`). A user-executed ARM64 macOS/Colima run succeeded; repository automation does not prove every native macOS runtime or filesystem behavior, and Docker Desktop has not been validated.
 
 The current runtime has a read-only image root, dropped capabilities, `no-new-privileges`, bridge networking, 128 PIDs, 512 MiB memory, one CPU, a 64 MiB `noexec,nosuid` `/home/worker` tmpfs, and Docker-managed scratch (`src/resource-policy.mjs`, `src/container-launcher.mjs:83-94`). Bridge networking is general egress, not provider-only allowlisting. Generated code can read the project and access-token material in its runtime boundary; this is not a confidentiality sandbox.
 
@@ -55,9 +55,9 @@ Intended cleanup is exact and fail-closed: verify run labels/name/ID, stop, kill
 
 ## Installation and validation limits
 
-`node install.mjs` installs app assets below the XDG data root, preserves config/credentials/shared skills, and creates `$HOME/.local/bin/yolo`. Uninstall is documented shell, not a command; it removes the exact recorded image and app only after stopping active runs. Do not use broad Docker prune.
+`node install.mjs` installs app assets below the XDG data root, preserves config/credentials/shared skills, and creates `$HOME/.local/bin/yolo`. The exact installed launcher provides `yolo uninstall`: it removes that launcher, installation-owned app, image metadata, and the exact immutable Docker image recorded by setup. Credentials, model configuration, shared skills, projects, shell startup files, volumes, and unrelated images are preserved. Image-removal failure stops before deletion so the command can be retried; it does not force removal or use broad Docker prune (`src/uninstaller.mjs`, `src/cli.mjs`).
 
-`npm test` is the offline suite. `npm run test:docker` is opt-in and selects `real-docker*.test.mjs`; `shipped-preflight.test.mjs` is not included by that glob. Some real-Docker tests simulate identity/platform and do not prove native rootful Linux or macOS. No live provider/OAuth entitlement, native Darwin staging, or secure copy-back has been validated in this documentation task. See test references in `test/integration.test.mjs`, `test/container-launcher.test.mjs`, `test/real-docker*.test.mjs`, `test/volume-reconciliation.test.mjs`, and `test/install-skills.test.mjs`.
+`npm test` is the offline suite. `npm run test:docker` is opt-in and selects `real-docker*.test.mjs`; `shipped-preflight.test.mjs` is not included by that glob. Some real-Docker tests simulate identity/platform and do not prove native rootful Linux or every macOS behavior. A user-executed ARM64 macOS/Colima run succeeded, but native rootful Linux validation and repository-automated native macOS coverage remain external. No live provider/OAuth entitlement was validated in this documentation task. See test references in `test/integration.test.mjs`, `test/container-launcher.test.mjs`, `test/real-docker*.test.mjs`, `test/volume-reconciliation.test.mjs`, and `test/install-skills.test.mjs`.
 
 ## Workspace containment architecture
 

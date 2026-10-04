@@ -11,6 +11,9 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { validateEmptyWorkspace } from './workspace-sync.mjs';
+import { collectSkills, loadSkill, sharedSkillsRoot, uninstallSkill } from './skills.mjs';
+import { installSkillSource } from './skill-installer.mjs';
+import { uninstallApplication } from './uninstaller.mjs';
 import { persistReceipt, reserveReceipt } from './receipt-persistence.mjs';
 import { createProgressRenderer } from './progress.mjs';
 const execFileAsync = promisify(execFile);
@@ -34,7 +37,7 @@ const AUTH_ENDPOINTS = Object.freeze({
   redirectUri: 'https://auth.openai.com/deviceauth/callback',
 });
 export const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
-function usage() { return 'Usage: yolo [--verbose] [-t MINUTES] [--json] <prompt>\n       yolo setup\n       yolo doctor\n       yolo config set model <model-id>\n       yolo config ephemeral-path list|add|remove|reset [path]\n       yolo auth login|status|logout\n       yolo --help\n       yolo --version'; }
+function usage() { return 'Usage: yolo [--verbose] [-t MINUTES] [--json] <prompt>\n       yolo setup\n       yolo doctor\n       yolo skills list [--json]\n       yolo skills install <local-file-or-directory>\n       yolo skills uninstall <name>\n       yolo uninstall\n       yolo config set model <model-id>\n       yolo config ephemeral-path list|add|remove|reset [path]\n       yolo auth login|status|logout\n       yolo --help\n       yolo --version'; }
 export function parseArgs(args) {
   let minutes = 10; let json = false; let verbose = false; const prompt = [];
   for (let i = 0; i < args.length; i += 1) {
@@ -68,6 +71,8 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     if (args[0] === 'auth') return await authCommand(args.slice(1), io, { clientFactory });
 
     if (args[0] === 'config') return await configCommand(args.slice(1), io);
+    if (args[0] === 'skills') return await skillsCommand(args.slice(1), io);
+    if (args[0] === 'uninstall') return await uninstallCommand(io);
     const options = parseArgs(args);
     if (options.help) { io.stdout.write(`${usage()}\n`); return 0; }
     if (options.version) { io.stdout.write(`${VERSION}\n`); return 0; }
@@ -328,6 +333,29 @@ export async function resolveModel() {
   return saved.model;
 }
 
+
+async function skillsCommand(args, io) {
+  const root = sharedSkillsRoot();
+  if (args[0] === 'list' && (args.length === 1 || (args.length === 2 && args[1] === '--json'))) {
+    const catalog = await collectSkills(process.cwd(), root);
+    const skills = [];
+    for (const entry of Object.values(catalog)) {
+      const loaded = await loadSkill(entry, { root, cwd: process.cwd() });
+      skills.push({ name: entry.name, description: entry.description ?? null, source: entry.source, resources: loaded.resources.sort() });
+    }
+    if (args[1] === '--json') io.stdout.write(`${JSON.stringify({ version: 1, skills })}\n`);
+    else for (const skill of skills) io.stdout.write(`${skill.name}\t${skill.source}\t${skill.description ?? '-'}\n`);
+    return 0;
+  }
+  if (args[0] === 'install' && args.length === 2) { const result = await installSkillSource(args[1], root); io.stdout.write(`installed skill ${result.name}\n`); return 0; }
+  if (args[0] === 'uninstall' && args.length === 2) { const result = await uninstallSkill(args[1], root); io.stdout.write(result.removed ? `uninstalled skill ${result.name}\n` : `not installed: ${result.name}; local skill retained\n`); return 0; }
+  throw new TypeError('usage: yolo skills list [--json] | yolo skills install <source> | yolo skills uninstall <name>');
+}
+
+async function uninstallCommand() {
+  await uninstallApplication({ invocation: process.argv[1] });
+  return 0;
+}
 
 async function configCommand(args, io) {
   const store = new ConfigStore(configPath());

@@ -38,6 +38,25 @@ const AUTH_ENDPOINTS = Object.freeze({
 });
 export const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 function usage() { return 'Usage: yolo [--verbose] [-t MINUTES] [--json] <prompt>\n       yolo setup\n       yolo doctor\n       yolo skills list [--json]\n       yolo skills install <local-file-or-directory>\n       yolo skills uninstall <name>\n       yolo uninstall\n       yolo config set model <model-id>\n       yolo config ephemeral-path list|add|remove|reset [path]\n       yolo auth login|status|logout\n       yolo --help\n       yolo --version'; }
+const COMMANDS = new Set(['setup', 'doctor', 'skills', 'uninstall', 'config', 'auth']);
+function commandUsage(args) {
+  const [command, action] = args;
+  if (command === 'setup') return 'Usage: yolo setup\nBuild and configure the local Docker runtime image.';
+  if (command === 'doctor') return 'Usage: yolo doctor\nCheck Docker, runtime image, credentials, and model readiness.';
+  if (command === 'uninstall') return 'Usage: yolo uninstall\nDestructively remove the YOLO Harness application and its installation-owned data; user workspaces and unrelated Docker resources are preserved.';
+  if (command === 'skills' && !action) return 'Usage: yolo skills list [--json]\n       yolo skills install <local-file-or-directory>\n       yolo skills uninstall <name>\nSkill sources are local Markdown files or directories; no registry or network source is used.';
+  if (command === 'skills' && action === 'list') return 'Usage: yolo skills list [--json]';
+  if (command === 'skills' && action === 'install') return 'Usage: yolo skills install <local-file-or-directory>\nInstall a skill from a local Markdown file or directory.';
+  if (command === 'skills' && action === 'uninstall') return 'Usage: yolo skills uninstall <name>\nRemove an installed local skill; source files are retained.';
+  if (command === 'config' && !action) return 'Usage: yolo config set model <model-id>\n       yolo config ephemeral-path list|add|remove|reset [path]';
+  if (command === 'config' && action === 'set' && args[2] === 'model') return 'Usage: yolo config set model <model-id>';
+  if (command === 'config' && action === 'ephemeral-path') return 'Usage: yolo config ephemeral-path list|add|remove|reset [path]';
+  if (command === 'auth' && !action) return 'Usage: yolo auth login|status|logout';
+  if (command === 'auth' && ['login', 'status', 'logout'].includes(action)) return `Usage: yolo auth ${action}`;
+  return null;
+}
+function hasCommandHelp(args) { return COMMANDS.has(args[0]) && args.includes('--help') || COMMANDS.has(args[0]) && args.includes('-h'); }
+function printCommandHelp(args, io) { const text = commandUsage(args.filter(arg => arg !== '--help' && arg !== '-h')); if (!text) throw new TypeError(`unknown command path: ${args.join(' ')}`); io.stdout.write(`${text}\n`); return 0; }
 export function parseArgs(args) {
   let minutes = 10; let json = false; let verbose = false; const prompt = [];
   for (let i = 0; i < args.length; i += 1) {
@@ -66,13 +85,14 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
   let renderer;
   try {
     if (args[0] && ['setup', 'doctor', 'auth', 'config'].includes(args[0]) && args.includes('--verbose')) throw new TypeError('--verbose is only valid for a run');
-    if (args[0] === 'setup') return await setupCommand(io);
-    if (args[0] === 'doctor') return await doctorCommand(io);
+    if (hasCommandHelp(args)) return printCommandHelp(args, io);
+    if (args[0] === 'setup') { if (args.length !== 1) throw new TypeError('usage: yolo setup'); return await setupCommand(io); }
+    if (args[0] === 'doctor') { if (args.length !== 1) throw new TypeError('usage: yolo doctor'); return await doctorCommand(io); }
     if (args[0] === 'auth') return await authCommand(args.slice(1), io, { clientFactory });
 
     if (args[0] === 'config') return await configCommand(args.slice(1), io);
     if (args[0] === 'skills') return await skillsCommand(args.slice(1), io);
-    if (args[0] === 'uninstall') return await uninstallCommand(io);
+    if (args[0] === 'uninstall') { if (args.length !== 1) throw new TypeError('usage: yolo uninstall'); return await uninstallCommand(io); }
     const options = parseArgs(args);
     if (options.help) { io.stdout.write(`${usage()}\n`); return 0; }
     if (options.version) { io.stdout.write(`${VERSION}\n`); return 0; }
@@ -417,9 +437,10 @@ export async function doctorCommand(io) {
 function authConfig(store, clientId, allowOverrides = true) { return { clientId: typeof clientId === 'string' && clientId.length > 0 ? clientId : CODEX_CLIENT_ID, ...(allowOverrides ? { issueUrl: process.env.YOLO_AUTH_ISSUE_URL ?? AUTH_ENDPOINTS.issueUrl, pollUrl: process.env.YOLO_AUTH_POLL_URL ?? AUTH_ENDPOINTS.pollUrl, tokenUrl: process.env.YOLO_AUTH_TOKEN_URL ?? AUTH_ENDPOINTS.tokenUrl, verificationUrl: process.env.YOLO_AUTH_VERIFY_URL ?? AUTH_ENDPOINTS.verificationUrl, redirectUri: process.env.YOLO_AUTH_REDIRECT_URI ?? AUTH_ENDPOINTS.redirectUri } : AUTH_ENDPOINTS), store }; }
 export async function authCommand(args, io, { clientFactory } = {}) {
   const path = process.env.YOLO_AUTH_FILE ?? join(configRoot(), 'yoloharness', 'credentials.json'); const store=new AuthStore(path);
-  if(args[0]==='status'){const c=await store.load();io.stdout.write(c?`authenticated (expires ${c.expiresAt?new Date(c.expiresAt).toISOString():'unknown'})\n`:'not authenticated\n');return 0;}
-  if(args[0]==='logout'){await store.clear();io.stdout.write('local credentials removed\n');return 0;}
+  if(args[0]==='status' && args.length === 1){const c=await store.load();io.stdout.write(c?`authenticated (expires ${c.expiresAt?new Date(c.expiresAt).toISOString():'unknown'})\n`:'not authenticated\n');return 0;}
+  if(args[0]==='logout' && args.length === 1){await store.clear();io.stdout.write('local credentials removed\n');return 0;}
   if(args[0]!=='login') throw new TypeError('usage: yolo auth login|status|logout');
+  if (args.length !== 1) throw new TypeError('usage: yolo auth login|status|logout');
   const client=clientFactory ? clientFactory(store) : new AuthClient(authConfig(store, undefined, false)); const attempt=await client.begin(); io.stdout.write(`Open ${attempt.verificationUrl} and enter ${attempt.userCode}\n`); await client.finish(attempt); io.stdout.write('authenticated\n');
   if (io.stdin?.isTTY) {
     const current = await new ConfigStore(configPath()).load();

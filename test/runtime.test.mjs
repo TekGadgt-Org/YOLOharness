@@ -4,7 +4,7 @@ import { mkdtemp, readFile, mkdir, writeFile, symlink, rm } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventLog, redact, recoverEvents } from '../src/events.mjs';
-import { runOnce, FixtureProvider, MissingProviderError, EXEC_TOOL, SKILL_LOAD_TOOL } from '../src/runtime.mjs';
+import { runOnce, FixtureProvider, MissingProviderError, EXEC_TOOL, SKILL_LOAD_TOOL, classifyProviderCause } from '../src/runtime.mjs';
 import { validateWorkspace } from '../src/container-launcher.mjs';
 import { ContainerProcessExecutor } from '../src/container-executor.mjs';
 
@@ -29,10 +29,10 @@ test('event log reopens each run at its own sequence after interleaved events', 
   assert.equal((await new EventLog(path).append('second-run', 'step', { step: 1 })).seq, 2);
 });
 
-test('fixture completes with a final version 1 record', async () => {
+test('fixture completes with a final version 2 record', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'yolo-'));
   const record = await runOnce({ prompt: 'hello', minutes: 1, workspace, provider: new FixtureProvider() });
-  assert.equal(record.status, 'completed'); assert.equal(record.version, 1); assert.equal(record.result, 'fixture response for: hello');
+  assert.equal(record.status, 'completed'); assert.equal(record.version, 2); assert.equal(record.result, 'fixture response for: hello');
   assert.match(record.run_id, /^run-/); assert.ok(record.evidence.length >= 1);
 });
 
@@ -168,6 +168,51 @@ test('ordinary failed executor receipts return to the provider for recovery', as
   assert.match(outputs[0].output, /spawn .* ENOENT/);
 });
 
+test('malformed exec arguments are recoverable and never reach the executor', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'yolo-')); let step = 0; const calls = []; const outputs = []; const progress = [];
+  const malformed = [
+    '{"command":',
+    JSON.stringify({ command: 'true' }),
+    JSON.stringify({ command: 'true', args: [], secret: 'https://secret.invalid/token' }),
+    JSON.stringify({ command: 'x'.repeat(257), args: [] }),
+    JSON.stringify({ command: 'printf', args: ['bad\u0000token'] })
+  ];
+  const provider = { async next({ messages }) {
+    step += 1;
+    if (step <= malformed.length * 2 && step % 2 === 1) return { tool_call: { call_id: `malformed-${(step + 1) / 2}`, name: 'exec', arguments: malformed[(step - 1) / 2] } };
+    if (step <= malformed.length * 2) {
+      outputs.push(messages.findLast(message => message.type === 'function_call_output'));
+      return { tool_call: { call_id: `valid-${step}`, name: 'exec', arguments: JSON.stringify({ command: 'true', args: [] }) } };
+    }
+    return { done: true, result: 'recovered' };
+  } };
+  const executor = { async execute({ call }) { calls.push(call); return { version: 1, ok: true, call_id: call.call_id, code: 0, output: '' }; } };
+  const record = await runOnce({ prompt: 'recover malformed calls', workspace, provider, executor, tools: [EXEC_TOOL], progress: event => progress.push(event) });
+  assert.equal(record.status, 'completed');
+  assert.equal(record.result, 'recovered');
+  assert.equal(calls.length, malformed.length);
+  assert.deepEqual(calls.map(call => call.call_id), ['valid-2', 'valid-4', 'valid-6', 'valid-8', 'valid-10']);
+  assert.equal(record.failure.recovered.length, malformed.length);
+  assert.ok(record.failure.recovered.every(item => item.code === 'invalid_exec_arguments' && item.message === 'tool call arguments were rejected'));
+  assert.ok(outputs.every(message => message.output === JSON.stringify({ ok: false, error: 'invalid_exec_arguments' })));
+  assert.doesNotMatch(JSON.stringify(record), /secret\.invalid|bad\\u0000token|x{20,}/);
+  assert.doesNotMatch(JSON.stringify(progress), /secret\.invalid|bad\\u0000token/);
+});
+
+test('consecutive malformed exec calls exhaust a bounded recovery budget without execution', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'yolo-')); let calls = 0; let providerCalls = 0;
+  const provider = { async next() { providerCalls += 1; return { tool_call: { call_id: `bad-${providerCalls}`, name: 'exec', arguments: '{not-json' } }; } };
+  const executor = { async execute() { calls += 1; return { version: 1, ok: true, call_id: 'unexpected', code: 0, output: '' }; } };
+  const record = await runOnce({ prompt: 'stop retry loop', workspace, provider, executor, tools: [EXEC_TOOL], maxSteps: 10 });
+  assert.equal(record.status, 'failed');
+  assert.equal(providerCalls, 3);
+  assert.equal(calls, 0);
+  assert.equal(record.failure.recovered.length, 3);
+  assert.equal(record.failure.terminal.code, 'malformed_tool_call_budget_exhausted');
+  assert.equal(record.failure.terminal.message, 'malformed tool call recovery budget exhausted');
+  assert.doesNotMatch(JSON.stringify(record), /not-json/);
+});
+
 test('container process executor converts a missing command into a bounded receipt', async () => {
   const receipt = await new ContainerProcessExecutor({ timeoutMs: 1000 }).execute({ call: { command: '/missing-command', args: [], call_id: 'enoent-1' } });
   assert.deepEqual(receipt, { version: 1, ok: false, call_id: 'enoent-1', code: 127, output: '', error: 'spawn /missing-command ENOENT' });
@@ -196,4 +241,16 @@ test('workspace validation rejects symlinks that resolve outside the workspace',
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('tool envelopes close mixed and hostile siblings before logging, recovery, or replay', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'yolo-')); let seen; let calls = 0;
+  const marker = 'https://secret.invalid/private TOKEN_MARKER \\u202ehidden';
+  const provider = { async next({ messages }) { seen = messages; return { done: true, result: marker, tool_call: { call_id: 'opaque-1', name: 'exec', arguments: '{bad' }, evidence: marker, artifacts: [{ path: marker }], message: marker }; } };
+  const record = await runOnce({ prompt: 'hostile', workspace, provider, executor: { async execute() { calls += 1; } }, tools: [EXEC_TOOL] });
+  assert.equal(record.status, 'failed'); assert.equal(calls, 0);
+  assert.doesNotMatch(JSON.stringify(record), /secret\\.invalid|TOKEN_MARKER|\\u202e/);
+  assert.doesNotMatch(JSON.stringify(seen ?? []), /secret\\.invalid|TOKEN_MARKER|\\u202e/);
+  const events = await readFile(join(workspace, '.yolo', 'runs', record.run_id, 'events.jsonl'), 'utf8');
+  assert.doesNotMatch(events, /secret\\.invalid|TOKEN_MARKER|\\u202e/);
 });

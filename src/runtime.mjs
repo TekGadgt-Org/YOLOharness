@@ -3,26 +3,39 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { EventLog } from './events.mjs';
 import { validateReceipt } from './docker-executor.mjs';
+import { safeFailureSummary, classifyProviderCause as classifyCause, classifyTermination } from './receipt-contract.mjs';
 
 export class MissingProviderError extends Error { constructor(message = 'No provider is configured; run `yolo setup` and authenticate before starting a run') { super(message); this.name = 'MissingProviderError'; } }
+const FAILURE_VERSION = 1;
+export const classifyProviderCause = classifyCause;
+function boundedText(value) { return safeFailureSummary(value, 'operation failed'); }
+
+function failureRecord({ phase, message, code = null, signal = null, cause = null } = {}) {
+  return { phase, message: boundedText(message), ...(code !== null ? { code } : {}), ...(signal ? { signal } : {}), ...(cause ? { cause: classifyProviderCause(cause) } : {}) };
+}
+class ExecArgumentsError extends TypeError {
+  constructor() { super('tool call arguments were rejected'); this.name = 'ExecArgumentsError'; this.code = 'invalid_exec_arguments'; }
+}
+const MALFORMED_CALL_BUDGET = 3;
 export const EXEC_TOOL = Object.freeze({ type: 'function', name: 'exec', description: 'Run one command in the isolated worker. Guaranteed baseline: POSIX sh/core utilities, node, npm, git, python3, python3 -m pip, and python3 -m venv; other host commands are not guaranteed.', parameters: Object.freeze({ type: 'object', additionalProperties: false, required: ['command', 'args'], properties: { command: { type: 'string', minLength: 1, maxLength: 256 }, args: { type: 'array', maxItems: 64, items: { type: 'string', maxLength: 4096 } } } }) });
 export const SKILL_LOAD_TOOL = Object.freeze({ type: 'function', name: 'skill_load', description: 'Load untrusted instructions or one resource from the declared skill catalog.', parameters: Object.freeze({ type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string', minLength: 1, maxLength: 64 }, resource: { type: 'string', maxLength: 256 } } }) });
 
 function normalizeCall(call) {
-  if (!call || call.name !== 'exec' || typeof call.call_id !== 'string' || !call.call_id || call.call_id.length > 128) throw new TypeError('only the declared exec tool with a valid call_id is permitted');
+  if (!call || call.name !== 'exec' || typeof call.call_id !== 'string' || !opaqueCallId(call.call_id)) throw new TypeError('only the declared exec tool with a valid call_id is permitted');
   let value = call.arguments;
-  if (typeof value === 'string') { try { value = JSON.parse(value); } catch { throw new TypeError('exec arguments must be valid JSON'); } }
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !['command', 'args'].includes(key)) || typeof value.command !== 'string' || !value.command || value.command.length > 256 || !Array.isArray(value.args) || value.args.length > 64 || value.args.some(arg => typeof arg !== 'string' || arg.length > 4096 || arg.includes('\0'))) throw new TypeError('invalid exec arguments');
-  if (value.command.includes('\0')) throw new TypeError('invalid exec command');
+  if (typeof value === 'string') { try { value = JSON.parse(value); } catch { throw new ExecArgumentsError(); } }
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !['command', 'args'].includes(key)) || typeof value.command !== 'string' || !value.command || value.command.length > 256 || !Array.isArray(value.args) || value.args.length > 64 || value.args.some(arg => typeof arg !== 'string' || arg.length > 4096 || arg.includes('\0'))) throw new ExecArgumentsError();
+  if (value.command.includes('\0')) throw new ExecArgumentsError();
   return { command: value.command, args: [...value.args], call_id: call.call_id };
 }
 function normalizeSkillCall(call) {
-  if (!call || call.name !== 'skill_load' || typeof call.call_id !== 'string' || !call.call_id || call.call_id.length > 128) throw new TypeError('only the declared skill_load tool with a valid call_id is permitted');
+  if (!call || call.name !== 'skill_load' || typeof call.call_id !== 'string' || !opaqueCallId(call.call_id)) throw new TypeError('only the declared skill_load tool with a valid call_id is permitted');
   let value = call.arguments;
   if (typeof value === 'string') { try { value = JSON.parse(value); } catch { throw new TypeError('skill_load arguments must be valid JSON'); } }
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !['name', 'resource'].includes(key)) || typeof value.name !== 'string' || !value.name || value.name.length > 64 || (value.resource !== undefined && (typeof value.resource !== 'string' || value.resource.length > 256))) throw new TypeError('invalid skill_load arguments');
   return { name: value.name, ...(value.resource === undefined ? {} : { resource: value.resource }), call_id: call.call_id };
 }
+function opaqueCallId(value) { return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value) && !/(?:https?|www|token|secret|bearer|password|api[_-]?key)/i.test(value); }
 
 /** @typedef {{next(input: {messages: Array, tools: Array, signal: AbortSignal}): Promise<object>}} Provider */
 /** @typedef {{execute(input: {call: object, signal: AbortSignal}): Promise<object>}} Executor */
@@ -77,7 +90,7 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
   if (!(Number.isFinite(minutes) && minutes > 0)) throw new TypeError('minutes must be positive and finite');
   if (!(Number.isFinite(cleanupGraceMs) && cleanupGraceMs > 0)) throw new TypeError('cleanupGraceMs must be positive and finite');
   if (!provider) throw new MissingProviderError();
-  if (signal.aborted) return { version: 1, run_id: null, status: 'interrupted', effect_state: 'uncertain', result: null, evidence: [], artifacts: [], errors: ['interrupted before start; generated output may be retained or partial; inspect it and delete the generated directory before retrying'] };
+  if (signal.aborted) return { version: 2, run_id: null, status: 'interrupted', effect_state: 'uncertain', result: null, evidence: [], artifacts: [], publication_evidence: { status: 'unknown', relationship: 'runtime did not start' }, failure: { version: 1, terminal: { phase: 'runtime', message: 'run interrupted' }, recovered: [] }, errors: ['run interrupted before start'] };
   const runId = `run-${now()}-${randomUUID().slice(0, 8)}`;
   const runDir = join(workspace, '.yolo', 'runs', runId);
   await mkdir(runDir, { recursive: true, mode: 0o750 });
@@ -88,7 +101,7 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
   const initialBudget = Math.max(1, Math.ceil((softAt - now()) / 60_000));
   const messages = [skillCatalogMessage(skills), { role: 'developer', content: `[YOLO TIME BUDGET] Approximately ${initialBudget} minute(s) are available for agent work. Establish an early runnable baseline, save continuously, stop expanding scope near the work deadline, and verify before finalizing.` }, { role: 'user', content: prompt }];
   let budgetNotice;
-  const evidence = []; const artifacts = []; const errors = []; let result;
+  const evidence = []; const artifacts = []; const errors = []; const recovered = []; let terminal; let result; let malformedCallCount = 0;
   let status = 'running'; let steps = 0;
   const emit = event => { try { progress?.(event); } catch {} };
   try {
@@ -103,10 +116,10 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
       if (typeof provider.partialResult === 'string' && provider.partialResult) result = provider.partialResult;
       steps += 1;
       const safe = response && typeof response === 'object' ? response : { result: String(response) };
-      await log.append(runId, 'step', { step: steps, response: safe });
-      if (safe.evidence) evidence.push(String(safe.evidence));
-      if (safe.artifacts) artifacts.push(...(Array.isArray(safe.artifacts) ? safe.artifacts : [safe.artifacts]));
-      if (safe.done || safe.result !== undefined) {
+      await log.append(runId, 'step', { step: steps, response: safe.tool_call ? { tool_call: { call_id: typeof safe.tool_call.call_id === 'string' && opaqueCallId(safe.tool_call.call_id) ? safe.tool_call.call_id : 'invalid', name: safe.tool_call.name === 'exec' || safe.tool_call.name === 'skill_load' ? safe.tool_call.name : 'invalid' } } : safe });
+      if (!safe.tool_call && safe.evidence) evidence.push(String(safe.evidence));
+      if (!safe.tool_call && safe.artifacts) artifacts.push(...(Array.isArray(safe.artifacts) ? safe.artifacts : [safe.artifacts]));
+      if (!safe.tool_call && (safe.done || safe.result !== undefined)) {
         result = safe.result ?? '';
         evidence.push(`provider response received at step ${steps}`);
         status = 'completed'; break;
@@ -127,15 +140,31 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
         const execRegistry = tools.length === 1 && tools[0]?.name === 'exec' && JSON.stringify(tools[0]?.parameters) === JSON.stringify(EXEC_TOOL.parameters);
         const combinedRegistry = tools.length === 2 && tools[0]?.name === 'exec' && tools[1]?.name === 'skill_load' && JSON.stringify(tools[0]?.parameters) === JSON.stringify(EXEC_TOOL.parameters) && JSON.stringify(tools[1]?.parameters) === JSON.stringify(SKILL_LOAD_TOOL.parameters);
         if (!execRegistry && !combinedRegistry) { errors.push('effect denied: executor registry mismatch'); status = 'failed'; break; }
-        let call; try { call = normalizeCall(safe.tool_call); } catch (error) { errors.push(`effect denied: ${error.message}`); status = 'failed'; break; }
+        let call;
+        try { call = normalizeCall(safe.tool_call); }
+        catch (error) {
+          if (!(error instanceof ExecArgumentsError)) { errors.push('effect denied: invalid exec tool call'); status = 'failed'; break; }
+          malformedCallCount += 1;
+          recovered.push({ phase: 'tool', call_id: safe.tool_call.call_id, code: error.code, message: error.message });
+          if (malformedCallCount >= MALFORMED_CALL_BUDGET) {
+            terminal = failureRecord({ phase: 'tool', message: 'malformed tool call recovery budget exhausted', code: 'malformed_tool_call_budget_exhausted' });
+            errors.push('malformed tool call recovery budget exhausted'); status = 'failed'; break;
+          }
+          messages.push({ type: 'function_call', call_id: safe.tool_call.call_id, name: 'exec', arguments: '{}' });
+          messages.push({ type: 'function_call_output', call_id: safe.tool_call.call_id, output: JSON.stringify({ ok: false, error: error.code }) });
+          continue;
+        }
+        malformedCallCount = 0;
         const ordinal = steps; emit({ type: 'tool_start', tool: 'exec', ordinal });
         const receipt = await awaitExecutorCleanup(executor.execute({ call, signal: timer.signal }), timer.signal, cleanupGraceMs);
         if (!validateReceipt(receipt, call.call_id)) { errors.push('effect denied: invalid executor receipt'); status = 'failed'; break; }
         emit({ type: 'tool_finish', tool: 'exec', ordinal, outcome: receipt.ok ? 'ok' : (timer.signal.aborted ? 'deadline' : 'error'), code: receipt.code, output_bytes: Buffer.byteLength(receipt.output ?? ''), error_bytes: Buffer.byteLength(receipt.error ?? ''), limited: Boolean(receipt.limited) });
         if (!receipt.ok) {
           evidence.push(receipt);
-          errors.push(receipt.error);
+          recovered.push({ phase: 'tool', call_id: receipt.call_id, code: receipt.code, message: boundedText(receipt.error), ...(classifyTermination(receipt.code, receipt.signal) ? { termination: classifyTermination(receipt.code, receipt.signal) } : {}) });
           if (timer.signal.aborted || receipt.code === 124) {
+            terminal = failureRecord({ phase: 'tool', message: receipt.error, code: receipt.code, signal: receipt.signal });
+            errors.push(boundedText(receipt.error));
             status = timer.signal.aborted ? (signal.aborted ? 'interrupted' : 'deadline') : 'deadline';
             break;
           }
@@ -158,12 +187,13 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
       else if (typeof provider?.partialResult === 'string' && provider.partialResult) result = provider.partialResult;
       errors.push(error?.message === 'cleanup_unknown' ? 'cleanup_unknown: executor cleanup grace expired' : status === 'deadline' ? 'deadline exceeded; generated output may be retained or partial; inspect it and delete the generated directory before retrying' : 'interrupted by SIGINT; generated output may be retained or partial; inspect it and delete the generated directory before retrying');
     }
-    else { status = 'failed'; errors.push(`${error?.code === 'reauth_required' ? 'reauth_required' : error instanceof Error ? error.message : String(error)}; generated output may be retained or partial; inspect it and delete the generated directory before retrying`); }
+    else { status = 'failed'; terminal = failureRecord({ phase: 'provider', message: error?.code === 'reauth_required' ? 'reauth_required' : error instanceof Error ? error.message : String(error), cause: error?.cause }); errors.push(`${terminal.message}; generated output may be retained or partial; inspect it and delete the generated directory before retrying`); }
   } finally {
     timer.cancel();
     try { await log.append(runId, status === 'completed' ? 'run_completed' : 'run_stopped', { status, steps }); } catch (error) { errors.push(`receipt write failed: ${error.message}`); if (status === 'completed') status = 'failed'; }
  }
  if ((status === 'deadline' || status === 'interrupted') && !errors.length) errors.push(`${status} ended the run; generated output may be retained or partial; inspect it and delete the generated directory before retrying`);
  const effectState = status === 'completed' ? 'none' : errors.some(error => String(error).includes('cleanup_unknown')) ? 'unknown' : status === 'deadline' || status === 'interrupted' ? 'uncertain' : 'none';
-  return { version: 1, run_id: runId, status, effect_state: effectState, result: result ?? null, evidence, artifacts, errors };
+  if (!terminal && status !== 'completed') terminal = failureRecord({ phase: status === 'deadline' ? 'runtime' : 'runtime', message: errors[0] ?? `${status} ended the run` });
+  return { version: 2, run_id: runId, status, effect_state: effectState, result: result ?? null, evidence, artifacts, publication_evidence: { status: 'unknown', relationship: 'workspace publication was not independently enumerated by the runtime' }, failure: { version: FAILURE_VERSION, terminal: terminal ?? null, recovered }, errors };
 }

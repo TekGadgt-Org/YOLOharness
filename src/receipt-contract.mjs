@@ -47,8 +47,7 @@ function cleanTermination(value, code, signal) {
   return { ...(terminationCode === undefined ? {} : { code: terminationCode }), ...(terminationSignal === undefined ? {} : { signal: terminationSignal }), classification: canonical.classification };
 }
 function cleanCause(value) {
-  const source = object(value); if (!source) return undefined;
-  return classifyProviderCause(source);
+  return classifyProviderCause(value);
 }
 function cleanFailureRecord(value, recovered) {
   const source = object(value); if (!source) return null; const out = {};

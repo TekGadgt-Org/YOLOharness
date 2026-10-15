@@ -34,6 +34,20 @@ test('normalized failure preserves only the canonical provider cause projection'
   assert.deepEqual(normalized.failure.terminal.cause, { code: 'ECONNRESET', syscall: 'read', errno: -104 });
 });
 
+test('normalized failure preserves unavailable projection for explicitly unsupported causes', () => {
+  for (const cause of [null, 'provider cause', 42, true, () => {}]) {
+    const normalized = normalizeReceipt({ version: 2, status: 'failed', failure: { terminal: { phase: 'provider', message: 'failed', cause } } });
+    assert.deepEqual(normalized.failure.terminal.cause, { classification: 'unavailable' });
+  }
+});
+
+test('normalized failure keeps absent cause absent while preserving canonical cause fields', () => {
+  const absent = normalizeReceipt({ version: 2, status: 'failed', failure: { terminal: { phase: 'provider', message: 'failed' } } });
+  assert.equal(Object.hasOwn(absent.failure.terminal, 'cause'), false);
+  const canonical = normalizeReceipt({ version: 2, status: 'failed', failure: { terminal: { phase: 'provider', message: 'failed', cause: { code: 'ECONNRESET', syscall: 'read', errno: -104, hostile: 'drop' } } } });
+  assert.deepEqual(canonical.failure.terminal.cause, { code: 'ECONNRESET', syscall: 'read', errno: -104 });
+});
+
 test('failure prose rejects separator-delimited credential markers while preserving benign diagnostics', () => {
   for (const marker of [
     'TOKEN_MARKER_8B_secret',

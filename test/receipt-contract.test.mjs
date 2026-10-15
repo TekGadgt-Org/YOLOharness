@@ -44,13 +44,45 @@ test('termination validation is closed and consistent', () => {
   assert.equal(validateReceipt({ ...base, termination: { code: 1, classification: 'signal' } }, 'c'), false);
   assert.equal(validateReceipt({ ...base, termination: { code: 137, classification: 'timeout_or_output_limit' } }, 'c'), false);
   assert.equal(validateReceipt({ ...base, termination: { code: 137, classification: 'sigkill_compatible', classification2: 'x' } }, 'c'), false);
+  assert.equal(validateReceipt({ ...base, code: 1, termination: { classification: 'sigkill_compatible' } }, 'c'), false);
+  assert.equal(validateReceipt({ ...base, code: 1, termination: { classification: 'timeout_or_output_limit' } }, 'c'), false);
+  assert.equal(validateReceipt({ ...base, code: 124, termination: { classification: 'signal' } }, 'c'), false);
+  assert.equal(validateReceipt({ ...base, code: 136, signal: 'SIGFPE', termination: { classification: 'signal' } }, 'c'), true);
+  assert.equal(validateReceipt({ ...base, code: 137, termination: { classification: 'sigkill_compatible' } }, 'c'), true);
+  assert.equal(validateReceipt({ ...base, code: 124, termination: { classification: 'timeout_or_output_limit' } }, 'c'), true);
+});
+
+test('bounded ordinary receipt values preserve URLs and workspace paths while failure text stays redacted', () => {
+  const url = 'https://example.invalid/result?token=public';
+  const path = '/workspace/output/result.txt';
+  const normalized = normalizeReceipt({
+    version: 2,
+    status: 'completed',
+    result: url,
+    evidence: [path, { output: url, path }],
+    artifacts: [{ path, source: url }],
+    publication_evidence: { status: 'published', relationship: url, entry_paths: [path] },
+    failure: { terminal: { phase: 'runtime', message: `failed at ${url} ${path}` } },
+    errors: [`failed at ${url} ${path}`],
+  });
+  assert.equal(normalized.result, url);
+  assert.deepEqual(normalized.evidence, [path, { output: url, path }]);
+  assert.deepEqual(normalized.artifacts, [{ path, source: url }]);
+  assert.deepEqual(normalized.publication_evidence, { status: 'published', relationship: url, entry_paths: [path] });
+  assert.doesNotMatch(JSON.stringify(normalized.failure), /example\.invalid|\/workspace\/output/);
+  assert.doesNotMatch(JSON.stringify(normalized.errors), /example\.invalid|\/workspace\/output/);
 });
 
 test('v2 normalization is closed, bounded, and sanitizes hostile nested fields', () => {
   const hostile = normalizeReceipt({ version: 2, run_id: 'r', status: 'failed', effect_state: 'none', unknown: 'marker', result: 'https://secret.invalid/token', evidence: [{ marker: 'secret', nested: { leak: true } }], artifacts: [{ path: '/srv/private/token' }], publication_evidence: { status: 'published', relationship: 'https://secret.invalid', marker: 'leak', created_entry_count: '1' }, failure: { version: 1, terminal: { phase: 'runtime', message: 'https://secret.invalid/token', marker: 'leak' }, recovered: [{ phase: 'tool', message: '\u202ehidden' }], marker: 'leak' }, errors: ['https://secret.invalid/token'], cleanup_unknown: 'leak' });
   assert.equal(hostile.unknown, undefined);
   assert.equal(hostile.cleanup_unknown, undefined);
-  assert.doesNotMatch(JSON.stringify(hostile), /secret\.invalid|marker|\u202e|\/srv\/private/);
+  assert.equal(hostile.result, 'https://secret.invalid/token');
+  assert.equal(hostile.artifacts[0].path, '/srv/private/token');
+  assert.equal(hostile.publication_evidence.relationship, 'https://secret.invalid');
+  assert.doesNotMatch(JSON.stringify(hostile.failure), /secret\.invalid|marker|\u202e|\/srv\/private/);
+  assert.doesNotMatch(JSON.stringify(hostile.errors), /secret\.invalid|marker|\u202e|\/srv\/private/);
+  assert.equal(hostile.evidence[0].marker, undefined);
   assert.ok(hostile.errors.length <= 64);
   assert.ok(Object.keys(hostile.failure).every(key => ['version', 'terminal', 'recovered'].includes(key)));
 });

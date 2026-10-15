@@ -13,8 +13,15 @@ export function validateReceipt(receipt, callId) {
   if (!Number.isInteger(receipt.code) || receipt.code < 0 || receipt.code > 255) return false;
   if (typeof receipt.output !== 'string' || Buffer.byteLength(receipt.output) > 1024 * 1024) return false;
   if (receipt.signal !== undefined && (typeof receipt.signal !== 'string' || !SIGNALS.has(receipt.signal) || receipt.code !== 128 + SIGNAL_NUMBERS[receipt.signal])) return false;
-  if (receipt.termination !== undefined && (!receipt.termination || typeof receipt.termination !== 'object' || Array.isArray(receipt.termination) || Object.keys(receipt.termination).some(key => !TERMINATION_KEYS.has(key)) || typeof receipt.termination.classification !== 'string' || !TERMINATION_CLASSES.has(receipt.termination.classification) || (receipt.termination.code !== undefined && (!Number.isInteger(receipt.termination.code) || receipt.termination.code < 0 || receipt.termination.code > 255)) || (receipt.termination.signal !== undefined && (!SIGNALS.has(receipt.termination.signal) || receipt.termination.code !== 128 + SIGNAL_NUMBERS[receipt.termination.signal])) || receipt.termination.code !== undefined && receipt.termination.code !== receipt.code || receipt.termination.signal !== undefined && receipt.termination.signal !== receipt.signal)) return false;
-  if (receipt.code === 137 && receipt.termination?.classification === 'timeout_or_output_limit') return false;
+  if (receipt.termination !== undefined) {
+    const termination = receipt.termination;
+    if (!termination || typeof termination !== 'object' || Array.isArray(termination) || Object.keys(termination).some(key => !TERMINATION_KEYS.has(key)) || typeof termination.classification !== 'string' || !TERMINATION_CLASSES.has(termination.classification)) return false;
+    if (termination.code !== undefined && (!Number.isInteger(termination.code) || termination.code < 0 || termination.code > 255 || termination.code !== receipt.code)) return false;
+    if (termination.signal !== undefined && (!SIGNALS.has(termination.signal) || termination.signal !== receipt.signal)) return false;
+    if (termination.classification === 'signal' && (receipt.signal === undefined || receipt.signal === 'SIGKILL' || receipt.code !== 128 + SIGNAL_NUMBERS[receipt.signal])) return false;
+    if (termination.classification === 'sigkill_compatible' && (receipt.code !== 137 || receipt.signal !== undefined && receipt.signal !== 'SIGKILL')) return false;
+    if (termination.classification === 'timeout_or_output_limit' && (receipt.code !== 124 || receipt.signal !== undefined)) return false;
+  }
   if (typeof receipt.error !== 'undefined' && (typeof receipt.error !== 'string' || Buffer.byteLength(receipt.error) > 1024 * 1024)) return false;
   return receipt.ok ? receipt.code === 0 && typeof receipt.error === 'undefined' : receipt.code !== 0 && typeof receipt.error === 'string' && receipt.error.length > 0;
 }

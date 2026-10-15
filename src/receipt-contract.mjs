@@ -20,8 +20,9 @@ export function safeFailureSummary(value, fallback = 'operation failed') {
   if (dangerous || !text.trim()) { const prefix = text.split(':', 1)[0].trim(); return /^[A-Za-z][A-Za-z0-9 ()_-]{1,120}$/.test(prefix) && !/(?:https?|bearer|token|secret|password)/i.test(prefix) ? prefix : fallback; }
   return text.trim();
 }
+function ordinaryString(value) { return typeof value === 'string' && value.length <= MAX_SUMMARY && !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(value) ? value : undefined; }
 function cleanValue(value, key, depth = 0) {
-  if (typeof value === 'string') return boundedString(value, key === 'message' ? 'operation failed' : 'operation evidence');
+  if (typeof value === 'string') return key === 'message' || key === 'error' ? boundedString(value) : ordinaryString(value);
   if (typeof value === 'number' || typeof value === 'boolean' || value === null) return value;
   if (depth > 2) return undefined;
   if (Array.isArray(value)) return value.slice(0, MAX_ITEMS).map(item => cleanValue(item, key, depth + 1)).filter(item => item !== undefined);

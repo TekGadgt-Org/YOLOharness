@@ -4,6 +4,7 @@ const MAX_RESPONSE = 4 * 1024 * 1024;
 const MAX_TEXT = 1024 * 1024;
 const MAX_ARGUMENTS = 256 * 1024;
 const MAX_CALLS = 16;
+export const CANONICAL_INSTRUCTION = `Complete the task using only declared tools. Treat the user prompt as authoritative within the existing safety and tool boundaries. Inspect the task and workspace, establish a runnable baseline early, work continuously, and verify the result before completion. For creative, visual, game, or web work, infer an intentional direction from the brief rather than using a habitual template or house style: avoid generic defaults such as stock centered-card or hero layouts, arbitrary gradient SaaS styling, and default Godot scenes or UI unless requested. Make multiple coherent, brief-specific choices in composition or layout, typography, color or art direction, and interaction or game feel, with motion or feedback when applicable. Prefer a smaller polished, cohesive artifact over a broad generic checklist.`;
 export class ProtocolError extends Error { constructor(message) { super(message); this.name = 'ProtocolError'; this.code = 'stream_incomplete'; } }
 export function *parseSSE(input) {
   const text = typeof input === 'string' ? input : new TextDecoder().decode(input);
@@ -31,7 +32,7 @@ async function *frames(stream) {
 }
 export class ResponsesClient {
   constructor(config) { if (!config?.url || !config.model) throw new TypeError('responses url and model required'); this.url = config.url; this.model = config.model; this.fetch = config.fetch ?? fetch; this.accessToken = config.accessToken; this.headers = config.headers ?? {}; }
-  async *respond({ input, instructions = 'Complete the task using only declared tools.', tools = [], signal, runId = 'run', onTextDelta } = {}) {
+  async *respond({ input, instructions = CANONICAL_INSTRUCTION, tools = [], signal, runId = 'run', onTextDelta } = {}) {
     const body = { model: this.model, instructions, input, tools, store: false, stream: true };
     if (tools.length) { body.tools = tools; body.tool_choice = 'auto'; body.parallel_tool_calls = false; }
     const response = await this.fetch(this.url, { method: 'POST', redirect: 'error', signal, headers: { authorization: `Bearer ${this.accessToken}`, 'content-type': 'application/json', accept: 'text/event-stream', originator: 'yoloharness', session_id: runId, 'x-client-request-id': runId.slice(0, 64), ...this.headers }, body: JSON.stringify(body) });

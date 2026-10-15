@@ -86,3 +86,30 @@ test('v2 normalization is closed, bounded, and sanitizes hostile nested fields',
   assert.ok(hostile.errors.length <= 64);
   assert.ok(Object.keys(hostile.failure).every(key => ['version', 'terminal', 'recovered'].includes(key)));
 });
+
+test('failure structural fields reject hostile ordinary-looking strings while preserving canonical fields', () => {
+  const hostile = 'https://failure.invalid/private/TOKEN_FAILURE';
+  const normalized = normalizeReceipt({
+    version: 2,
+    status: 'failed',
+    failure: {
+      terminal: { phase: hostile, signal: hostile, call_id: hostile, termination: { classification: hostile }, message: 'failed' },
+      recovered: [{ phase: '/srv/private/failure-token', signal: hostile, call_id: hostile, termination: { classification: hostile }, message: 'recovered' }],
+    },
+  });
+  const rendered = JSON.stringify(normalized);
+  assert.doesNotMatch(rendered, /failure\.invalid|TOKEN_FAILURE|\/srv\/private/);
+  assert.deepEqual(normalized.failure.terminal, { message: 'failed' });
+  assert.deepEqual(normalized.failure.recovered, [{ message: 'recovered' }]);
+
+  const valid = normalizeReceipt({
+    version: 2,
+    status: 'failed',
+    failure: {
+      terminal: { phase: 'tool', signal: 'SIGFPE', code: 136, termination: { code: 136, signal: 'SIGFPE', classification: 'signal' }, message: 'failed' },
+      recovered: [{ phase: 'tool', call_id: 'call-1', code: 137, termination: { code: 137, classification: 'sigkill_compatible' }, message: 'killed' }],
+    },
+  });
+  assert.deepEqual(valid.failure.terminal, { phase: 'tool', code: 136, signal: 'SIGFPE', message: 'failed', termination: { code: 136, signal: 'SIGFPE', classification: 'signal' } });
+  assert.deepEqual(valid.failure.recovered, [{ phase: 'tool', call_id: 'call-1', code: 137, message: 'killed', termination: { code: 137, classification: 'sigkill_compatible' } }]);
+});

@@ -9,7 +9,7 @@ import { Readable } from 'node:stream';
 
 import { execFileSync } from 'node:child_process';
 import { AuthClient, AuthStore } from '../src/auth.mjs';
-import { ResponsesClient, parseSSE } from '../src/responses.mjs';
+import { ResponsesClient, parseSSE, CANONICAL_INSTRUCTION } from '../src/responses.mjs';
 import { DockerExecutor, DockerUnavailableError, OutputLimitError, validateReceipt } from '../src/docker-executor.mjs';
 import { configuredProvider } from '../src/cli.mjs';
 import { runOnce, EXEC_TOOL } from '../src/runtime.mjs';
@@ -334,6 +334,49 @@ test('two independent node processes consume one rotating refresh token', async 
 test('responses client parses split SSE text and completed tool roundtrip', async t => {
   const {s,base}=await server(async (req,res)=>{ assert.equal(req.url,'/responses'); const body=JSON.parse(await new Promise((resolve,reject)=>{let x='';req.on('data',c=>x+=c);req.on('end',()=>resolve(x));req.on('error',reject)})); assert.equal(body.store,false); assert.equal(body.model, 'fixture-model'); res.writeHead(200,{'content-type':'text/event-stream'}); const frames=['data: {"type":"response.output_text.delta","delta":"hel','lo"}\n\n','data: {"type":"response.output_item.added","item":{"type":"function_call","id":"item1","call_id":"call1","name":"exec","arguments":""}}\n\n','data: {"type":"response.function_call_arguments.delta","item_id":"item1","delta":"{\\"command\\":\\"printf\\",\\"args\\":[\\"ok\\"]}"}\n\n','data: {"type":"response.output_item.done","item":{"type":"function_call","id":"item1","call_id":"call1","name":"exec","arguments":"{\\"command\\":\\"printf\\",\\"args\\":[\\"ok\\"]}","status":"completed"}}\n\n','data: {"type":"response.completed","response":{"id":"r1","status":"completed"}}\n\n']; for(const f of frames) { res.write(f); await new Promise(r=>setTimeout(r,1)); } res.end(); }); t.after(()=>s.close());
   const c=new ResponsesClient({url:`${base}/responses`,fetch,accessToken:'secret',model:'fixture-model'}); const events=[]; for await(const e of c.respond({input:[{role:'user',content:'hi'}],tools:[EXEC_TOOL]})) events.push(e); assert.equal(events.at(-1).status,'completed'); assert.equal(events.find(e=>e.type==='text_delta').delta,'hello'); assert.equal(events.find(e=>e.type==='tool_call').call.call_id,'call1');
+});
+
+test('responses requests use the bounded canonical intentional-design instruction by default', async t => {
+  let requestBody;
+  const { s, base } = await server(async (req, res) => {
+    requestBody = JSON.parse(await new Promise(resolve => { let raw = ''; req.on('data', chunk => { raw += chunk; }); req.on('end', () => resolve(raw)); }));
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end('data: {"type":"response.completed"}\n\n');
+  });
+  t.after(() => s.close());
+  const client = new ResponsesClient({ url: `${base}/responses`, fetch, accessToken: 'test-token', model: 'fixture-model' });
+  for await (const _event of client.respond({ input: [{ role: 'user', content: 'design a game' }] })) {}
+  assert.equal(requestBody.instructions, CANONICAL_INSTRUCTION);
+  assert.notEqual(requestBody.instructions, 'Complete the task using only declared tools.');
+});
+
+test('canonical instruction contract preserves safety and asks for brief-specific craft and verification', () => {
+  assert.ok(CANONICAL_INSTRUCTION.length > 100);
+  assert.ok(CANONICAL_INSTRUCTION.length <= 2000);
+  assert.match(CANONICAL_INSTRUCTION, /only declared tools/i);
+  assert.match(CANONICAL_INSTRUCTION, /user prompt/i);
+  assert.match(CANONICAL_INSTRUCTION, /inspect.*workspace|workspace.*inspect/i);
+  assert.match(CANONICAL_INSTRUCTION, /runnable baseline/i);
+  assert.match(CANONICAL_INSTRUCTION, /verify/i);
+  assert.match(CANONICAL_INSTRUCTION, /brief-specific|task-specific/i);
+  assert.match(CANONICAL_INSTRUCTION, /generic defaults|habitual template|stock/i);
+  assert.match(CANONICAL_INSTRUCTION, /composition|layout/i);
+  assert.match(CANONICAL_INSTRUCTION, /typography|color|art direction/i);
+  assert.match(CANONICAL_INSTRUCTION, /interaction|game feel|motion|feedback/i);
+  assert.doesNotMatch(CANONICAL_INSTRUCTION, /must be neobrutalist|always use neobrutalism/i);
+});
+
+test('responses instruction override remains available for isolated tests', async () => {
+  let requestBody;
+  const client = new ResponsesClient({
+    url: 'https://provider.invalid/responses', accessToken: 'test-token', model: 'fixture-model',
+    fetch: async (_url, init) => {
+      requestBody = JSON.parse(init.body);
+      return { ok: true, body: Readable.from(['data: {"type":"response.completed"}\n\n']) };
+    }
+  });
+  for await (const _event of client.respond({ input: [], instructions: 'test-only instruction' })) {}
+  assert.equal(requestBody.instructions, 'test-only instruction');
 });
 
 test('local HTTP provider to runtime to executor preserves the exec bridge contract', async t => {

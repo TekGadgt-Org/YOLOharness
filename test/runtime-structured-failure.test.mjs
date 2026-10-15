@@ -27,3 +27,17 @@ test('retains recovered tool failures separately from terminal provider failure'
   assert.equal(record.failure.recovered[1].termination.classification, 'sigkill_compatible');
   assert.deepEqual(classifyProviderCause({ code: 'ECONNRESET', syscall: 'read', errno: -104, message: 'https://secret.invalid/token' }), { code: 'ECONNRESET', syscall: 'read', errno: -104 });
 });
+
+test('runOnce retains a run-bound receipt for revoked provider cause proxies', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'yolo-'));
+  const provider = { async next() {
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+    throw Object.assign(new Error('provider failed'), { cause: proxy });
+  } };
+  const record = await runOnce({ prompt: 'reproduce', workspace, provider, tools: [EXEC_TOOL] });
+  assert.equal(record.version, 2);
+  assert.match(record.run_id, /^run-/);
+  assert.equal(record.status, 'failed');
+  assert.deepEqual(record.failure.terminal.cause, { classification: 'unavailable' });
+});

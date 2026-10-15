@@ -26,6 +26,19 @@ test('provider cause classification degrades safely for throwing getters', () =>
   assert.deepEqual(classifyProviderCause(cause), { classification: 'unavailable' });
 });
 
+test('provider cause classification degrades safely for revoked object proxies', () => {
+  const { proxy, revoke } = Proxy.revocable({}, {});
+  revoke();
+  assert.deepEqual(classifyProviderCause(proxy), { classification: 'unavailable' });
+});
+
+test('receipt normalization contains revoked provider cause proxies', () => {
+  const { proxy, revoke } = Proxy.revocable({}, {});
+  revoke();
+  const normalized = normalizeReceipt({ version: 2, status: 'failed', failure: { terminal: { phase: 'provider', message: 'failed', cause: proxy } } });
+  assert.deepEqual(normalized.failure.terminal.cause, { classification: 'unavailable' });
+});
+
 test('normalized failure preserves only the canonical provider cause projection', () => {
   const normalized = normalizeReceipt({ version: 2, status: 'failed', failure: { terminal: {
     phase: 'provider', message: 'provider failed',

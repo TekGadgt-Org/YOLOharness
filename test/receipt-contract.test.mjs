@@ -41,6 +41,20 @@ test('normalized failure preserves unavailable projection for explicitly unsuppo
   }
 });
 
+test('property-bearing function causes never cross the provider-cause boundary', () => {
+  function plainCause() {}
+  async function asyncCause() {}
+  class classCause {}
+  const callableCause = new Proxy(function callableCause() {}, {});
+  for (const cause of [plainCause, asyncCause, classCause, callableCause]) {
+    Object.assign(cause, { code: 'EXFILTRATE_7f9a4c2d', syscall: 'attacker_controlled', errno: 31337 });
+    assert.deepEqual(classifyProviderCause(cause), { classification: 'unavailable' });
+    const normalized = normalizeReceipt({ version: 2, status: 'failed', failure: { terminal: { phase: 'provider', message: 'failed', cause } } });
+    assert.deepEqual(normalized.failure.terminal.cause, { classification: 'unavailable' });
+    assert.doesNotMatch(JSON.stringify(normalized), /EXFILTRATE|attacker_controlled|31337/);
+  }
+});
+
 test('normalized failure keeps absent cause absent while preserving canonical cause fields', () => {
   const absent = normalizeReceipt({ version: 2, status: 'failed', failure: { terminal: { phase: 'provider', message: 'failed' } } });
   assert.equal(Object.hasOwn(absent.failure.terminal, 'cause'), false);

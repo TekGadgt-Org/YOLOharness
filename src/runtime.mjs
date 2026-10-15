@@ -13,15 +13,19 @@ function boundedText(value) { return safeFailureSummary(value, 'operation failed
 function failureRecord({ phase, message, code = null, signal = null, cause = null } = {}) {
   return { phase, message: boundedText(message), ...(code !== null ? { code } : {}), ...(signal ? { signal } : {}), ...(cause ? { cause: classifyProviderCause(cause) } : {}) };
 }
+class ExecArgumentsError extends TypeError {
+  constructor() { super('tool call arguments were rejected'); this.name = 'ExecArgumentsError'; this.code = 'invalid_exec_arguments'; }
+}
+const MALFORMED_CALL_BUDGET = 3;
 export const EXEC_TOOL = Object.freeze({ type: 'function', name: 'exec', description: 'Run one command in the isolated worker. Guaranteed baseline: POSIX sh/core utilities, node, npm, git, python3, python3 -m pip, and python3 -m venv; other host commands are not guaranteed.', parameters: Object.freeze({ type: 'object', additionalProperties: false, required: ['command', 'args'], properties: { command: { type: 'string', minLength: 1, maxLength: 256 }, args: { type: 'array', maxItems: 64, items: { type: 'string', maxLength: 4096 } } } }) });
 export const SKILL_LOAD_TOOL = Object.freeze({ type: 'function', name: 'skill_load', description: 'Load untrusted instructions or one resource from the declared skill catalog.', parameters: Object.freeze({ type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string', minLength: 1, maxLength: 64 }, resource: { type: 'string', maxLength: 256 } } }) });
 
 function normalizeCall(call) {
-  if (!call || call.name !== 'exec' || typeof call.call_id !== 'string' || !call.call_id || call.call_id.length > 128) throw new TypeError('only the declared exec tool with a valid call_id is permitted');
+  if (!call || call.name !== 'exec' || typeof call.call_id !== 'string' || !/^[\x20-\x7e]{1,128}$/.test(call.call_id)) throw new TypeError('only the declared exec tool with a valid call_id is permitted');
   let value = call.arguments;
-  if (typeof value === 'string') { try { value = JSON.parse(value); } catch { throw new TypeError('exec arguments must be valid JSON'); } }
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !['command', 'args'].includes(key)) || typeof value.command !== 'string' || !value.command || value.command.length > 256 || !Array.isArray(value.args) || value.args.length > 64 || value.args.some(arg => typeof arg !== 'string' || arg.length > 4096 || arg.includes('\0'))) throw new TypeError('invalid exec arguments');
-  if (value.command.includes('\0')) throw new TypeError('invalid exec command');
+  if (typeof value === 'string') { try { value = JSON.parse(value); } catch { throw new ExecArgumentsError(); } }
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !['command', 'args'].includes(key)) || typeof value.command !== 'string' || !value.command || value.command.length > 256 || !Array.isArray(value.args) || value.args.length > 64 || value.args.some(arg => typeof arg !== 'string' || arg.length > 4096 || arg.includes('\0'))) throw new ExecArgumentsError();
+  if (value.command.includes('\0')) throw new ExecArgumentsError();
   return { command: value.command, args: [...value.args], call_id: call.call_id };
 }
 function normalizeSkillCall(call) {
@@ -96,7 +100,7 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
   const initialBudget = Math.max(1, Math.ceil((softAt - now()) / 60_000));
   const messages = [skillCatalogMessage(skills), { role: 'developer', content: `[YOLO TIME BUDGET] Approximately ${initialBudget} minute(s) are available for agent work. Establish an early runnable baseline, save continuously, stop expanding scope near the work deadline, and verify before finalizing.` }, { role: 'user', content: prompt }];
   let budgetNotice;
-  const evidence = []; const artifacts = []; const errors = []; const recovered = []; let terminal; let result;
+  const evidence = []; const artifacts = []; const errors = []; const recovered = []; let terminal; let result; let malformedCallCount = 0;
   let status = 'running'; let steps = 0;
   const emit = event => { try { progress?.(event); } catch {} };
   try {
@@ -111,7 +115,7 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
       if (typeof provider.partialResult === 'string' && provider.partialResult) result = provider.partialResult;
       steps += 1;
       const safe = response && typeof response === 'object' ? response : { result: String(response) };
-      await log.append(runId, 'step', { step: steps, response: safe });
+      await log.append(runId, 'step', { step: steps, response: safe.tool_call ? { ...safe, tool_call: { call_id: safe.tool_call.call_id, name: safe.tool_call.name } } : safe });
       if (safe.evidence) evidence.push(String(safe.evidence));
       if (safe.artifacts) artifacts.push(...(Array.isArray(safe.artifacts) ? safe.artifacts : [safe.artifacts]));
       if (safe.done || safe.result !== undefined) {
@@ -135,7 +139,22 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
         const execRegistry = tools.length === 1 && tools[0]?.name === 'exec' && JSON.stringify(tools[0]?.parameters) === JSON.stringify(EXEC_TOOL.parameters);
         const combinedRegistry = tools.length === 2 && tools[0]?.name === 'exec' && tools[1]?.name === 'skill_load' && JSON.stringify(tools[0]?.parameters) === JSON.stringify(EXEC_TOOL.parameters) && JSON.stringify(tools[1]?.parameters) === JSON.stringify(SKILL_LOAD_TOOL.parameters);
         if (!execRegistry && !combinedRegistry) { errors.push('effect denied: executor registry mismatch'); status = 'failed'; break; }
-        let call; try { call = normalizeCall(safe.tool_call); } catch (error) { errors.push(`effect denied: ${error.message}`); status = 'failed'; break; }
+        let call;
+        try { call = normalizeCall(safe.tool_call); }
+        catch (error) {
+          if (!(error instanceof ExecArgumentsError)) { errors.push('effect denied: invalid exec tool call'); status = 'failed'; break; }
+          malformedCallCount += 1;
+          recovered.push({ phase: 'tool', call_id: safe.tool_call.call_id, code: error.code, message: error.message });
+          if (malformedCallCount >= MALFORMED_CALL_BUDGET) {
+            terminal = failureRecord({ phase: 'tool', message: 'malformed tool call recovery budget exhausted', code: 'malformed_tool_call_budget_exhausted' });
+            errors.push('malformed tool call recovery budget exhausted'); status = 'failed'; break;
+          }
+          messages.push({ type: 'function_call', call_id: safe.tool_call.call_id, name: 'exec', arguments: '{}' });
+          messages.push({ type: 'function_call_output', call_id: safe.tool_call.call_id, output: JSON.stringify({ ok: false, error: error.code }) });
+          messages.push({ role: 'assistant', content: safe.message ?? '' });
+          continue;
+        }
+        malformedCallCount = 0;
         const ordinal = steps; emit({ type: 'tool_start', tool: 'exec', ordinal });
         const receipt = await awaitExecutorCleanup(executor.execute({ call, signal: timer.signal }), timer.signal, cleanupGraceMs);
         if (!validateReceipt(receipt, call.call_id)) { errors.push('effect denied: invalid executor receipt'); status = 'failed'; break; }

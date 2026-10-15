@@ -168,6 +168,51 @@ test('ordinary failed executor receipts return to the provider for recovery', as
   assert.match(outputs[0].output, /spawn .* ENOENT/);
 });
 
+test('malformed exec arguments are recoverable and never reach the executor', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'yolo-')); let step = 0; const calls = []; const outputs = []; const progress = [];
+  const malformed = [
+    '{"command":',
+    JSON.stringify({ command: 'true' }),
+    JSON.stringify({ command: 'true', args: [], secret: 'https://secret.invalid/token' }),
+    JSON.stringify({ command: 'x'.repeat(257), args: [] }),
+    JSON.stringify({ command: 'printf', args: ['bad\u0000token'] })
+  ];
+  const provider = { async next({ messages }) {
+    step += 1;
+    if (step <= malformed.length * 2 && step % 2 === 1) return { tool_call: { call_id: `malformed-${(step + 1) / 2}`, name: 'exec', arguments: malformed[(step - 1) / 2] } };
+    if (step <= malformed.length * 2) {
+      outputs.push(messages.findLast(message => message.type === 'function_call_output'));
+      return { tool_call: { call_id: `valid-${step}`, name: 'exec', arguments: JSON.stringify({ command: 'true', args: [] }) } };
+    }
+    return { done: true, result: 'recovered' };
+  } };
+  const executor = { async execute({ call }) { calls.push(call); return { version: 1, ok: true, call_id: call.call_id, code: 0, output: '' }; } };
+  const record = await runOnce({ prompt: 'recover malformed calls', workspace, provider, executor, tools: [EXEC_TOOL], progress: event => progress.push(event) });
+  assert.equal(record.status, 'completed');
+  assert.equal(record.result, 'recovered');
+  assert.equal(calls.length, malformed.length);
+  assert.deepEqual(calls.map(call => call.call_id), ['valid-2', 'valid-4', 'valid-6', 'valid-8', 'valid-10']);
+  assert.equal(record.failure.recovered.length, malformed.length);
+  assert.ok(record.failure.recovered.every(item => item.code === 'invalid_exec_arguments' && item.message === 'tool call arguments were rejected'));
+  assert.ok(outputs.every(message => message.output === JSON.stringify({ ok: false, error: 'invalid_exec_arguments' })));
+  assert.doesNotMatch(JSON.stringify(record), /secret\.invalid|bad\\u0000token|x{20,}/);
+  assert.doesNotMatch(JSON.stringify(progress), /secret\.invalid|bad\\u0000token/);
+});
+
+test('consecutive malformed exec calls exhaust a bounded recovery budget without execution', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'yolo-')); let calls = 0; let providerCalls = 0;
+  const provider = { async next() { providerCalls += 1; return { tool_call: { call_id: `bad-${providerCalls}`, name: 'exec', arguments: '{not-json' } }; } };
+  const executor = { async execute() { calls += 1; return { version: 1, ok: true, call_id: 'unexpected', code: 0, output: '' }; } };
+  const record = await runOnce({ prompt: 'stop retry loop', workspace, provider, executor, tools: [EXEC_TOOL], maxSteps: 10 });
+  assert.equal(record.status, 'failed');
+  assert.equal(providerCalls, 3);
+  assert.equal(calls, 0);
+  assert.equal(record.failure.recovered.length, 3);
+  assert.equal(record.failure.terminal.code, 'malformed_tool_call_budget_exhausted');
+  assert.equal(record.failure.terminal.message, 'malformed tool call recovery budget exhausted');
+  assert.doesNotMatch(JSON.stringify(record), /not-json/);
+});
+
 test('container process executor converts a missing command into a bounded receipt', async () => {
   const receipt = await new ContainerProcessExecutor({ timeoutMs: 1000 }).execute({ call: { command: '/missing-command', args: [], call_id: 'enoent-1' } });
   assert.deepEqual(receipt, { version: 1, ok: false, call_id: 'enoent-1', code: 127, output: '', error: 'spawn /missing-command ENOENT' });

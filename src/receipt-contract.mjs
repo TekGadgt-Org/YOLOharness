@@ -13,12 +13,13 @@ const PUBLICATION_KEYS = new Set(['status', 'relationship', 'created_entry_count
 const VALUE_KEYS = new Set(['name', 'source', 'instructions', 'resource', 'content', 'command', 'args', 'call_id', 'code', 'phase', 'message', 'signal', 'classification', 'output', 'error', 'path', 'status', 'relationship', 'created_entry_count', 'entry_paths', 'created_entries', 'exporter_exit', 'version', 'ok', 'termination', 'action', 'bytes', 'at', 'operation']);
 const FAILURE_PHASES = new Set(['runtime', 'provider', 'tool', 'recovery']);
 const TERMINATION_CLASSES = new Set(['signal', 'sigkill_compatible', 'timeout_or_output_limit']);
+const CREDENTIAL_MARKER = /(?:^|[^a-z0-9])(?:token(?:[_\-\s]+marker)?(?:[_\-\s]+[a-z0-9]+)*|access[_\-\s]+token|refresh[_\-\s]+token|auth[_\-\s]+token|client[_\-\s]+secret|api[_\-\s]+key|authorization|bearer|password|secret)(?=$|[^a-z0-9])/iu;
 function read(value, key) { try { return value?.[key]; } catch { return undefined; } }
 function object(value) { return value && typeof value === 'object' && !Array.isArray(value) ? value : null; }
 function boundedString(value, fallback = 'operation failed') { return typeof value === 'string' ? safeFailureSummary(value, fallback) : fallback; }
 export function safeFailureSummary(value, fallback = 'operation failed') {
   let text; try { text = String(value ?? ''); } catch { return fallback; }
-  const dangerous = text.length > MAX_SUMMARY || /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(text) || /(?:https?:\/\/|www\.|\b(?:bearer|token|authorization|api[_ -]?key|secret|password)\b|(?:^|[\s(])[A-Za-z]:[\\/]|(?:^|[\s(])\/(?:[^\s/]+\/)+|\b(?:localhost|127\.0\.0\.1|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?\b)/iu.test(text);
+  const dangerous = text.length > MAX_SUMMARY || /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(text) || /(?:https?:\/\/|www\.|(?:^|[\s(])[A-Za-z]:[\\/]|(?:^|[\s(])\/(?:[^\s/]+\/)+|\b(?:localhost|127\.0\.0\.1|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?\b)/iu.test(text) || CREDENTIAL_MARKER.test(text);
   if (dangerous || !text.trim()) { const prefix = text.split(':', 1)[0].trim(); return /^[A-Za-z][A-Za-z0-9 ()_-]{1,120}$/.test(prefix) && !/(?:https?|bearer|token|secret|password)/i.test(prefix) ? prefix : fallback; }
   return text.trim();
 }
@@ -45,6 +46,10 @@ function cleanTermination(value, code, signal) {
   if (!canonical || canonical.classification !== source.classification || terminationCode !== undefined && terminationCode !== effectiveCode || terminationSignal !== undefined && terminationSignal !== effectiveSignal) return undefined;
   return { ...(terminationCode === undefined ? {} : { code: terminationCode }), ...(terminationSignal === undefined ? {} : { signal: terminationSignal }), classification: canonical.classification };
 }
+function cleanCause(value) {
+  const source = object(value); if (!source) return undefined;
+  return classifyProviderCause(source);
+}
 function cleanFailureRecord(value, recovered) {
   const source = object(value); if (!source) return null; const out = {};
   if (FAILURE_PHASES.has(source.phase)) out.phase = source.phase;
@@ -52,13 +57,14 @@ function cleanFailureRecord(value, recovered) {
   const signal = validSignal(source.signal, code); if (signal !== undefined) out.signal = signal;
   if (recovered) { const callId = validCallId(source.call_id); if (callId !== undefined) out.call_id = callId; }
   if (Object.hasOwn(source, 'message')) { const message = boundedString(source.message); if (message) out.message = message; }
+  if (!recovered && Object.hasOwn(source, 'cause')) { const cause = cleanCause(source.cause); if (cause) out.cause = cause; }
   const termination = cleanTermination(source.termination, code, signal); if (termination) out.termination = termination;
   return out;
 }
 function cleanFailure(value) { const source = object(value); if (!source) return { version: 1, terminal: null, recovered: [] }; return { version: 1, terminal: cleanFailureRecord(source.terminal, false), recovered: Array.isArray(source.recovered) ? source.recovered.slice(0, MAX_ITEMS).map(item => cleanFailureRecord(item, true)).filter(Boolean) : [] }; }
 function cleanPublication(value) { const out = cleanRecord(value, PUBLICATION_KEYS); return out ?? { status: 'unknown', relationship: 'publication was not independently enumerated' }; }
 function cleanList(value) { return Array.isArray(value) ? value.slice(0, MAX_ITEMS).map(item => cleanValue(item, 'value')).filter(item => item !== undefined) : []; }
-export function classifyProviderCause(cause) { if (!cause || (typeof cause !== 'object' && typeof cause !== 'function')) return { classification: 'unavailable' }; try { const result = {}; const code = read(cause, 'code'); const syscall = read(cause, 'syscall'); const errno = read(cause, 'errno'); if (typeof code === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(code)) result.code = code; if (typeof syscall === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(syscall)) result.syscall = syscall; if (Number.isInteger(errno) && errno >= -2147483648 && errno <= 2147483647) result.errno = errno; return Object.keys(result).length ? result : { classification: 'unavailable' }; } catch { return { classification: 'unavailable' }; } }
+export function classifyProviderCause(cause) { if (!cause || (typeof cause !== 'object' && typeof cause !== 'function')) return { classification: 'unavailable' }; try { const result = {}; const code = read(cause, 'code'); const syscall = read(cause, 'syscall'); const errno = read(cause, 'errno'); if (typeof code === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(code) && !CREDENTIAL_MARKER.test(code)) result.code = code; if (typeof syscall === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(syscall) && !CREDENTIAL_MARKER.test(syscall)) result.syscall = syscall; if (Number.isInteger(errno) && errno >= -2147483648 && errno <= 2147483647) result.errno = errno; return Object.keys(result).length ? result : { classification: 'unavailable' }; } catch { return { classification: 'unavailable' }; } }
 export function normalizeReceipt(input, { status = 'cleanup_unknown', error = null } = {}) {
   const source = object(input) ?? {}; const version = read(source, 'version'); const sourceStatus = read(source, 'status'); const normalizedStatus = STATUSES.has(sourceStatus) ? sourceStatus : status;
   const base = { version: 2, run_id: typeof read(source, 'run_id') === 'string' ? boundedString(read(source, 'run_id'), 'run') : null, status: normalizedStatus, effect_state: EFFECTS.has(read(source, 'effect_state')) ? read(source, 'effect_state') : 'uncertain', result: cleanValue(read(source, 'result'), 'result') ?? null, evidence: cleanList(read(source, 'evidence')), artifacts: cleanList(read(source, 'artifacts')), publication_evidence: cleanPublication(read(source, 'publication_evidence')), errors: cleanList(read(source, 'errors')).map(value => boundedString(value)), failure: cleanFailure(read(source, 'failure')) };

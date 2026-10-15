@@ -26,6 +26,25 @@ test('provider cause classification degrades safely for throwing getters', () =>
   assert.deepEqual(classifyProviderCause(cause), { classification: 'unavailable' });
 });
 
+test('normalized failure preserves only the canonical provider cause projection', () => {
+  const normalized = normalizeReceipt({ version: 2, status: 'failed', failure: { terminal: {
+    phase: 'provider', message: 'provider failed',
+    cause: { code: 'ECONNRESET', syscall: 'read', errno: -104, message: 'https://secret.invalid/token', nested: { leak: true } },
+  } } });
+  assert.deepEqual(normalized.failure.terminal.cause, { code: 'ECONNRESET', syscall: 'read', errno: -104 });
+});
+
+test('failure prose rejects separator-delimited credential markers while preserving benign diagnostics', () => {
+  for (const marker of [
+    'TOKEN_MARKER_8B_secret',
+    'access_token=secret-value',
+    'refresh-token: secret-value',
+    'auth token secret-value',
+    'client_secret=secret-value',
+  ]) assert.equal(safeFailureSummary(marker), 'operation failed', marker);
+  assert.equal(safeFailureSummary('connection refused'), 'connection refused');
+});
+
 test('legacy receipt adapts to complete v2 and v2 fields are preserved', () => {
   const legacy = { version: 1, run_id: 'r1', status: 'failed', effect_state: 'uncertain', result: 'partial', evidence: ['e'], artifacts: ['a'], errors: ['failed'] };
   const adapted = normalizeReceipt(legacy, { status: 'cleanup_unknown', error: 'cleanup unknown' });

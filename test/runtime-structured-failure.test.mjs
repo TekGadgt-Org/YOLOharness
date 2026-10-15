@@ -21,6 +21,7 @@ test('retains recovered tool failures separately from terminal provider failure'
   const record = await runOnce({ prompt: 'reproduce', workspace, provider, executor, tools: [EXEC_TOOL] });
   assert.equal(record.version, 2);
   assert.equal(record.failure.terminal.message, 'fetch failed');
+  assert.deepEqual(record.failure.terminal.cause, { code: 'ECONNRESET', syscall: 'read', errno: -104 });
   assert.equal(record.failure.recovered.length, 2);
   assert.deepEqual(record.failure.recovered.map(item => item.code), [1, 137]);
   assert.equal(record.failure.recovered[1].termination.classification, 'sigkill_compatible');

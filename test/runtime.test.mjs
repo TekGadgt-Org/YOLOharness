@@ -4,7 +4,7 @@ import { mkdtemp, readFile, mkdir, writeFile, symlink, rm } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventLog, redact, recoverEvents } from '../src/events.mjs';
-import { runOnce, FixtureProvider, MissingProviderError, EXEC_TOOL, SKILL_LOAD_TOOL } from '../src/runtime.mjs';
+import { runOnce, FixtureProvider, MissingProviderError, EXEC_TOOL, SKILL_LOAD_TOOL, classifyProviderCause } from '../src/runtime.mjs';
 import { validateWorkspace } from '../src/container-launcher.mjs';
 import { ContainerProcessExecutor } from '../src/container-executor.mjs';
 
@@ -29,10 +29,10 @@ test('event log reopens each run at its own sequence after interleaved events', 
   assert.equal((await new EventLog(path).append('second-run', 'step', { step: 1 })).seq, 2);
 });
 
-test('fixture completes with a final version 1 record', async () => {
+test('fixture completes with a final version 2 record', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'yolo-'));
   const record = await runOnce({ prompt: 'hello', minutes: 1, workspace, provider: new FixtureProvider() });
-  assert.equal(record.status, 'completed'); assert.equal(record.version, 1); assert.equal(record.result, 'fixture response for: hello');
+  assert.equal(record.status, 'completed'); assert.equal(record.version, 2); assert.equal(record.result, 'fixture response for: hello');
   assert.match(record.run_id, /^run-/); assert.ok(record.evidence.length >= 1);
 });
 

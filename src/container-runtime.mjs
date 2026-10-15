@@ -34,7 +34,7 @@ try {
   record = await runOnce({ prompt: boot.prompt, minutes: remaining, deadlineAt, hardDeadlineAt, reserveMs, workspace: '/workspace', provider, executor, tools: [EXEC_TOOL, SKILL_LOAD_TOOL], skills: boot.skills, maxSteps: 100, signal: controller.signal, progress: progressWriter ? event => progressWriter.emit(event) : undefined });
 } catch (error) {
   const message = error?.code === 'reauth_required' ? 'reauth_required' : (error?.message ?? String(error));
-  record = { version: 1, run_id: null, status: controller.signal.aborted ? 'interrupted' : 'failed', effect_state: controller.signal.aborted ? 'uncertain' : 'none', result: error?.partialResult ?? null, evidence: [], artifacts: [], errors: [message] };
+  record = { version: 2, run_id: null, status: controller.signal.aborted ? 'interrupted' : 'failed', effect_state: controller.signal.aborted ? 'uncertain' : 'none', result: error?.partialResult ?? null, evidence: [], artifacts: [], publication_evidence: { status: 'unknown', relationship: 'runtime exited before workspace publication evidence was available' }, failure: { version: 1, terminal: { phase: controller.signal.aborted ? 'runtime' : 'provider', message }, recovered: [] }, errors: [message] };
 }
 try {
   // The host launcher is the sole durable receipt writer. Keep a private

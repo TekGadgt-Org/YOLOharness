@@ -85,6 +85,7 @@ export class ContainerLauncher {
     let timer;
     let cleanupDeadline;
     let scaffold;
+    let publicationResult;
     let clientCloseObserved = true;
     const abortListener = () => abort(signal.reason);
     const abort = (abortReason = signal?.reason ?? Object.assign(new Error('container interrupted'), { code: 'interrupted' })) => {
@@ -133,7 +134,7 @@ export class ContainerLauncher {
         // Publication is a separate durability step. Keep the runtime's
         // authoritative receipt as the launcher outcome; the publication
         // helper must not replace it with its transport-only summary.
-        await runWorkspaceExportPublisher(this.command, this.image, volumeName, label, identity, ephemeralPaths, this.workspace, this.spawn, {
+        publicationResult = await runWorkspaceExportPublisher(this.command, this.image, volumeName, label, identity, ephemeralPaths, this.workspace, this.spawn, {
           signal,
           deadline: reason ? cleanupDeadline : executionDeadline,
           cleanupDeadline: () => (cleanupDeadline ??= Date.now() + CLEANUP_TOTAL_MS),
@@ -149,6 +150,7 @@ export class ContainerLauncher {
         if (lines.length !== 1) throw new Error('container returned malformed status');
         outcome = JSON.parse(lines[0]);
       }
+      if (outcome && publicationResult) outcome = { ...outcome, publication_evidence: { status: publicationResult.published === true ? 'published' : 'partial', relationship: 'entries created in the generated workspace by the authoritative exporter', created_entry_count: publicationResult.created ?? null, created_entry_paths: Array.isArray(publicationResult.created_entries) ? publicationResult.created_entries.slice(0, 1000) : [], ...(publicationResult.created_entries?.length > 1000 ? { paths_truncated: true } : {}) } };
 
     } catch (error) {
       if (error?.code === 'publication_incomplete' || (error?.code === 'cleanup_unknown' && error?.receipt)) {

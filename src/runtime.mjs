@@ -5,6 +5,23 @@ import { EventLog } from './events.mjs';
 import { validateReceipt } from './docker-executor.mjs';
 
 export class MissingProviderError extends Error { constructor(message = 'No provider is configured; run `yolo setup` and authenticate before starting a run') { super(message); this.name = 'MissingProviderError'; } }
+const FAILURE_VERSION = 1;
+const MAX_FAILURE_MESSAGE = 512;
+function boundedText(value) { return String(value ?? '').slice(0, MAX_FAILURE_MESSAGE); }
+export function classifyProviderCause(cause) {
+  if (!cause || typeof cause !== 'object') return { classification: 'unavailable' };
+  const result = { ...(typeof cause.code === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(cause.code) ? { code: cause.code } : {}), ...(typeof cause.syscall === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(cause.syscall) ? { syscall: cause.syscall } : {}), ...(Number.isInteger(cause.errno) && cause.errno >= -2147483648 && cause.errno <= 2147483647 ? { errno: cause.errno } : {}) };
+  return Object.keys(result).length ? result : { classification: 'unavailable' };
+}
+export function classifyTermination(code, signal = null) {
+  if (typeof signal === 'string' && /^SIG[A-Z0-9]+$/.test(signal)) return { signal, classification: signal === 'SIGKILL' ? 'sigkill_compatible' : 'signal' };
+  if (code === 137) return { code, classification: 'sigkill_compatible' };
+  if (code === 124) return { code, classification: 'timeout_or_output_limit' };
+  return null;
+}
+function failureRecord({ phase, message, code = null, signal = null, cause = null } = {}) {
+  return { phase, message: boundedText(message), ...(code !== null ? { code } : {}), ...(signal ? { signal } : {}), ...(cause ? { cause: classifyProviderCause(cause) } : {}) };
+}
 export const EXEC_TOOL = Object.freeze({ type: 'function', name: 'exec', description: 'Run one command in the isolated worker. Guaranteed baseline: POSIX sh/core utilities, node, npm, git, python3, python3 -m pip, and python3 -m venv; other host commands are not guaranteed.', parameters: Object.freeze({ type: 'object', additionalProperties: false, required: ['command', 'args'], properties: { command: { type: 'string', minLength: 1, maxLength: 256 }, args: { type: 'array', maxItems: 64, items: { type: 'string', maxLength: 4096 } } } }) });
 export const SKILL_LOAD_TOOL = Object.freeze({ type: 'function', name: 'skill_load', description: 'Load untrusted instructions or one resource from the declared skill catalog.', parameters: Object.freeze({ type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string', minLength: 1, maxLength: 64 }, resource: { type: 'string', maxLength: 256 } } }) });
 
@@ -88,7 +105,7 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
   const initialBudget = Math.max(1, Math.ceil((softAt - now()) / 60_000));
   const messages = [skillCatalogMessage(skills), { role: 'developer', content: `[YOLO TIME BUDGET] Approximately ${initialBudget} minute(s) are available for agent work. Establish an early runnable baseline, save continuously, stop expanding scope near the work deadline, and verify before finalizing.` }, { role: 'user', content: prompt }];
   let budgetNotice;
-  const evidence = []; const artifacts = []; const errors = []; let result;
+  const evidence = []; const artifacts = []; const errors = []; const recovered = []; let terminal; let result;
   let status = 'running'; let steps = 0;
   const emit = event => { try { progress?.(event); } catch {} };
   try {
@@ -134,8 +151,10 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
         emit({ type: 'tool_finish', tool: 'exec', ordinal, outcome: receipt.ok ? 'ok' : (timer.signal.aborted ? 'deadline' : 'error'), code: receipt.code, output_bytes: Buffer.byteLength(receipt.output ?? ''), error_bytes: Buffer.byteLength(receipt.error ?? ''), limited: Boolean(receipt.limited) });
         if (!receipt.ok) {
           evidence.push(receipt);
-          errors.push(receipt.error);
+          recovered.push({ phase: 'tool', call_id: receipt.call_id, code: receipt.code, message: boundedText(receipt.error), ...(classifyTermination(receipt.code, receipt.signal) ? { termination: classifyTermination(receipt.code, receipt.signal) } : {}) });
           if (timer.signal.aborted || receipt.code === 124) {
+            terminal = failureRecord({ phase: 'tool', message: receipt.error, code: receipt.code, signal: receipt.signal });
+            errors.push(receipt.error);
             status = timer.signal.aborted ? (signal.aborted ? 'interrupted' : 'deadline') : 'deadline';
             break;
           }
@@ -158,12 +177,13 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
       else if (typeof provider?.partialResult === 'string' && provider.partialResult) result = provider.partialResult;
       errors.push(error?.message === 'cleanup_unknown' ? 'cleanup_unknown: executor cleanup grace expired' : status === 'deadline' ? 'deadline exceeded; generated output may be retained or partial; inspect it and delete the generated directory before retrying' : 'interrupted by SIGINT; generated output may be retained or partial; inspect it and delete the generated directory before retrying');
     }
-    else { status = 'failed'; errors.push(`${error?.code === 'reauth_required' ? 'reauth_required' : error instanceof Error ? error.message : String(error)}; generated output may be retained or partial; inspect it and delete the generated directory before retrying`); }
+    else { status = 'failed'; terminal = failureRecord({ phase: 'provider', message: error?.code === 'reauth_required' ? 'reauth_required' : error instanceof Error ? error.message : String(error), cause: error?.cause }); errors.push(`${terminal.message}; generated output may be retained or partial; inspect it and delete the generated directory before retrying`); }
   } finally {
     timer.cancel();
     try { await log.append(runId, status === 'completed' ? 'run_completed' : 'run_stopped', { status, steps }); } catch (error) { errors.push(`receipt write failed: ${error.message}`); if (status === 'completed') status = 'failed'; }
  }
  if ((status === 'deadline' || status === 'interrupted') && !errors.length) errors.push(`${status} ended the run; generated output may be retained or partial; inspect it and delete the generated directory before retrying`);
  const effectState = status === 'completed' ? 'none' : errors.some(error => String(error).includes('cleanup_unknown')) ? 'unknown' : status === 'deadline' || status === 'interrupted' ? 'uncertain' : 'none';
-  return { version: 1, run_id: runId, status, effect_state: effectState, result: result ?? null, evidence, artifacts, errors };
+  if (!terminal && status !== 'completed') terminal = failureRecord({ phase: status === 'deadline' ? 'runtime' : 'runtime', message: errors[0] ?? `${status} ended the run` });
+  return { version: 2, run_id: runId, status, effect_state: effectState, result: result ?? null, evidence, artifacts, publication_evidence: { status: 'unknown', relationship: 'workspace publication was not independently enumerated by the runtime' }, failure: { version: FAILURE_VERSION, terminal: terminal ?? null, recovered }, errors };
 }

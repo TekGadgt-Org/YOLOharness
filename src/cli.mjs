@@ -127,7 +127,10 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     clearTimeout(deadlineTimer);
     process.removeListener('SIGINT', onInterrupt);
     renderer?.close();
-    io.stdout.write(`${options.json ? JSON.stringify(record) : `${record.status} run=${record.run_id ?? 'unknown'} effect_state=${record.effect_state ?? 'unknown'} evidence=${record.evidence?.length ?? 0} artifacts=${record.artifacts?.length ?? 0}: ${record.result ?? record.errors.join('; ')}`}\n`);
+    const terminal = record.failure?.terminal;
+    const recoveredSummary = record.failure?.recovered?.length ? ` recovered_failures=${record.failure.recovered.length}` : '';
+    const terminalSummary = terminal ? ` terminal=${terminal.phase}${terminal.code !== undefined ? `/code=${terminal.code}` : ''}: ${terminal.message}` : (record.result ?? 'completed');
+    io.stdout.write(`${options.json ? JSON.stringify(record) : `${record.status} run=${record.run_id ?? 'unknown'} effect_state=${record.effect_state ?? 'unknown'} evidence=${record.evidence?.length ?? 0} artifacts=${record.artifacts?.length ?? 0}${recoveredSummary}: ${terminalSummary}`}\n`);
     return record.status === 'completed' && record.effect_state !== 'uncertain' ? 0 : record.status === 'interrupted' ? 130 : record.status === 'deadline' ? 124 : 1;
   } catch (error) {
     renderer?.close();

@@ -4,11 +4,13 @@ import { RUNTIME_RESOURCE_POLICY } from './resource-policy.mjs';
 export class DockerUnavailableError extends Error { constructor(message = 'Docker is required for tool execution') { super(message); this.name = 'DockerUnavailableError'; this.code = 'docker_unavailable'; } }
 export class OutputLimitError extends Error { constructor() { super('executor output limit exceeded'); this.name = 'OutputLimitError'; this.code = 'output_limit'; } }
 export class UnknownCleanupError extends Error { constructor() { super('container cleanup could not be proven'); this.name = 'UnknownCleanupError'; this.code = 'cleanup_unknown'; } }
-const RECEIPT_KEYS = new Set(['version', 'ok', 'call_id', 'code', 'output', 'error']);
+const RECEIPT_KEYS = new Set(['version', 'ok', 'call_id', 'code', 'output', 'error', 'signal', 'termination']);
 export function validateReceipt(receipt, callId) {
   if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt) || receipt.version !== 1 || typeof receipt.ok !== 'boolean' || typeof receipt.call_id !== 'string' || !receipt.call_id || receipt.call_id.length > 128 || receipt.call_id !== callId || Object.keys(receipt).some(key => !RECEIPT_KEYS.has(key))) return false;
   if (!Number.isInteger(receipt.code) || receipt.code < 0 || receipt.code > 255) return false;
   if (typeof receipt.output !== 'string' || Buffer.byteLength(receipt.output) > 1024 * 1024) return false;
+  if (receipt.signal !== undefined && (typeof receipt.signal !== 'string' || !/^SIG[A-Z0-9]+$/.test(receipt.signal))) return false;
+  if (receipt.termination !== undefined && (!receipt.termination || typeof receipt.termination !== 'object' || typeof receipt.termination.classification !== 'string')) return false;
   if (typeof receipt.error !== 'undefined' && (typeof receipt.error !== 'string' || Buffer.byteLength(receipt.error) > 1024 * 1024)) return false;
   return receipt.ok ? receipt.code === 0 && typeof receipt.error === 'undefined' : receipt.code !== 0 && typeof receipt.error === 'string' && receipt.error.length > 0;
 }

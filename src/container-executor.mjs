@@ -43,9 +43,9 @@ export class ContainerProcessExecutor {
       child.stderr?.on('data', chunk => collect('err', chunk));
       child.once('error', error => finish(resolve, { version: 1, ok: false, call_id: call.call_id, code: 127, output: out.slice(0, MAX_OUTPUT), error: `${error.message ?? String(error)}`.slice(0, MAX_OUTPUT) }));
       child.once('close', (code, signal) => {
-        if (timedOut) return finish(resolve, { version: 1, ok: false, call_id: call.call_id, code: 124, output: out.slice(0, MAX_OUTPUT), error: 'command deadline or output limit exceeded' });
+        if (timedOut) return finish(resolve, { version: 1, ok: false, call_id: call.call_id, code: 124, output: out.slice(0, MAX_OUTPUT), error: 'command deadline or output limit exceeded', termination: { code: 124, classification: 'timeout_or_output_limit' } });
         const detail = signal ? `command killed by ${signal}` : `command exited (${code ?? 'unknown'})`;
-        finish(resolve, { version: 1, ok: code === 0, call_id: call.call_id, code: code ?? 1, output: out.slice(0, MAX_OUTPUT), ...(code === 0 ? {} : { error: err.trim().slice(0, MAX_OUTPUT) || detail }) });
+        finish(resolve, { version: 1, ok: code === 0, call_id: call.call_id, code: code ?? 1, ...(signal ? { signal } : {}), output: out.slice(0, MAX_OUTPUT), ...(code === 0 ? {} : { error: err.trim().slice(0, MAX_OUTPUT) || detail }) });
       });
       signal?.addEventListener('abort', abort, { once: true });
     });

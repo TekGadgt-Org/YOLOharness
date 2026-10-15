@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 const MAX_OUTPUT = 1024 * 1024;
 const MAX_COMMAND = 256;
 const MAX_ARGS = 64;
+const SIGNAL_NUMBERS = Object.freeze({ SIGABRT: 6, SIGALRM: 14, SIGBUS: 7, SIGHUP: 1, SIGILL: 4, SIGINT: 2, SIGKILL: 9, SIGPIPE: 13, SIGQUIT: 3, SIGSEGV: 11, SIGTERM: 15 });
 
 export class ContainerProcessExecutor {
   constructor({ cwd = '/workspace', home = '/tmp/yoloharness-home', timeoutMs = 60_000 } = {}) {
@@ -45,7 +46,8 @@ export class ContainerProcessExecutor {
       child.once('close', (code, signal) => {
         if (timedOut) return finish(resolve, { version: 1, ok: false, call_id: call.call_id, code: 124, output: out.slice(0, MAX_OUTPUT), error: 'command deadline or output limit exceeded', termination: { code: 124, classification: 'timeout_or_output_limit' } });
         const detail = signal ? `command killed by ${signal}` : `command exited (${code ?? 'unknown'})`;
-        finish(resolve, { version: 1, ok: code === 0, call_id: call.call_id, code: code ?? 1, ...(signal ? { signal } : {}), output: out.slice(0, MAX_OUTPUT), ...(code === 0 ? {} : { error: err.trim().slice(0, MAX_OUTPUT) || detail }) });
+        const exitCode = signal ? 128 + (SIGNAL_NUMBERS[signal] ?? 0) : (code ?? 1);
+        finish(resolve, { version: 1, ok: code === 0, call_id: call.call_id, code: exitCode, ...(signal ? { signal, termination: { code: exitCode, signal, classification: signal === 'SIGKILL' ? 'sigkill_compatible' : 'signal' } } : {}), output: out.slice(0, MAX_OUTPUT), ...(code === 0 ? {} : { error: err.trim().slice(0, MAX_OUTPUT) || detail }) });
       });
       signal?.addEventListener('abort', abort, { once: true });
     });

@@ -7,6 +7,7 @@ import { ConfiguredProvider } from './provider.mjs';
 import { runOnce, EXEC_TOOL, SKILL_LOAD_TOOL } from './runtime.mjs';
 import { ContainerProcessExecutor } from './container-executor.mjs';
 import { ProgressWriter } from './progress.mjs';
+import { safeFailureSummary } from './receipt-contract.mjs';
 
 const MAX_INPUT = 128 * 1024;
 const RESPONSES_ENDPOINT = 'https://chatgpt.com/backend-api/codex/responses';
@@ -33,7 +34,7 @@ try {
   const executor = new ContainerProcessExecutor({ timeoutMs: Math.max(1_000, boot.deadline - Date.now()) });
   record = await runOnce({ prompt: boot.prompt, minutes: remaining, deadlineAt, hardDeadlineAt, reserveMs, workspace: '/workspace', provider, executor, tools: [EXEC_TOOL, SKILL_LOAD_TOOL], skills: boot.skills, maxSteps: 100, signal: controller.signal, progress: progressWriter ? event => progressWriter.emit(event) : undefined });
 } catch (error) {
-  const message = error?.code === 'reauth_required' ? 'reauth_required' : (error?.message ?? String(error));
+  const message = error?.code === 'reauth_required' ? 'reauth_required' : safeFailureSummary(error?.message ?? String(error), 'runtime failed');
   record = { version: 2, run_id: null, status: controller.signal.aborted ? 'interrupted' : 'failed', effect_state: controller.signal.aborted ? 'uncertain' : 'none', result: error?.partialResult ?? null, evidence: [], artifacts: [], publication_evidence: { status: 'unknown', relationship: 'runtime exited before workspace publication evidence was available' }, failure: { version: 1, terminal: { phase: controller.signal.aborted ? 'runtime' : 'provider', message }, recovered: [] }, errors: [message] };
 }
 try {

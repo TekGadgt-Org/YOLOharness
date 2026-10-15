@@ -11,6 +11,7 @@ import { effectiveEphemeralPaths, validateEphemeralPaths } from './config.mjs';
 import { reserveReceipt } from './receipt-persistence.mjs';
 import { publishExport } from './workspace-protocol.mjs';
 import { ProgressFrameDecoder } from './progress.mjs';
+import { normalizeReceipt, hasReceiptShape, safeFailureSummary } from './receipt-contract.mjs';
 
 const MAX_OUTPUT = 1024 * 1024;
 const OP_TIMEOUT = 10_000;
@@ -53,13 +54,15 @@ export class ContainerLauncher {
     const receiptAuthority = suppliedReceiptAuthority ?? await reserveReceipt(this.workspace);
     if (!receiptAuthority) {
       return {
-        version: 1,
+        version: 2,
         run_id: null,
         status: 'cleanup_unknown',
         effect_state: 'uncertain',
         result: null,
         evidence: [],
         artifacts: [],
+        publication_evidence: { status: 'unknown', relationship: 'receipt reservation failed before publication' },
+        failure: { version: 1, terminal: { phase: 'recovery', message: 'authoritative receipt reservation conflict' }, recovered: [] },
         errors: ['authoritative receipt reservation conflict'],
         execution_deadline: executionDeadline,
         cleanup_deadline: null,
@@ -142,8 +145,8 @@ export class ContainerLauncher {
       }
       if (reason) {
         const partial = lastReceipt(result.out) ?? await workspaceReceipt(this.workspace);
-        outcome = { ...(partial ?? { version: 1, run_id: null, result: null, evidence: [], artifacts: [] }), status: reason.code === 'deadline' ? 'deadline' : 'interrupted', effect_state: 'uncertain', errors: [...(partial?.errors ?? []), reason.message] };
-      } else if (result.overflow) outcome = { version: 1, run_id: null, status: 'deadline', effect_state: 'uncertain', result: null, evidence: [], artifacts: [], errors: ['container output limit exceeded'] };
+        outcome = normalizeReceipt(partial, { status: reason.code === 'deadline' ? 'deadline' : 'interrupted', error: reason.message });
+      } else if (result.overflow) outcome = normalizeReceipt(null, { status: 'deadline', error: 'container output limit exceeded' });
       else {
         if (result.code !== 0) throw new Error(result.err.trim() || `container exited (${result.code})`);
         const lines = result.out.trim().split(/\r?\n/).filter(Boolean);
@@ -154,7 +157,7 @@ export class ContainerLauncher {
 
     } catch (error) {
       if (error?.code === 'publication_incomplete' || (error?.code === 'cleanup_unknown' && error?.receipt)) {
-        outcome = error.receipt ?? { version: 1, run_id: null, status: 'publication_incomplete', effect_state: 'uncertain', result: null, evidence: error.partial_evidence ?? [], artifacts: [], created_entries: error.created_entries ?? 0, created_entry_paths: error.created_entry_paths ?? [], publication_result: error.publicationResult ?? null, errors: [error.message] };
+        outcome = normalizeReceipt(error.receipt ?? { result: null, evidence: error.partial_evidence ?? [], artifacts: [], errors: [error.message] }, { status: 'publication_incomplete', error: error.message });
         failure = null;
       } else {
         failure = error;
@@ -193,7 +196,7 @@ export class ContainerLauncher {
       if (outcome && volumeHistory) outcome = { ...outcome, cleanup_history: [...(outcome.cleanup_history ?? []), ...volumeHistory] };
       if (cleanupError?.cleanupHistory && outcome) outcome = { ...outcome, cleanup_history: [...(outcome.cleanup_history ?? []), ...cleanupError.cleanupHistory] };
       if (cleanupError) {
-        const message = cleanupError.code === 'cleanup_unknown' ? `cleanup_unknown: ${dockerErrorOutput(cleanupError) || cleanupError.cause?.message || cleanupError.message}` : cleanupError.message;
+        const message = cleanupError.code === 'cleanup_unknown' ? 'cleanup_unknown: cleanup could not be proven' : safeFailureSummary(cleanupError.message, 'cleanup failed');
         if (outcome) outcome = { ...outcome, status: 'cleanup_unknown', effect_state: 'uncertain', errors: [...(outcome.errors ?? []), message], cleanup_history: outcome.cleanup_history ?? cleanupError.cleanupHistory ?? [] }
         else if (failure) { failure.cleanupError = cleanupError; failure.receipt = await workspaceReceipt(this.workspace); }
         else failure = cleanupError;
@@ -201,22 +204,13 @@ export class ContainerLauncher {
     }
     if (!outcome && failure) {
       const cleanupUnknown = failure.cleanupError?.code === 'cleanup_unknown';
-      outcome = {
-        version: 1,
-        run_id: null,
-        status: 'cleanup_unknown',
-        effect_state: 'uncertain',
-        result: null,
-        evidence: [],
-        artifacts: [],
-        errors: [failure.message, ...(cleanupUnknown ? ['cleanup_unknown'] : [])],
-        cleanup_history: failure.cleanupError?.cleanupHistory ?? [],
-      };
+      outcome = normalizeReceipt(null, { status: 'cleanup_unknown', error: `${failure.message}${cleanupUnknown ? '; cleanup_unknown' : ''}` });
+      outcome.cleanup_history = failure.cleanupError?.cleanupHistory ?? [];
     }
     if (outcome) {
       if (!failure) outcome = { ...outcome, execution_deadline: executionDeadline, cleanup_deadline: cleanupDeadline, cleanup_grace_ms: CLEANUP_TOTAL_MS };
       try { await receiptAuthority.write(outcome); }
-      catch (error) { outcome = { ...outcome, status: 'cleanup_unknown', effect_state: 'uncertain', errors: [...(outcome.errors ?? []), `receipt persistence failed: ${error.message}`] }; }
+      catch (error) { outcome = { ...outcome, status: 'cleanup_unknown', effect_state: 'uncertain', errors: [...(outcome.errors ?? []), `receipt persistence failed: ${safeFailureSummary(error.message, 'receipt persistence failed')}`] }; }
     }
     await receiptAuthority.close();
     if (failure) throw failure;
@@ -368,8 +362,7 @@ export async function runWorkspaceExportPublisher(command, image, volume, label,
     const createdEntries = publicationResult?.created ?? source.created_entries ?? createdEntryPaths.length;
     const cleanupHistory = cleanupError.cleanupHistory ?? [];
     const message = `cleanup_unknown: ${cleanupError.message}`;
-    const receipt = {
-      version: 1,
+    const receipt = normalizeReceipt({
       run_id: null,
       status: 'cleanup_unknown',
       effect_state: 'uncertain',
@@ -382,7 +375,7 @@ export async function runWorkspaceExportPublisher(command, image, volume, label,
       exporter_exit: primaryError?.exitCode !== undefined || primaryError?.signal !== undefined ? { code: primaryError.exitCode ?? null, signal: primaryError.signal ?? null } : null,
       errors: [...(primaryError ? [primaryError.message] : []), message],
       cleanup_history: cleanupHistory,
-    };
+    }, { status: 'cleanup_unknown' });
     throw Object.assign(new Error(message), {
       code: 'cleanup_unknown',
       cause: primaryError ?? cleanupError,
@@ -533,7 +526,7 @@ function lastReceipt(output) {
   for (const line of output.trim().split(/\r?\n/).reverse()) {
     try {
       const value = JSON.parse(line);
-      if (value?.version === 1 && typeof value.result === 'string' && Array.isArray(value.evidence) && Array.isArray(value.artifacts)) return value;
+      if (hasReceiptShape(value) && typeof value.result === 'string' && Array.isArray(value.evidence) && Array.isArray(value.artifacts)) return value;
     } catch {}
   }
   return null;
@@ -545,7 +538,7 @@ async function workspaceReceipt(workspace) {
     fh = await open(join(workspace, '.yolo', 'last-receipt.json'), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
     const value = JSON.parse(await fh.readFile('utf8'));
     await fh.close();
-    return value?.version === 1 ? value : null;
+    return hasReceiptShape(value) ? value : null;
   } catch { await fh?.close().catch(() => {}); return null; }
 }
 

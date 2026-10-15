@@ -2,6 +2,7 @@
 import { AuthClient, AuthStore } from './auth.mjs';
 import { ConfigStore, configPath, configRoot, validateModel, imageMetadataPath, DEFAULT_EPHEMERAL_PATHS, validateEphemeralPath, validateEphemeralPaths, effectiveEphemeralPaths } from './config.mjs';
 import { ContainerLauncher } from './container-launcher.mjs';
+import { normalizeReceipt, hasReceiptShape, safeFailureSummary } from './receipt-contract.mjs';
 import { readFile, mkdir, cp, rm, open, rename, readdir, access, lstat } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -107,7 +108,7 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     await validateEmptyWorkspace(workspace);
     receiptAuthority = await reserveReceipt(workspace);
     if (!receiptAuthority) {
-      const conflict = { version: 1, run_id: null, status: 'receipt_conflict', effect_state: 'none', result: null, evidence: [], artifacts: [], errors: ['authoritative receipt reservation conflict'] };
+      const conflict = normalizeReceipt({ status: 'receipt_conflict', effect_state: 'none', errors: ['authoritative receipt reservation conflict'] }, { status: 'receipt_conflict' });
       io.stdout.write(`${options.json ? JSON.stringify(conflict) : `receipt_conflict: ${conflict.errors[0]}`}\n`);
       return 1;
     }
@@ -136,7 +137,7 @@ export async function main(args = process.argv.slice(2), io = { stdin: process.s
     renderer?.close();
     if (receiptAuthority && !receiptTransferred) await receiptAuthority.close().catch(() => {});
     clearTimeout(deadlineTimer);
-    const message = error instanceof MissingProviderError ? error.message : error.message;
+    const message = error instanceof MissingProviderError ? error.message : safeFailureSummary(error?.message, 'operation failed');
     if (hasCleanupUnknown(error)) {
       const receipt = await buildCleanupUnknownReceipt(error, process.cwd());
       io.stdout.write(`${JSON.stringify(receipt)}\n`);
@@ -153,8 +154,7 @@ export async function buildCleanupUnknownReceipt(error, workspace = process.cwd(
   for (const value of [error?.message, cleanup && cleanup !== error ? cleanup.message : null]) {
     if (value && !errors.includes(value)) errors.push(value);
   }
-  const receipt = {
-    version: 1,
+  const receipt = normalizeReceipt({
     run_id: prior.run_id ?? null,
     status: 'cleanup_unknown',
     effect_state: 'uncertain',
@@ -163,7 +163,7 @@ export async function buildCleanupUnknownReceipt(error, workspace = process.cwd(
     artifacts: Array.isArray(prior.artifacts) ? prior.artifacts : (Array.isArray(error?.partialArtifacts) ? error.partialArtifacts : []),
     errors,
     cleanup_history: cleanup?.cleanupHistory ?? prior.cleanup_history ?? [],
-  };
+  }, { status: 'cleanup_unknown' });
   try { await persistReceipt(workspace, receipt, persistenceOptions); } catch {}
   return receipt;
 }
@@ -171,7 +171,7 @@ export async function buildCleanupUnknownReceipt(error, workspace = process.cwd(
 function bestReceiptIn(value, seen = new Set()) {
   if (!value || typeof value !== 'object' || seen.has(value)) return null;
   seen.add(value);
-  if (value.version === 1 && (value.run_id !== undefined || value.result !== undefined) && Array.isArray(value.evidence) && Array.isArray(value.artifacts)) return value;
+  if (hasReceiptShape(value) && (value.run_id !== undefined || value.result !== undefined) && Array.isArray(value.evidence) && Array.isArray(value.artifacts)) return value;
   for (const nested of [value.receipt, value.partialReceipt, value.cause, value.cleanupError, ...(value.errors ?? []), ...(value.aggregateErrors ?? [])]) {
     const found = bestReceiptIn(nested, seen);
     if (found) return found;
@@ -188,7 +188,7 @@ async function readWorkspaceReceipt(workspace) {
         const receipt = await open(join(workspace, '.yolo', 'last-receipt.json'), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
         const value = JSON.parse(await receipt.readFile('utf8'));
         await receipt.close();
-        return value?.version === 1 ? value : null;
+        return hasReceiptShape(value) ? value : null;
       } finally { await yolo.close(); }
     } finally { await root.close(); }
   } catch { return null; }

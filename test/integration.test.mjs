@@ -58,11 +58,16 @@ test('cleanup_unknown receipt preserves the best prior state and ordered errors'
       cleanupError: Object.assign(new Error('cleanup failed'), { code: 'cleanup_unknown', cleanupHistory: [{ action: 'inspect', error: 'cleanup_timeout' }] }),
     });
     const receipt = await buildCleanupUnknownReceipt(primary, dir);
-    assert.deepEqual(receipt, {
-      version: 1, run_id: 'run-preserved', status: 'cleanup_unknown', effect_state: 'uncertain', result: 'partial result',
-      evidence: [{ call_id: 'call-1' }], artifacts: ['artifact.txt'], errors: ['primary detail', 'primary failure', 'cleanup failed'],
-      cleanup_history: [{ action: 'inspect', error: 'cleanup_timeout' }],
-    });
+    assert.equal(receipt.version, 2);
+    assert.equal(receipt.run_id, 'run-preserved');
+    assert.equal(receipt.status, 'cleanup_unknown');
+    assert.equal(receipt.effect_state, 'uncertain');
+    assert.equal(receipt.result, 'partial result');
+    assert.deepEqual(receipt.evidence, [{ call_id: 'call-1' }]);
+    assert.deepEqual(receipt.artifacts, ['artifact.txt']);
+    assert.deepEqual(receipt.errors, ['primary detail', 'primary failure', 'cleanup failed']);
+    assert.deepEqual(receipt.cleanup_history, [{ action: 'inspect', error: 'cleanup_timeout' }]);
+    assert.equal(receipt.failure.version, 1);
     assert.deepEqual(JSON.parse(await readFile(join(dir, '.yolo', 'last-receipt.json'), 'utf8')), receipt);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

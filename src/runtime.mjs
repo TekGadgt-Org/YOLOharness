@@ -3,22 +3,13 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { EventLog } from './events.mjs';
 import { validateReceipt } from './docker-executor.mjs';
+import { safeFailureSummary, classifyProviderCause as classifyCause, classifyTermination } from './receipt-contract.mjs';
 
 export class MissingProviderError extends Error { constructor(message = 'No provider is configured; run `yolo setup` and authenticate before starting a run') { super(message); this.name = 'MissingProviderError'; } }
 const FAILURE_VERSION = 1;
-const MAX_FAILURE_MESSAGE = 512;
-function boundedText(value) { return String(value ?? '').slice(0, MAX_FAILURE_MESSAGE); }
-export function classifyProviderCause(cause) {
-  if (!cause || typeof cause !== 'object') return { classification: 'unavailable' };
-  const result = { ...(typeof cause.code === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(cause.code) ? { code: cause.code } : {}), ...(typeof cause.syscall === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(cause.syscall) ? { syscall: cause.syscall } : {}), ...(Number.isInteger(cause.errno) && cause.errno >= -2147483648 && cause.errno <= 2147483647 ? { errno: cause.errno } : {}) };
-  return Object.keys(result).length ? result : { classification: 'unavailable' };
-}
-export function classifyTermination(code, signal = null) {
-  if (typeof signal === 'string' && /^SIG[A-Z0-9]+$/.test(signal)) return { signal, classification: signal === 'SIGKILL' ? 'sigkill_compatible' : 'signal' };
-  if (code === 137) return { code, classification: 'sigkill_compatible' };
-  if (code === 124) return { code, classification: 'timeout_or_output_limit' };
-  return null;
-}
+export const classifyProviderCause = classifyCause;
+function boundedText(value) { return safeFailureSummary(value, 'operation failed'); }
+
 function failureRecord({ phase, message, code = null, signal = null, cause = null } = {}) {
   return { phase, message: boundedText(message), ...(code !== null ? { code } : {}), ...(signal ? { signal } : {}), ...(cause ? { cause: classifyProviderCause(cause) } : {}) };
 }
@@ -94,7 +85,7 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
   if (!(Number.isFinite(minutes) && minutes > 0)) throw new TypeError('minutes must be positive and finite');
   if (!(Number.isFinite(cleanupGraceMs) && cleanupGraceMs > 0)) throw new TypeError('cleanupGraceMs must be positive and finite');
   if (!provider) throw new MissingProviderError();
-  if (signal.aborted) return { version: 1, run_id: null, status: 'interrupted', effect_state: 'uncertain', result: null, evidence: [], artifacts: [], errors: ['interrupted before start; generated output may be retained or partial; inspect it and delete the generated directory before retrying'] };
+  if (signal.aborted) return { version: 2, run_id: null, status: 'interrupted', effect_state: 'uncertain', result: null, evidence: [], artifacts: [], publication_evidence: { status: 'unknown', relationship: 'runtime did not start' }, failure: { version: 1, terminal: { phase: 'runtime', message: 'run interrupted' }, recovered: [] }, errors: ['run interrupted before start'] };
   const runId = `run-${now()}-${randomUUID().slice(0, 8)}`;
   const runDir = join(workspace, '.yolo', 'runs', runId);
   await mkdir(runDir, { recursive: true, mode: 0o750 });
@@ -154,7 +145,7 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
           recovered.push({ phase: 'tool', call_id: receipt.call_id, code: receipt.code, message: boundedText(receipt.error), ...(classifyTermination(receipt.code, receipt.signal) ? { termination: classifyTermination(receipt.code, receipt.signal) } : {}) });
           if (timer.signal.aborted || receipt.code === 124) {
             terminal = failureRecord({ phase: 'tool', message: receipt.error, code: receipt.code, signal: receipt.signal });
-            errors.push(receipt.error);
+            errors.push(boundedText(receipt.error));
             status = timer.signal.aborted ? (signal.aborted ? 'interrupted' : 'deadline') : 'deadline';
             break;
           }

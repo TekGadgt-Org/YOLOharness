@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process';
+import { SIGNAL_NUMBERS } from './receipt-contract.mjs';
 
 const MAX_OUTPUT = 1024 * 1024;
 const MAX_COMMAND = 256;
 const MAX_ARGS = 64;
-const SIGNAL_NUMBERS = Object.freeze({ SIGABRT: 6, SIGALRM: 14, SIGBUS: 7, SIGHUP: 1, SIGILL: 4, SIGINT: 2, SIGKILL: 9, SIGPIPE: 13, SIGQUIT: 3, SIGSEGV: 11, SIGTERM: 15 });
+
 
 export class ContainerProcessExecutor {
   constructor({ cwd = '/workspace', home = '/tmp/yoloharness-home', timeoutMs = 60_000 } = {}) {

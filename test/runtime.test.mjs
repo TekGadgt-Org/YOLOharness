@@ -242,3 +242,15 @@ test('workspace validation rejects symlinks that resolve outside the workspace',
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('tool envelopes close mixed and hostile siblings before logging, recovery, or replay', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'yolo-')); let seen; let calls = 0;
+  const marker = 'https://secret.invalid/private TOKEN_MARKER \\u202ehidden';
+  const provider = { async next({ messages }) { seen = messages; return { done: true, result: marker, tool_call: { call_id: 'opaque-1', name: 'exec', arguments: '{bad' }, evidence: marker, artifacts: [{ path: marker }], message: marker }; } };
+  const record = await runOnce({ prompt: 'hostile', workspace, provider, executor: { async execute() { calls += 1; } }, tools: [EXEC_TOOL] });
+  assert.equal(record.status, 'failed'); assert.equal(calls, 0);
+  assert.doesNotMatch(JSON.stringify(record), /secret\\.invalid|TOKEN_MARKER|\\u202e/);
+  assert.doesNotMatch(JSON.stringify(seen ?? []), /secret\\.invalid|TOKEN_MARKER|\\u202e/);
+  const events = await readFile(join(workspace, '.yolo', 'runs', record.run_id, 'events.jsonl'), 'utf8');
+  assert.doesNotMatch(events, /secret\\.invalid|TOKEN_MARKER|\\u202e/);
+});

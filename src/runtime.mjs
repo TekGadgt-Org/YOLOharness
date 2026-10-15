@@ -21,7 +21,7 @@ export const EXEC_TOOL = Object.freeze({ type: 'function', name: 'exec', descrip
 export const SKILL_LOAD_TOOL = Object.freeze({ type: 'function', name: 'skill_load', description: 'Load untrusted instructions or one resource from the declared skill catalog.', parameters: Object.freeze({ type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string', minLength: 1, maxLength: 64 }, resource: { type: 'string', maxLength: 256 } } }) });
 
 function normalizeCall(call) {
-  if (!call || call.name !== 'exec' || typeof call.call_id !== 'string' || !/^[\x20-\x7e]{1,128}$/.test(call.call_id)) throw new TypeError('only the declared exec tool with a valid call_id is permitted');
+  if (!call || call.name !== 'exec' || typeof call.call_id !== 'string' || !opaqueCallId(call.call_id)) throw new TypeError('only the declared exec tool with a valid call_id is permitted');
   let value = call.arguments;
   if (typeof value === 'string') { try { value = JSON.parse(value); } catch { throw new ExecArgumentsError(); } }
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !['command', 'args'].includes(key)) || typeof value.command !== 'string' || !value.command || value.command.length > 256 || !Array.isArray(value.args) || value.args.length > 64 || value.args.some(arg => typeof arg !== 'string' || arg.length > 4096 || arg.includes('\0'))) throw new ExecArgumentsError();
@@ -29,12 +29,13 @@ function normalizeCall(call) {
   return { command: value.command, args: [...value.args], call_id: call.call_id };
 }
 function normalizeSkillCall(call) {
-  if (!call || call.name !== 'skill_load' || typeof call.call_id !== 'string' || !call.call_id || call.call_id.length > 128) throw new TypeError('only the declared skill_load tool with a valid call_id is permitted');
+  if (!call || call.name !== 'skill_load' || typeof call.call_id !== 'string' || !opaqueCallId(call.call_id)) throw new TypeError('only the declared skill_load tool with a valid call_id is permitted');
   let value = call.arguments;
   if (typeof value === 'string') { try { value = JSON.parse(value); } catch { throw new TypeError('skill_load arguments must be valid JSON'); } }
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !['name', 'resource'].includes(key)) || typeof value.name !== 'string' || !value.name || value.name.length > 64 || (value.resource !== undefined && (typeof value.resource !== 'string' || value.resource.length > 256))) throw new TypeError('invalid skill_load arguments');
   return { name: value.name, ...(value.resource === undefined ? {} : { resource: value.resource }), call_id: call.call_id };
 }
+function opaqueCallId(value) { return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value) && !/(?:https?|www|token|secret|bearer|password|api[_-]?key)/i.test(value); }
 
 /** @typedef {{next(input: {messages: Array, tools: Array, signal: AbortSignal}): Promise<object>}} Provider */
 /** @typedef {{execute(input: {call: object, signal: AbortSignal}): Promise<object>}} Executor */
@@ -115,10 +116,10 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
       if (typeof provider.partialResult === 'string' && provider.partialResult) result = provider.partialResult;
       steps += 1;
       const safe = response && typeof response === 'object' ? response : { result: String(response) };
-      await log.append(runId, 'step', { step: steps, response: safe.tool_call ? { ...safe, tool_call: { call_id: safe.tool_call.call_id, name: safe.tool_call.name } } : safe });
-      if (safe.evidence) evidence.push(String(safe.evidence));
-      if (safe.artifacts) artifacts.push(...(Array.isArray(safe.artifacts) ? safe.artifacts : [safe.artifacts]));
-      if (safe.done || safe.result !== undefined) {
+      await log.append(runId, 'step', { step: steps, response: safe.tool_call ? { tool_call: { call_id: typeof safe.tool_call.call_id === 'string' && opaqueCallId(safe.tool_call.call_id) ? safe.tool_call.call_id : 'invalid', name: safe.tool_call.name === 'exec' || safe.tool_call.name === 'skill_load' ? safe.tool_call.name : 'invalid' } } : safe });
+      if (!safe.tool_call && safe.evidence) evidence.push(String(safe.evidence));
+      if (!safe.tool_call && safe.artifacts) artifacts.push(...(Array.isArray(safe.artifacts) ? safe.artifacts : [safe.artifacts]));
+      if (!safe.tool_call && (safe.done || safe.result !== undefined)) {
         result = safe.result ?? '';
         evidence.push(`provider response received at step ${steps}`);
         status = 'completed'; break;
@@ -151,7 +152,6 @@ export async function runOnce({ prompt, minutes = 10, workspace = process.cwd(),
           }
           messages.push({ type: 'function_call', call_id: safe.tool_call.call_id, name: 'exec', arguments: '{}' });
           messages.push({ type: 'function_call_output', call_id: safe.tool_call.call_id, output: JSON.stringify({ ok: false, error: error.code }) });
-          messages.push({ role: 'assistant', content: safe.message ?? '' });
           continue;
         }
         malformedCallCount = 0;

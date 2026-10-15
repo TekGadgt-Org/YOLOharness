@@ -45,3 +45,12 @@ test('termination validation is closed and consistent', () => {
   assert.equal(validateReceipt({ ...base, termination: { code: 137, classification: 'timeout_or_output_limit' } }, 'c'), false);
   assert.equal(validateReceipt({ ...base, termination: { code: 137, classification: 'sigkill_compatible', classification2: 'x' } }, 'c'), false);
 });
+
+test('v2 normalization is closed, bounded, and sanitizes hostile nested fields', () => {
+  const hostile = normalizeReceipt({ version: 2, run_id: 'r', status: 'failed', effect_state: 'none', unknown: 'marker', result: 'https://secret.invalid/token', evidence: [{ marker: 'secret', nested: { leak: true } }], artifacts: [{ path: '/srv/private/token' }], publication_evidence: { status: 'published', relationship: 'https://secret.invalid', marker: 'leak', created_entry_count: '1' }, failure: { version: 1, terminal: { phase: 'runtime', message: 'https://secret.invalid/token', marker: 'leak' }, recovered: [{ phase: 'tool', message: '\u202ehidden' }], marker: 'leak' }, errors: ['https://secret.invalid/token'], cleanup_unknown: 'leak' });
+  assert.equal(hostile.unknown, undefined);
+  assert.equal(hostile.cleanup_unknown, undefined);
+  assert.doesNotMatch(JSON.stringify(hostile), /secret\.invalid|marker|\u202e|\/srv\/private/);
+  assert.ok(hostile.errors.length <= 64);
+  assert.ok(Object.keys(hostile.failure).every(key => ['version', 'terminal', 'recovered'].includes(key)));
+});

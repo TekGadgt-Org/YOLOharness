@@ -44,7 +44,7 @@ try {
   const fh = await open('/tmp/runtime-receipt.json', fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
   try { await fh.writeFile(`${JSON.stringify(record)}\n`); await fh.sync(); } finally { await fh.close(); }
 } catch (error) {
-  record = { ...record, status: 'publication_incomplete', effect_state: 'uncertain', errors: [...(record.errors ?? []), `receipt persistence failed: ${error.message}`] };
+  record = { ...record, status: 'publication_incomplete', effect_state: 'uncertain', errors: [...(record.errors ?? []), `receipt persistence failed: ${safeFailureSummary(error?.message, 'receipt persistence failed')}`] };
 }
 progressWriter?.close();
 process.stdout.write(`${JSON.stringify(record)}\n`);
